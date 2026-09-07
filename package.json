@@ -1,0 +1,22 @@
+{
+  "name": "media-intel",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.28.2",
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=10"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel run dev",
+    "dev:api": "pnpm --filter @media-intel/api run dev",
+    "dev:worker": "pnpm --filter @media-intel/api run dev:worker",
+    "dev:web": "pnpm --filter @media-intel/web run dev",
+    "build": "pnpm -r run build",
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "UNLICENSED"
+}

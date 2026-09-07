@@ -1,0 +1,10 @@
+{
+  "include": [
+    "services/whisper-transcriber"
+  ],
+  "venvPath": "services/whisper-transcriber",
+  "venv": ".venv",
+  "extraPaths": [
+    "services/whisper-transcriber/.venv/Lib/site-packages"
+  ]
+}

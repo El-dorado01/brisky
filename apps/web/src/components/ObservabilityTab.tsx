@@ -1,0 +1,196 @@
+import React from 'react';
+import { Activity, AlertCircle, Clock, Flame, RefreshCw } from 'lucide-react';
+import { IndexingJobItem, parseJsonSafe } from '../types';
+
+interface ObservabilityTabProps {
+  jobs: IndexingJobItem[];
+  retryingId: string | null;
+  onRefresh: () => void;
+  onRetry: (assetId: string) => void;
+}
+
+export const ObservabilityTab: React.FC<ObservabilityTabProps> = ({
+  jobs,
+  retryingId,
+  onRefresh,
+  onRetry,
+}) => {
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between bg-slate-900/70 border border-slate-800 p-3 rounded-xl">
+        <div>
+          <h4 className="text-xs font-semibold text-white flex items-center gap-1.5">
+            <Activity className="w-4 h-4 text-indigo-400" />
+            Queue Observability & Pipeline Telemetry
+          </h4>
+          <p className="text-[11px] text-slate-400 mt-0.5">
+            Live BullMQ job state, stage durations, model routing, and error diagnostics.
+          </p>
+        </div>
+        <button
+          onClick={onRefresh}
+          className="text-xs text-slate-400 hover:text-white flex items-center gap-1 bg-slate-800/80 px-2.5 py-1 rounded border border-slate-700 transition"
+        >
+          <RefreshCw className="w-3 h-3" /> Refresh
+        </button>
+      </div>
+
+      {jobs.length === 0 ? (
+        <div className="p-8 text-center border border-dashed border-slate-800 rounded-xl text-slate-500 text-sm">
+          No indexing jobs recorded yet. Upload a video to observe pipeline telemetry.
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3 max-h-[520px] overflow-y-auto pr-1">
+          {jobs.map((job) => {
+            const timings = parseJsonSafe<Array<{ stage: string; durationMs: number }>>(
+              job.timings,
+              [],
+            );
+            const cost = parseJsonSafe<{
+              estimatedUsd?: number;
+              framesAnalyzed?: number;
+              sceneCount?: number;
+              indexDurationMs?: number;
+            }>(job.cost, {});
+
+            const isRunning = job.status === 'active' || job.status === 'waiting';
+            const isCompleted = job.status === 'completed';
+            const isFailed = job.status === 'failed';
+
+            return (
+              <div
+                key={job.id}
+                className="bg-slate-900/60 border border-slate-800/80 hover:border-slate-700 rounded-xl p-3.5 flex flex-col gap-2.5 transition"
+              >
+                {/* Header: title + status badge */}
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <h5
+                      className="text-xs font-semibold text-slate-200 truncate"
+                      title={job.original_filename || job.asset_id}
+                    >
+                      {job.original_filename || job.asset_id}
+                    </h5>
+                    <div className="flex items-center gap-2 text-[10px] text-slate-500 mt-0.5 font-mono">
+                      <span>ID: {job.asset_id.slice(0, 8)}...</span>
+                      <span>•</span>
+                      <span className="flex items-center gap-1">
+                        <Clock className="w-3 h-3" />
+                        {new Date(job.created_at).toLocaleTimeString()}
+                      </span>
+                      {job.attempts > 1 && (
+                        <>
+                          <span>•</span>
+                          <span className="text-amber-400">Attempt #{job.attempts}</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {isCompleted && (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-emerald-950 text-emerald-400 border border-emerald-800/60">
+                        Completed
+                      </span>
+                    )}
+                    {isRunning && (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-amber-950 text-amber-400 border border-amber-800/60 flex items-center gap-1 animate-pulse">
+                        <RefreshCw className="w-2.5 h-2.5 animate-spin" />
+                        {job.status}
+                      </span>
+                    )}
+                    {isFailed && (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-rose-950 text-rose-400 border border-rose-800/60 flex items-center gap-1">
+                        <AlertCircle className="w-3 h-3" />
+                        Failed
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Progress Bar & Stage */}
+                <div>
+                  <div className="flex items-center justify-between text-[11px] mb-1">
+                    <span className="text-slate-300 font-medium">{job.stage || 'queued'}</span>
+                    <span className="font-mono text-indigo-400 font-semibold">{job.progress}%</span>
+                  </div>
+                  <div className="w-full bg-slate-800/80 rounded-full h-1.5 overflow-hidden">
+                    <div
+                      className={`h-full transition-all duration-500 ${
+                        isFailed ? 'bg-rose-500' : isCompleted ? 'bg-emerald-500' : 'bg-indigo-500'
+                      }`}
+                      style={{ width: `${Math.max(job.progress, 4)}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* Metadata row: Provider / Model / Cost */}
+                <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] bg-slate-950/60 px-2.5 py-1.5 rounded-lg border border-slate-800/60">
+                  <div className="flex items-center gap-2 text-slate-400">
+                    <span>
+                      Provider: <strong className="text-slate-200">{job.provider || 'gemini'}</strong>
+                    </span>
+                    <span>•</span>
+                    <span>
+                      Model: <strong className="text-slate-200">{job.model || 'gemini-2.5-flash'}</strong>
+                    </span>
+                  </div>
+                  {cost.estimatedUsd !== undefined && (
+                    <div className="flex items-center gap-1 text-amber-300 font-mono">
+                      <Flame className="w-3 h-3 text-amber-400" />
+                      <span>${cost.estimatedUsd.toFixed(4)} USD</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Stage Timings Breakdown */}
+                {Array.isArray(timings) && timings.length > 0 && (
+                  <div className="flex flex-col gap-1">
+                    <span className="text-[10px] font-medium text-slate-400">Stage Timings:</span>
+                    <div className="flex flex-wrap gap-1">
+                      {timings.map((t, idx) => (
+                        <span
+                          key={idx}
+                          className="text-[10px] bg-slate-800/70 border border-slate-700/60 text-slate-300 px-2 py-0.5 rounded font-mono"
+                        >
+                          {t.stage}:{' '}
+                          <strong className="text-indigo-300">
+                            {(t.durationMs / 1000).toFixed(1)}s
+                          </strong>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Error Message & Retry Action */}
+                {isFailed && (
+                  <div className="flex flex-col gap-2 bg-rose-950/30 border border-rose-900/50 p-2.5 rounded-lg">
+                    <div className="flex items-start gap-2 text-[11px] text-rose-300">
+                      <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                      <span className="font-mono break-all line-clamp-3">
+                        {job.error || 'Pipeline execution error'}
+                      </span>
+                    </div>
+                    <div className="flex justify-end">
+                      <button
+                        onClick={() => onRetry(job.asset_id)}
+                        disabled={retryingId === job.asset_id}
+                        className="text-xs bg-rose-900/80 hover:bg-rose-800 text-rose-100 px-3 py-1 rounded font-medium transition flex items-center gap-1.5 disabled:opacity-50"
+                      >
+                        <RefreshCw
+                          className={`w-3 h-3 ${retryingId === job.asset_id ? 'animate-spin' : ''}`}
+                        />
+                        Retry Job
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
