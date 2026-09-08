@@ -336,6 +336,10 @@ Still no Drive. Still upload. Use a **real** messy library (mixed codecs, long i
 ### Build
 
 - Query interpretation (visual vs speech vs metadata vs mixed)
+- **Discriminative Term Weighting (IDF & Corpus-Aware Filtering):**
+  - Dynamically downweight ubiquitous category terms across the user's specific library (e.g. "pharmacology", "video", "clip", "lecture") so common corpus words cannot hijack search results.
+  - **Strict Modifier Gating on Multi-Word Queries:** When a query contains a specific modifier + noun (e.g. "respiratory pharmacology", "red sports car", "Martinelli celebration"), strictly penalize or discard results that only match the generic noun with zero evidence of the defining modifier.
+  - **Vector Clustering Defense:** Prevent dense embeddings from returning false-positive "direct matches" simply because homogeneous video domains cluster closely in vector space (e.g. all medical lectures clustering at ~0.64 cosine similarity).
 - Hybrid retrieval with Reciprocal Rank Fusion:
   - lexical / BM25-style search on transcripts (and OCR text if present)
   - vector search on segment embeddings
@@ -367,6 +371,8 @@ Measure:
 
 - Spoken queries are consistently good
 - Visual queries are useful often enough to demo without cherry-picking one clip
+- Multi-word modifier searches (e.g. "respiratory pharmacology") never return unrelated videos simply because they share a generic corpus term (e.g. "pharmacology")
+- Honest "no exact match" fallback: when a specific topic doesn't exist, the system explains what was missing rather than pretending an unrelated lecture is a direct hit
 - We have a written Stage-1 cost per hour and a Stage-2 policy
 - We know which pipeline stages are mandatory vs optional
 - A second person can sit down, search their own uploaded footage, and not feel tricked

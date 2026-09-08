@@ -443,16 +443,14 @@ export class FfmpegPipelineService {
     size: string,
     timeoutMs = 15000,
   ): Promise<string> {
-    const filename = path.basename(outputPath);
     const folder = path.dirname(outputPath);
     if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
 
-    const cmd = ffmpeg(videoPath).screenshots({
-      timestamps: [Math.max(0, timestamp)],
-      filename,
-      folder,
-      size,
-    });
+    const cmd = ffmpeg(videoPath)
+      .seekInput(Math.max(0, timestamp))
+      .frames(1)
+      .size(size)
+      .output(outputPath);
 
     return this.executeFfmpegWithTimeout<string>(
       cmd,

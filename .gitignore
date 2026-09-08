@@ -37,5 +37,5 @@ storage/scratch/
 *.suo
 *.ntvs*
 *.njsproj
-*.sln
-*.sw?
+# Scratch test scripts
+scratch/

@@ -73,3 +73,16 @@ flowchart TD
 As a **general-purpose media memory and moment search engine**, what we have right now is a solid **78/100**. For **microscopic needle-in-a-haystack details**, it is a **35–40/100**. 
 
 Phase 3 is where we close that gap on real-world, noisy, uncurated footage.
+
+---
+
+### 4. Case Study: The "Respiratory Pharmacology" Trap & Phase 3 Mandate
+
+During real-world library testing with 38 medical pharmacology videos, a search for `"find me a respiratory pharmacology clip"` exposed a critical retrieval flaw:
+
+1. **The Corpus Frequency Trap:** The word `"pharmacology"` appeared across 100% of the videos in the library. Naive lexical search expanded `respiratory:* | pharmacology:*`, allowing completely unrelated videos (Heart Failure, Osteoporosis, Antipsychotics) into the candidate pool.
+2. **Dense Vector Clustering:** Dense embeddings group all medical pharmacology lectures close together (~0.64 cosine similarity). The system treated 0.64 as a "direct match" even though the defining keyword (`"respiratory"`) was absent from those videos.
+3. **The Phase 3 Resolution:**
+   - **Corpus-Aware Term Weighting (IDF):** Dynamically penalize ubiquitous corpus terms (like `"pharmacology"` in a medical archive, or `"video"` in a YouTube library).
+   - **Strict Modifier Gating:** Require evidence of specific modifiers (`"respiratory"`) before allowing candidate segments into direct match ranking.
+   - **Honest Missing-Modifier Fallback:** If the primary topic does not exist in the library, clearly signal what was missing rather than elevating unrelated domain lectures into top hits.
