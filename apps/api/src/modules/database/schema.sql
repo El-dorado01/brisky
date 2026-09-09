@@ -213,6 +213,8 @@ CREATE TABLE IF NOT EXISTS query_understanding_cache (
   raw_query TEXT NOT NULL,
   clean_search_phrase TEXT NOT NULL,
   core_subject TEXT NOT NULL,
+  target_entity TEXT,
+  aspect TEXT,
   aliases TEXT[] NOT NULL DEFAULT '{}',
   is_compound BOOLEAN NOT NULL DEFAULT false,
   sub_queries JSONB NOT NULL DEFAULT '[]'::jsonb,

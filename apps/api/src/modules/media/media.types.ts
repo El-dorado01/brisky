@@ -53,6 +53,8 @@ export interface UnderstoodQuery {
   rawQuery: string;
   cleanSearchPhrase: string;
   coreSubject: string;
+  targetEntity?: string;
+  aspect?: string;
   aliases: string[];
   isCompound: boolean;
   subQueries: SubTopicQuery[];

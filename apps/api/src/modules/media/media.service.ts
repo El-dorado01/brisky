@@ -463,7 +463,7 @@ export class MediaService {
     // 1. Fast Cache Check
     try {
       const cached = await this.db.query(
-        'SELECT raw_query, clean_search_phrase, core_subject, aliases, is_compound, sub_queries FROM query_understanding_cache WHERE query_hash = $1',
+        'SELECT raw_query, clean_search_phrase, core_subject, target_entity, aspect, aliases, is_compound, sub_queries FROM query_understanding_cache WHERE query_hash = $1',
         [queryHash],
       );
       if (cached.rows.length > 0) {
@@ -472,6 +472,8 @@ export class MediaService {
           rawQuery: row.raw_query,
           cleanSearchPhrase: row.clean_search_phrase,
           coreSubject: row.core_subject,
+          targetEntity: row.target_entity || undefined,
+          aspect: row.aspect || undefined,
           aliases: row.aliases || [],
           isCompound: row.is_compound,
           subQueries: Array.isArray(row.sub_queries) ? row.sub_queries : [],
@@ -491,6 +493,8 @@ export class MediaService {
         rawQuery: trimmed,
         cleanSearchPhrase: trimmed,
         coreSubject: trimmed,
+        targetEntity: trimmed,
+        aspect: undefined,
         aliases: [],
         isCompound: false,
         subQueries: [{ topic: trimmed, searchPhrase: trimmed }],
@@ -520,6 +524,8 @@ export class MediaService {
       rawQuery: trimmed,
       cleanSearchPhrase: parsed.cleaned || trimmed,
       coreSubject: parsed.headTerm || parsed.cleaned || trimmed,
+      targetEntity: parsed.primaryModifier || parsed.headTerm || undefined,
+      aspect: undefined,
       aliases: [],
       isCompound: false,
       subQueries: [{ topic: parsed.cleaned || trimmed, searchPhrase: parsed.cleaned || trimmed }],
@@ -528,11 +534,13 @@ export class MediaService {
 
   private async cacheUnderstoodQuery(queryHash: string, u: UnderstoodQuery): Promise<void> {
     await this.db.query(
-      `INSERT INTO query_understanding_cache (query_hash, raw_query, clean_search_phrase, core_subject, aliases, is_compound, sub_queries)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO query_understanding_cache (query_hash, raw_query, clean_search_phrase, core_subject, target_entity, aspect, aliases, is_compound, sub_queries)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (query_hash) DO UPDATE SET
          clean_search_phrase = EXCLUDED.clean_search_phrase,
          core_subject = EXCLUDED.core_subject,
+         target_entity = EXCLUDED.target_entity,
+         aspect = EXCLUDED.aspect,
          aliases = EXCLUDED.aliases,
          is_compound = EXCLUDED.is_compound,
          sub_queries = EXCLUDED.sub_queries`,
@@ -541,6 +549,8 @@ export class MediaService {
         u.rawQuery,
         u.cleanSearchPhrase,
         u.coreSubject,
+        u.targetEntity || null,
+        u.aspect || null,
         u.aliases,
         u.isCompound,
         JSON.stringify(u.subQueries),
@@ -565,7 +575,8 @@ export class MediaService {
 
     const understood = await this.getUnderstoodQuery(trimmed);
     const searchTarget = understood.cleanSearchPhrase || trimmed;
-    const parsed = parseSearchQuery(searchTarget);
+    const targetEntity = understood.targetEntity || understood.coreSubject;
+    const parsed = parseSearchQuery(searchTarget, targetEntity);
 
     let results: SearchResult[] = [];
     if (understood.isCompound && understood.subQueries.length > 1) {
@@ -589,6 +600,7 @@ export class MediaService {
         userId,
         undefined,
         understood.aliases,
+        targetEntity,
       );
     }
 
@@ -618,8 +630,9 @@ export class MediaService {
     userId?: string,
     topicLabel?: string,
     aliases: string[] = [],
+    targetEntity?: string,
   ): Promise<SearchResult[]> {
-    const parsed = parseSearchQuery(query);
+    const parsed = parseSearchQuery(query, targetEntity);
 
     // Parallel execution: run direct phrase matching and hybrid segment search concurrently
     const [phraseHits, segmentHits] = await Promise.all([
@@ -631,16 +644,20 @@ export class MediaService {
     const directHits: SearchResult[] = [];
     const relatedHits: SearchResult[] = [];
 
-    // Exact phrase hits take top priority as direct matches
+    // Exact phrase hits take top priority as direct matches; loose pair hits remain related
     for (const hit of phraseHits) {
       const key = `${hit.assetId}:${hit.startTime.toFixed(1)}`;
       if (!seen.has(key)) {
         seen.add(key);
-        directHits.push({
+        const taggedHit: SearchResult = {
           ...hit,
-          matchQuality: 'direct',
           subTopic: topicLabel || hit.subTopic,
-        });
+        };
+        if (hit.matchQuality === 'direct') {
+          directHits.push(taggedHit);
+        } else {
+          relatedHits.push(taggedHit);
+        }
       }
     }
 
@@ -701,14 +718,9 @@ export class MediaService {
             [queryHash, candidate.segmentId],
           );
 
-          const hasPrimaryModifierFocus = !parsed.primaryModifier || (
-            new RegExp(`\\b${parsed.primaryModifier}`, 'i').test(candidate.filename || '') ||
-            new RegExp(`\\b${parsed.primaryModifier}`, 'i').test(candidate.title || '')
-          );
-
           if (cached.rows.length > 0) {
             const row = cached.rows[0];
-            return this.enrichVerifiedHit(candidate, row.is_verified, row.confidence, row.explanation, hasPrimaryModifierFocus);
+            return this.enrichVerifiedHit(candidate, row.is_verified, row.confidence, row.explanation);
           }
 
           // 2. Locate keyframe files on disk
@@ -743,7 +755,7 @@ export class MediaService {
             [queryHash, candidate.assetId, candidate.segmentId, ver.matched, ver.confidence, ver.explanation],
           );
 
-          return this.enrichVerifiedHit(candidate, ver.matched, ver.confidence, ver.explanation, hasPrimaryModifierFocus);
+          return this.enrichVerifiedHit(candidate, ver.matched, ver.confidence, ver.explanation);
         } catch (err) {
           this.logger.warn(`Stage-2 verification error for ${candidate.segmentId}: ${err}`);
           return candidate;
@@ -769,21 +781,8 @@ export class MediaService {
     isVerified: boolean,
     confidence: number,
     explanation: string,
-    hasPrimaryModifierFocus = true,
   ): SearchResult {
     if (isVerified && confidence >= 0.5) {
-      if (!hasPrimaryModifierFocus) {
-        return {
-          ...candidate,
-          score: Number(Math.min(candidate.score, 0.54).toFixed(3)),
-          matchQuality: 'related',
-          stage2Verified: true,
-          verificationConfidence: confidence,
-          verificationExplanation: explanation,
-          whyPicked: 'Stage-2 visual inspection: sub-topic scene in broader lecture',
-          queryRelation: explanation || candidate.queryRelation,
-        };
-      }
       return {
         ...candidate,
         score: Number(Math.max(candidate.score, 0.88 + confidence * 0.10).toFixed(3)),
@@ -959,9 +958,18 @@ export class MediaService {
       matchConditions.push(`(${termClauses.join(' AND ')})`);
       if (termClauses.length >= 3) {
         // Build 2-term pair combinations so multi-word queries match cues containing multiple key terms
+        // If a primary modifier / defining entity is set, only consider pairs that include the primary modifier
+        const modifierIdx = parsed.primaryModifier
+          ? parsed.contentTerms.findIndex((t) => t.toLowerCase() === parsed.primaryModifier!.toLowerCase())
+          : -1;
+
         const pairClauses: string[] = [];
         for (let i = 0; i < termClauses.length; i++) {
           for (let j = i + 1; j < termClauses.length; j++) {
+            if (modifierIdx !== -1 && i !== modifierIdx && j !== modifierIdx) {
+              // Skip pairs that do not mention the defining entity (e.g. skip 'mechanism & action' when entity is 'levodopa')
+              continue;
+            }
             pairClauses.push(`(${termClauses[i]} AND ${termClauses[j]})`);
           }
         }
@@ -1009,7 +1017,8 @@ export class MediaService {
         const text = String(row.text || '').trim();
         const queryText = (parsed.raw || parsed.cleaned || 'your search').trim();
         const snippet = text.length > 140 ? text.slice(0, 140) + '...' : text;
-        const isDirect = row.match_tier === 'phrase' || (row.match_tier === 'all_terms' && parsed.contentTerms.length >= 2);
+        const matchesModifier = !parsed.primaryModifier || new RegExp(`\\b${escapeRegex(parsed.primaryModifier)}`, 'i').test(text);
+        const isDirect = ((row.match_tier === 'phrase' || (row.match_tier === 'all_terms' && parsed.contentTerms.length >= 2)) && matchesModifier);
         const whyPicked = isDirect
           ? 'Direct spoken phrase match in audio track'
           : 'Partial term match in audio transcript';
@@ -1224,20 +1233,21 @@ export class MediaService {
           onScreen.some((t: string) => t.toLowerCase().includes(p))
         );
 
-        // Check if candidate scene has explicit evidence of primary modifier (e.g. 'respiratory')
-        const hasPrimaryModifierFocus = !parsed.primaryModifier || (
-          new RegExp(`\\b${parsed.primaryModifier}`, 'i').test(row.original_filename || '') ||
-          new RegExp(`\\b${parsed.primaryModifier}`, 'i').test(row.title || '') ||
-          (new RegExp(`\\b${parsed.primaryModifier}`, 'i').test(description) && !description.toLowerCase().startsWith('scene from'))
+        // Check if candidate scene has explicit evidence of primary modifier / target entity (e.g. 'levodopa')
+        // Across observations: transcript, on-screen text, visual objects, actions, description, title, filename
+        const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const modifier = parsed.primaryModifier;
+        const hasPrimaryModifierFocus = !modifier || (
+          new RegExp(`\\b${escapeRegex(modifier)}`, 'i').test(transcript) ||
+          onScreen.some((t: string) => new RegExp(`\\b${escapeRegex(modifier)}`, 'i').test(t)) ||
+          objects.some((o: string) => new RegExp(`\\b${escapeRegex(modifier)}`, 'i').test(o)) ||
+          actions.some((a: string) => new RegExp(`\\b${escapeRegex(modifier)}`, 'i').test(a)) ||
+          (new RegExp(`\\b${escapeRegex(modifier)}`, 'i').test(description) && !description.toLowerCase().startsWith('scene from')) ||
+          new RegExp(`\\b${escapeRegex(modifier)}`, 'i').test(row.title || '') ||
+          new RegExp(`\\b${escapeRegex(modifier)}`, 'i').test(row.original_filename || '')
         );
 
-        const hasAnyModifierMention = !parsed.primaryModifier || (
-          hasPrimaryModifierFocus ||
-          new RegExp(`\\b${parsed.primaryModifier}`, 'i').test(transcript) ||
-          objects.some((o: string) => new RegExp(`\\b${parsed.primaryModifier}`, 'i').test(o)) ||
-          actions.some((a: string) => new RegExp(`\\b${parsed.primaryModifier}`, 'i').test(a)) ||
-          onScreen.some((t: string) => new RegExp(`\\b${parsed.primaryModifier}`, 'i').test(t))
-        );
+        const hasAnyModifierMention = hasPrimaryModifierFocus;
 
         // Strict modifier gating: If a multi-word query has a primary modifier,
         // candidates without primary topic focus or zero modifier evidence cannot be direct matches.

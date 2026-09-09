@@ -490,6 +490,8 @@ Use the provided timestamps. JSON only.`,
         rawQuery,
         cleanSearchPhrase: rawQuery,
         coreSubject: rawQuery,
+        targetEntity: undefined,
+        aspect: undefined,
         aliases: [],
         isCompound: false,
         subQueries: [{ topic: rawQuery, searchPhrase: rawQuery }],
@@ -497,13 +499,15 @@ Use the provided timestamps. JSON only.`,
     }
 
     const prompt = `You are an intelligent search query understanding engine for a personal video & media gallery.
-The user searches using natural speech, conversational commands (e.g. 'find me a clip where ronaldo is from my library, i want the exact timestamps', 'show me where', 'clip of'), informal slang/phonetic spellings (e.g. 'boy' vs 'boi', 'dawg' vs 'dog', 'cuz', 'gonna'), or compound multi-topic queries (e.g. 'denovo synthesis and albuterol', 'cars or bikes in the desert').
+The user searches using natural speech, conversational commands (e.g. 'find me a clip where ronaldo is from my library, i want the exact timestamps', 'show me where', 'clip of'), informal slang/phonetic spellings (e.g. 'boy' vs 'boi', 'dawg' vs 'dog', 'cuz', 'gonna'), topical queries with aspects/attributes (e.g. 'mechanism of action of levodopa', 'symptoms of parkinsons', 'how to change tire on car'), or compound multi-topic queries (e.g. 'denovo synthesis and albuterol', 'cars or bikes in the desert').
 
 Your task is to analyze the query and return a JSON object:
 {
   "cleanSearchPhrase": "clean search terms with conversational filler and UI commands completely removed",
-  "coreSubject": "concise 1-3 word primary entity, subject, or action (e.g. 'ronaldo', 'boy made it', 'albuterol')",
-  "aliases": ["variations, slang spellings, phonetic equivalents, or alternate forms (e.g. for 'boy': include 'boi', for 'our boy made it': include 'our boi made it', 'boi made it', 'boy made it')"],
+  "targetEntity": "the specific primary subject, entity, person, drug, object, or concept being queried (e.g. 'levodopa', 'ronaldo', 'albuterol', 'car', 'boy made it')",
+  "aspect": "optional aspect, property, or action requested for the entity (e.g. 'mechanism of action', 'symptoms', 'celebration', 'tire change') or empty string if none",
+  "coreSubject": "concise 1-3 word primary entity or subject (e.g. 'levodopa', 'ronaldo', 'boy made it', 'albuterol')",
+  "aliases": ["variations, slang spellings, phonetic equivalents, or alternate forms (e.g. for 'boy': include 'boi', for 'our boy made it': include 'our boi made it', 'boi made it', 'boy made it'; for 'levodopa': include 'l-dopa')"],
   "isCompound": boolean,
   "subQueries": [
     {
@@ -514,11 +518,12 @@ Your task is to analyze the query and return a JSON object:
 }
 
 Rules:
-1. Strip all conversational fluff: 'find me a clip where', 'show me', 'search for', 'from my library', 'i want the exact timestamps', 'can you find', 'video of', 'clip of', 'i want to see'.
-2. If the user mentions words with common slang, phonetic, or social media spellings (such as 'boy' <-> 'boi', 'made it', 'homie' <-> 'homey'), ALWAYS generate those variants in "aliases".
-3. If the query asks for MULTIPLE distinct topics or entities that could exist in separate videos (e.g. "denovo synthesis and albuterol", "ronaldo and messi", "compare X and Y"), set "isCompound": true and provide each in "subQueries". If there is shared context, distribute it.
-4. If the query is a single concept or entity, set "isCompound": false and provide 1 item in "subQueries".
-5. Return strictly valid JSON only.
+1. Always identify the 'targetEntity' clearly. When a query pairs a specific entity with a generic category or aspect (e.g. 'mechanism of action of levodopa', 'synthesis of dopamine', 'history of rome'), the specific noun/entity ('levodopa', 'dopamine', 'rome') MUST be the 'targetEntity', NOT the generic category ('mechanism', 'synthesis', 'history').
+2. Strip all conversational fluff: 'find me a clip where', 'show me', 'search for', 'from my library', 'i want the exact timestamps', 'can you find', 'video of', 'clip of', 'i want to see'.
+3. If the user mentions words with common slang, phonetic, or social media spellings (such as 'boy' <-> 'boi', 'made it', 'homie' <-> 'homey') or scientific/medical synonyms/abbreviations (such as 'levodopa' <-> 'l-dopa'), ALWAYS generate those variants in "aliases".
+4. If the query asks for MULTIPLE distinct topics or entities that could exist in separate videos (e.g. "denovo synthesis and albuterol", "ronaldo and messi", "compare X and Y"), set "isCompound": true and provide each in "subQueries". If there is shared context, distribute it.
+5. If the query is a single concept or entity, set "isCompound": false and provide 1 item in "subQueries".
+6. Return strictly valid JSON only.
 
 User Query: "${rawQuery.replace(/"/g, '\\"')}"`;
 
@@ -526,7 +531,9 @@ User Query: "${rawQuery.replace(/"/g, '\\"')}"`;
       const result = await this.generateContent('query_understanding', [prompt]);
       const parsed = this.parseJson<any>(result.text || '{}');
       const cleanSearchPhrase = String(parsed.cleanSearchPhrase || rawQuery).trim();
-      const coreSubject = String(parsed.coreSubject || cleanSearchPhrase || rawQuery).trim();
+      const targetEntity = parsed.targetEntity ? String(parsed.targetEntity).trim() : undefined;
+      const aspect = parsed.aspect ? String(parsed.aspect).trim() : undefined;
+      const coreSubject = String(targetEntity || parsed.coreSubject || cleanSearchPhrase || rawQuery).trim();
       const aliases = Array.isArray(parsed.aliases)
         ? parsed.aliases.map((a: any) => String(a).trim()).filter(Boolean)
         : [];
@@ -542,6 +549,8 @@ User Query: "${rawQuery.replace(/"/g, '\\"')}"`;
         rawQuery,
         cleanSearchPhrase: cleanSearchPhrase || rawQuery,
         coreSubject: coreSubject || cleanSearchPhrase || rawQuery,
+        targetEntity: targetEntity || coreSubject || cleanSearchPhrase || rawQuery,
+        aspect,
         aliases,
         isCompound,
         subQueries,
@@ -552,6 +561,8 @@ User Query: "${rawQuery.replace(/"/g, '\\"')}"`;
         rawQuery,
         cleanSearchPhrase: rawQuery,
         coreSubject: rawQuery,
+        targetEntity: undefined,
+        aspect: undefined,
         aliases: [],
         isCompound: false,
         subQueries: [{ topic: rawQuery, searchPhrase: rawQuery }],

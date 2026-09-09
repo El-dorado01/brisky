@@ -112,7 +112,7 @@ export function detectQueryIntent(raw: string): QueryIntent {
   return 'mixed';
 }
 
-export function parseSearchQuery(raw: string): ParsedSearchQuery {
+export function parseSearchQuery(raw: string, overrideTargetEntity?: string): ParsedSearchQuery {
   let working = raw.trim();
   const intent = detectQueryIntent(working);
   const phrases: string[] = [];
@@ -176,11 +176,25 @@ export function parseSearchQuery(raw: string): ParsedSearchQuery {
 
   let primaryModifier: string | null = null;
   let headTerm: string | null = null;
-  if (contentTerms.length >= 2) {
-    primaryModifier = contentTerms[0];
-    headTerm = contentTerms[contentTerms.length - 1];
-  } else if (contentTerms.length === 1) {
-    primaryModifier = contentTerms[0];
+
+  if (overrideTargetEntity && overrideTargetEntity.trim()) {
+    const cleanTarget = normalizeSpeech(overrideTargetEntity).trim();
+    if (cleanTarget) {
+      const targetWords = cleanTarget.split(/\s+/).filter((w) => !STOP.has(w));
+      if (targetWords.length > 0) {
+        // If targetEntity is provided by AI understanding (e.g. 'levodopa', 'ronaldo', 'boy made it'),
+        // the defining modifier is the target entity
+        primaryModifier = targetWords[targetWords.length - 1];
+        headTerm = targetWords[0];
+      }
+    }
+  }
+
+  if (!primaryModifier && contentTerms.length > 0) {
+    // Pure algorithmic fallback without hardcoded word sets:
+    // In English noun phrases, the head noun / primary entity is typically the last or first content term
+    primaryModifier = contentTerms[contentTerms.length - 1];
+    headTerm = contentTerms[0];
   }
 
   return {
