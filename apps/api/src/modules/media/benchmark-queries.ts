@@ -250,3 +250,237 @@ export function getBenchmarkQueries(
 
   return [...spoken, ...visual, ...mixed];
 }
+
+export interface LibraryBenchmarkQuery {
+  id: string;
+  type: 'spoken' | 'visual' | 'mixed' | 'negative';
+  query: string;
+  description: string;
+  expectedAssetSubstrings?: string[];
+  isNegativeControl?: boolean;
+}
+
+export const LIBRARY_BENCHMARK_30: LibraryBenchmarkQuery[] = [
+  // --- 10 Spoken Queries ---
+  {
+    id: 'LIB-SPK-01',
+    type: 'spoken',
+    query: 'happy new year',
+    description: 'Post-match press conference dialogue',
+    expectedAssetSubstrings: ['10-over-10'],
+  },
+  {
+    id: 'LIB-SPK-02',
+    type: 'spoken',
+    query: 'my time has come',
+    description: 'Master Oogway parting dialogue',
+    expectedAssetSubstrings: ['you-must-continue-your-journey'],
+  },
+  {
+    id: 'LIB-SPK-03',
+    type: 'spoken',
+    query: 'continue your journey without me',
+    description: 'Master Oogway speech to Po',
+    expectedAssetSubstrings: ['you-must-continue-your-journey'],
+  },
+  {
+    id: 'LIB-SPK-04',
+    type: 'spoken',
+    query: 'lock the door',
+    description: 'Football coach emotional speech',
+    expectedAssetSubstrings: ['go-lock-the-door'],
+  },
+  {
+    id: 'LIB-SPK-05',
+    type: 'spoken',
+    query: 'mechanism of action of opioids',
+    description: 'Opioids pharmacology lecture cue',
+    expectedAssetSubstrings: ['OPIOIDS'],
+  },
+  {
+    id: 'LIB-SPK-06',
+    type: 'spoken',
+    query: 'selective serotonin reuptake inhibitors',
+    description: 'SSRIs antidepressant dialogue',
+    expectedAssetSubstrings: ['ANTIDEPRESSANTS'],
+  },
+  {
+    id: 'LIB-SPK-07',
+    type: 'spoken',
+    query: 'proton pump inhibitors',
+    description: 'GI pharmacology lecture',
+    expectedAssetSubstrings: ['GASTROINTESTINAL'],
+  },
+  {
+    id: 'LIB-SPK-08',
+    type: 'spoken',
+    query: 'beta blockers reduce heart rate',
+    description: 'Adrenergic antagonists lecture',
+    expectedAssetSubstrings: ['ALPHA _ BETA BLOCKERS', 'ANTIARRHYTHMIC'],
+  },
+  {
+    id: 'LIB-SPK-09',
+    type: 'spoken',
+    query: 'dopamine replacement therapy',
+    description: 'Parkinson disease treatment lecture',
+    expectedAssetSubstrings: ['PARKINSON'],
+  },
+  {
+    id: 'LIB-SPK-10',
+    type: 'spoken',
+    query: 'insulin secretion from beta cells',
+    description: 'Diabetes lecture cue',
+    expectedAssetSubstrings: ['DIABETES'],
+  },
+
+  // --- 10 Visual Queries ---
+  {
+    id: 'LIB-VIS-01',
+    type: 'visual',
+    query: 'turtle character looking at cherry blossoms',
+    description: 'Animation scene with peach blossoms and turtle',
+    expectedAssetSubstrings: ['you-must-continue-your-journey'],
+  },
+  {
+    id: 'LIB-VIS-02',
+    type: 'visual',
+    query: 'Cristiano Ronaldo looking serious',
+    description: 'Football player close-up interview',
+    expectedAssetSubstrings: ['10-over-10'],
+  },
+  {
+    id: 'LIB-VIS-03',
+    type: 'visual',
+    query: 'Jamie Carragher studio analysis',
+    description: 'Pundit commentary on screen',
+    expectedAssetSubstrings: ['10-over-10'],
+  },
+  {
+    id: 'LIB-VIS-04',
+    type: 'visual',
+    query: 'chemical structure diagram on blackboard',
+    description: 'Hand-drawn pharmacological chemical molecules',
+    expectedAssetSubstrings: ['Pharmacology'],
+  },
+  {
+    id: 'LIB-VIS-05',
+    type: 'visual',
+    query: 'hand-drawn cell membrane receptor',
+    description: 'Receptor binding diagrams in pharmacodynamics',
+    expectedAssetSubstrings: ['PHARMACODYNAMICS'],
+  },
+  {
+    id: 'LIB-VIS-06',
+    type: 'visual',
+    query: 'heart diagram showing left ventricle',
+    description: 'Cardiovascular anatomical drawing',
+    expectedAssetSubstrings: ['HEART FAILURE', 'HYPERTENSION'],
+  },
+  {
+    id: 'LIB-VIS-07',
+    type: 'visual',
+    query: 'table of drug classifications and dosages',
+    description: 'Classification tabular slides',
+    expectedAssetSubstrings: ['Pharmacology'],
+  },
+  {
+    id: 'LIB-VIS-08',
+    type: 'visual',
+    query: 'animation of neuron synaptic cleft',
+    description: 'Neurotransmission visual diagram',
+    expectedAssetSubstrings: ['ANTIDEPRESSANTS', 'BENZODIAZEPINES', 'AUTONOMIC'],
+  },
+  {
+    id: 'LIB-VIS-09',
+    type: 'visual',
+    query: 'kidney nephron filtration diagram',
+    description: 'Renal physiology and diuretic targets',
+    expectedAssetSubstrings: ['DIURETICS'],
+  },
+  {
+    id: 'LIB-VIS-10',
+    type: 'visual',
+    query: 'man speaking at press conference podium with microphone',
+    description: 'Sports press conference setting',
+    expectedAssetSubstrings: ['10-over-10'],
+  },
+
+  // --- 5 Mixed Multi-Modal Queries ---
+  {
+    id: 'LIB-MIX-01',
+    type: 'mixed',
+    query: 'turtle saying goodbye and fading away',
+    description: 'Visual transition plus farewell cue',
+    expectedAssetSubstrings: ['you-must-continue-your-journey'],
+  },
+  {
+    id: 'LIB-MIX-02',
+    type: 'mixed',
+    query: 'Pep Guardiola saying he is happy',
+    description: 'Visual face match + spoken quote',
+    expectedAssetSubstrings: ['10-over-10'],
+  },
+  {
+    id: 'LIB-MIX-03',
+    type: 'mixed',
+    query: 'diagram showing blood pressure and speaker explaining ACE inhibitors',
+    description: 'Cardiovascular visuals + antihypertensive speech',
+    expectedAssetSubstrings: ['HYPERTENSION'],
+  },
+  {
+    id: 'LIB-MIX-04',
+    type: 'mixed',
+    query: 'chemical structure slide with speaker explaining NSAID stomach ulcers',
+    description: 'NSAID visual mechanism + gastric side effects',
+    expectedAssetSubstrings: ['NSAIDs'],
+  },
+  {
+    id: 'LIB-MIX-05',
+    type: 'mixed',
+    query: 'football manager emotional tears in locker room',
+    description: 'Emotional sports footage + voice',
+    expectedAssetSubstrings: ['10-over-10', 'go-lock-the-door'],
+  },
+
+  // --- 5 Negative Control / Modifier Trap Queries ---
+  {
+    id: 'LIB-NEG-01',
+    type: 'negative',
+    query: 'find me a respiratory pharmacology clip',
+    description: 'Modifier trap: Pharmacology corpus exists, but respiratory modifier is absent',
+    isNegativeControl: true,
+  },
+  {
+    id: 'LIB-NEG-02',
+    type: 'negative',
+    query: 'pediatric neurology seizure disorders',
+    description: 'Modifier trap: Generic medical terms exist, but pediatric neurology is absent',
+    isNegativeControl: true,
+  },
+  {
+    id: 'LIB-NEG-03',
+    type: 'negative',
+    query: 'underwater submarine torpedo launch',
+    description: 'Out-of-domain negative control: Naval warfare absent from library',
+    isNegativeControl: true,
+  },
+  {
+    id: 'LIB-NEG-04',
+    type: 'negative',
+    query: 'space rocket launch to mars',
+    description: 'Out-of-domain negative control: Aerospace absent from library',
+    isNegativeControl: true,
+  },
+  {
+    id: 'LIB-NEG-05',
+    type: 'negative',
+    query: 'formula 1 car pit stop tire change',
+    description: 'Out-of-domain negative control: F1 motor racing absent from library',
+    isNegativeControl: true,
+  },
+];
+
+export function getLibraryBenchmarkQueries(): LibraryBenchmarkQuery[] {
+  return LIBRARY_BENCHMARK_30;
+}
+

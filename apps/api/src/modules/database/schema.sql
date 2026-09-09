@@ -177,4 +177,47 @@ CREATE INDEX IF NOT EXISTS idx_segments_embedding_384_hnsw ON media_segments
 USING hnsw (embedding_384 vector_cosine_ops) 
 WITH (m = 16, ef_construction = 64);
 
+-- Relevance feedback on search results ('this is the moment' / 'wrong')
+CREATE TABLE IF NOT EXISTS search_feedback (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  query TEXT NOT NULL,
+  asset_id VARCHAR(64) NOT NULL REFERENCES media_assets(id) ON DELETE CASCADE,
+  segment_id VARCHAR(64),
+  timestamp_sec DOUBLE PRECISION,
+  feedback VARCHAR(16) NOT NULL,
+  notes TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_search_feedback_user ON search_feedback(user_id);
+CREATE INDEX IF NOT EXISTS idx_search_feedback_query ON search_feedback(query);
+
+-- Stage-2 Deep Verification cache
+CREATE TABLE IF NOT EXISTS verified_queries (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  query_hash VARCHAR(64) NOT NULL,
+  asset_id VARCHAR(64) NOT NULL REFERENCES media_assets(id) ON DELETE CASCADE,
+  segment_id VARCHAR(64) NOT NULL,
+  is_verified BOOLEAN NOT NULL DEFAULT false,
+  confidence DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+  exact_timestamp DOUBLE PRECISION,
+  explanation TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  CONSTRAINT uq_verified_query_segment UNIQUE (query_hash, segment_id)
+);
+CREATE INDEX IF NOT EXISTS idx_verified_queries_hash ON verified_queries(query_hash);
+
+-- AI Query Understanding Cache (Sub-cent search intent & alias cache)
+CREATE TABLE IF NOT EXISTS query_understanding_cache (
+  query_hash VARCHAR(64) PRIMARY KEY,
+  raw_query TEXT NOT NULL,
+  clean_search_phrase TEXT NOT NULL,
+  core_subject TEXT NOT NULL,
+  aliases TEXT[] NOT NULL DEFAULT '{}',
+  is_compound BOOLEAN NOT NULL DEFAULT false,
+  sub_queries JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_query_understanding_hash ON query_understanding_cache(query_hash);
+
 

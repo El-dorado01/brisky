@@ -6,7 +6,10 @@ import {
   BenchmarkItem,
   IndexingJobItem,
   IndexingStats,
+  LibraryBenchmarkSummary,
   SearchHit,
+  SearchMeta,
+  UnitEconomicsSummary,
   UserProfile,
 } from './types';
 import { usePoller } from './hooks/usePoller';
@@ -38,8 +41,12 @@ export default function App() {
   const [hasSearched, setHasSearched] = useState<boolean>(false);
   const [lastQuery, setLastQuery] = useState<string>('');
   const [hasExactMatch, setHasExactMatch] = useState<boolean>(true);
+  const [searchMeta, setSearchMeta] = useState<SearchMeta | null>(null);
   const [benchmarks, setBenchmarks] = useState<BenchmarkItem[]>([]);
   const [runningBenchmark, setRunningBenchmark] = useState<boolean>(false);
+  const [librarySummary, setLibrarySummary] = useState<LibraryBenchmarkSummary | null>(null);
+  const [runningLibraryBenchmark, setRunningLibraryBenchmark] = useState<boolean>(false);
+  const [unitEconomics, setUnitEconomics] = useState<UnitEconomicsSummary | null>(null);
   const [activeTab, setActiveTab] = useState<ActiveTab>('search');
   const [jobs, setJobs] = useState<IndexingJobItem[]>([]);
   const [artifacts, setArtifacts] = useState<Record<string, unknown> | null>(null);
@@ -129,6 +136,18 @@ export default function App() {
     }
   }, [authFetch]);
 
+  const fetchEconomics = useCallback(async () => {
+    try {
+      const res = await authFetch('/api/v1/media/economics');
+      if (res.ok) {
+        const data: UnitEconomicsSummary = await res.json();
+        setUnitEconomics(data);
+      }
+    } catch (err) {
+      console.error('Failed to load unit economics', err);
+    }
+  }, [authFetch]);
+
   // Initial user fetch & refresh
   useEffect(() => {
     if (!token) {
@@ -148,7 +167,8 @@ export default function App() {
     fetchAssets();
     fetchStats();
     fetchJobs();
-  }, [token, authFetch, fetchAssets, fetchStats, fetchJobs]);
+    fetchEconomics();
+  }, [token, authFetch, fetchAssets, fetchStats, fetchJobs, fetchEconomics]);
 
   const selected = assets.find((a) => a.assetId === selectedAssetId);
   const isBusy = assets.some((a) => a.status === 'queued' || a.status === 'processing');
@@ -208,6 +228,13 @@ export default function App() {
         const data = await res.json();
         setResults(data.results || []);
         setHasExactMatch(data.hasExactMatch ?? true);
+        setSearchMeta({
+          hasExactMatch: data.hasExactMatch ?? true,
+          queryIntent: data.queryIntent,
+          primaryModifier: data.primaryModifier,
+          missingTerms: data.missingTerms,
+          explanation: data.explanation,
+        });
       }
     } catch (err) {
       console.error(err);
@@ -323,6 +350,45 @@ export default function App() {
     }
   };
 
+  const handleRunLibraryBenchmark = async () => {
+    setRunningLibraryBenchmark(true);
+    try {
+      const res = await authFetch('/api/v1/media/benchmark/library', { method: 'POST' });
+      if (res.ok) {
+        const data: LibraryBenchmarkSummary = await res.json();
+        setLibrarySummary(data);
+      }
+    } catch (err) {
+      console.error('Failed to run library benchmark', err);
+    } finally {
+      setRunningLibraryBenchmark(false);
+    }
+  };
+
+  const handleFeedback = async (
+    assetId: string,
+    segmentId: string,
+    timestampSec: number,
+    feedback: 'positive' | 'negative',
+  ) => {
+    try {
+      await authFetch('/api/v1/media/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: lastQuery || query,
+          assetId,
+          segmentId,
+          timestampSec,
+          feedback,
+        }),
+      });
+      fetchEconomics();
+    } catch (err) {
+      console.error('Failed to submit search feedback', err);
+    }
+  };
+
   const handleDeleteOriginal = async () => {
     if (!selectedAssetId) return;
     if (!confirm('Simulate "kept the intelligence, not the tape": Delete master upload bytes?')) return;
@@ -409,7 +475,7 @@ export default function App() {
               }`}
             >
               <Sparkles className="w-4 h-4" />
-              8-Query Benchmark
+              Benchmark Suite
             </button>
             <button
               onClick={() => setActiveTab('artifacts')}
@@ -443,20 +509,25 @@ export default function App() {
               hasSearched={hasSearched}
               lastQuery={lastQuery}
               hasExactMatch={hasExactMatch}
+              searchMeta={searchMeta}
               results={results}
               token={token}
               artifacts={artifacts}
               onSearch={handleSearch}
               onSelectMoment={handleSelectMoment}
+              onFeedback={handleFeedback}
             />
           )}
 
           {activeTab === 'benchmark' && (
             <BenchmarkTab
               benchmarks={benchmarks}
+              librarySummary={librarySummary}
               runningBenchmark={runningBenchmark}
+              runningLibraryBenchmark={runningLibraryBenchmark}
               selectedAssetId={selectedAssetId}
               onRunBenchmark={handleRunBenchmark}
+              onRunLibraryBenchmark={handleRunLibraryBenchmark}
             />
           )}
 
@@ -465,8 +536,12 @@ export default function App() {
           {activeTab === 'observability' && (
             <ObservabilityTab
               jobs={jobs}
+              economics={unitEconomics}
               retryingId={retryingId}
-              onRefresh={fetchJobs}
+              onRefresh={() => {
+                fetchJobs();
+                fetchEconomics();
+              }}
               onRetry={handleRetry}
             />
           )}

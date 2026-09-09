@@ -59,6 +59,17 @@ export interface SearchHit {
   whyPicked?: string;
   queryRelation?: string;
   subTopic?: string;
+  stage2Verified?: boolean;
+  verificationConfidence?: number;
+  verificationExplanation?: string;
+}
+
+export interface SearchMeta {
+  hasExactMatch: boolean;
+  queryIntent?: 'spoken' | 'visual' | 'mixed';
+  primaryModifier?: string | null;
+  missingTerms?: string[];
+  explanation?: string;
 }
 
 export interface BenchmarkItem {
@@ -73,6 +84,52 @@ export interface BenchmarkItem {
   winningPath: string;
   score: number;
   latencyMs: number;
+}
+
+export interface LibraryBenchmarkItem extends BenchmarkItem {
+  verdict: 'pass' | 'fail';
+  isNegativeControl?: boolean;
+  stage2Verified?: boolean;
+  verificationConfidence?: number;
+  matchedAsset?: string;
+  explanation?: string;
+}
+
+export interface LibraryBenchmarkSummary {
+  totalQueries: number;
+  recallAt5: number;
+  medianTimestampErrorSec: number;
+  p50LatencyMs: number;
+  p95LatencyMs: number;
+  modalityBreakdown: {
+    spokenPassRate: number;
+    visualPassRate: number;
+    mixedPassRate: number;
+    negativeControlPassRate: number;
+  };
+  stage2VerificationCount: number;
+  results: LibraryBenchmarkItem[];
+}
+
+export interface UnitEconomicsSummary {
+  stage1Ingestion: {
+    totalCostUsd: number;
+    totalSourceMinutes: number;
+    costPerSourceMinuteUsd: number;
+    totalAssetsIndexed: number;
+    totalFramesAnalyzed: number;
+  };
+  stage2Verification: {
+    totalQueriesVerified: number;
+    estimatedCostUsd: number;
+    costPerQueryUsd: number;
+    cacheHitRate: number;
+  };
+  searchFeedback: {
+    positiveCount: number;
+    negativeCount: number;
+    positiveRatio: number;
+  };
 }
 
 export interface IndexingJobItem {

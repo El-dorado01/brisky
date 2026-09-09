@@ -12,7 +12,7 @@ import {
   SceneBoundary,
   TranscriptCue,
 } from './pipeline.types';
-import { QueryDecomposition } from '../media/media.types';
+import { QueryDecomposition, UnderstoodQuery } from '../media/media.types';
 
 interface GenerateResult {
   text: string;
@@ -124,7 +124,7 @@ export class GeminiIntelligenceService {
     const primary = this.getPrimaryModel();
     const extra = this.configService.get<string>(
       'GEMINI_FALLBACK_MODELS',
-      'gemini-3.1-flash-lite,gemini-2.5-flash',
+      'gemini-3.6-flash,gemini-3.5-flash',
     );
     const legacy = this.configService.get<string>('GEMINI_FALLBACK_MODEL', '');
     const names = [primary, ...extra.split(','), legacy]
@@ -484,61 +484,144 @@ Use the provided timestamps. JSON only.`,
     } finally {
       release();
     }
-  }
-
-  async decomposeQuery(rawQuery: string): Promise<QueryDecomposition> {
+  }  async understandQuery(rawQuery: string): Promise<UnderstoodQuery> {
     if (!this.isConfigured()) {
       return {
+        rawQuery,
+        cleanSearchPhrase: rawQuery,
+        coreSubject: rawQuery,
+        aliases: [],
         isCompound: false,
         subQueries: [{ topic: rawQuery, searchPhrase: rawQuery }],
       };
     }
 
-    const prompt = `You are an AI query understanding engine for video search across a user's entire video library.
-Analyze the user's search query and determine if it represents a compound search asking for multiple distinct topics or entities (e.g. "find X and Y in my gallery", "either X or Y", "videos of X as well as Y", "X, Y in my gallery").
+    const prompt = `You are an intelligent search query understanding engine for a personal video & media gallery.
+The user searches using natural speech, conversational commands (e.g. 'find me a clip where ronaldo is from my library, i want the exact timestamps', 'show me where', 'clip of'), informal slang/phonetic spellings (e.g. 'boy' vs 'boi', 'dawg' vs 'dog', 'cuz', 'gonna'), or compound multi-topic queries (e.g. 'denovo synthesis and albuterol', 'cars or bikes in the desert').
 
-Rules:
-1. If the query asks for MULTIPLE distinct topics or entities that could exist in separate videos (e.g. "denovo synthesis and albuterol", "cars or bikes racing in the desert", "machine learning and cardiac surgery"), set "isCompound": true.
-2. When "isCompound" is true:
-   - Extract each distinct sub-query into "subQueries".
-   - If there is shared context (e.g. "cars or bikes racing in the desert"), distribute the shared context to both ("cars racing in the desert", "bikes racing in the desert").
-   - For each sub-query, provide "topic" (concise topic name) and "searchPhrase" (optimized natural search phrase).
-3. If the query is a SINGLE cohesive concept, topic, or a single continuous action (e.g. "doctor examining a patient and prescribing medicine", "expansion plans", "respiratory pharmacology", "neuromuscular junction diagram"), set "isCompound": false with 1 item in "subQueries".
-
-Respond with valid JSON:
+Your task is to analyze the query and return a JSON object:
 {
+  "cleanSearchPhrase": "clean search terms with conversational filler and UI commands completely removed",
+  "coreSubject": "concise 1-3 word primary entity, subject, or action (e.g. 'ronaldo', 'boy made it', 'albuterol')",
+  "aliases": ["variations, slang spellings, phonetic equivalents, or alternate forms (e.g. for 'boy': include 'boi', for 'our boy made it': include 'our boi made it', 'boi made it', 'boy made it')"],
   "isCompound": boolean,
   "subQueries": [
     {
-      "topic": string,
-      "searchPhrase": string
+      "topic": "topic name",
+      "searchPhrase": "clean search phrase for this sub-query"
     }
   ]
 }
 
-User query: "${rawQuery.replace(/"/g, '\\"')}"`;
+Rules:
+1. Strip all conversational fluff: 'find me a clip where', 'show me', 'search for', 'from my library', 'i want the exact timestamps', 'can you find', 'video of', 'clip of', 'i want to see'.
+2. If the user mentions words with common slang, phonetic, or social media spellings (such as 'boy' <-> 'boi', 'made it', 'homie' <-> 'homey'), ALWAYS generate those variants in "aliases".
+3. If the query asks for MULTIPLE distinct topics or entities that could exist in separate videos (e.g. "denovo synthesis and albuterol", "ronaldo and messi", "compare X and Y"), set "isCompound": true and provide each in "subQueries". If there is shared context, distribute it.
+4. If the query is a single concept or entity, set "isCompound": false and provide 1 item in "subQueries".
+5. Return strictly valid JSON only.
+
+User Query: "${rawQuery.replace(/"/g, '\\"')}"`;
 
     try {
-      const result = await this.generateContent('query_decomposition', [prompt]);
-      const parsed = JSON.parse(result.text || '{}');
-      if (Array.isArray(parsed.subQueries) && parsed.subQueries.length > 0) {
-        const isCompound = Boolean(parsed.isCompound && parsed.subQueries.length > 1);
-        return {
-          isCompound,
-          subQueries: parsed.subQueries.map((sq: any) => ({
-            topic: String(sq.topic || sq.searchPhrase || rawQuery).trim(),
-            searchPhrase: String(sq.searchPhrase || sq.topic || rawQuery).trim(),
-          })),
-        };
-      }
+      const result = await this.generateContent('query_understanding', [prompt]);
+      const parsed = this.parseJson<any>(result.text || '{}');
+      const cleanSearchPhrase = String(parsed.cleanSearchPhrase || rawQuery).trim();
+      const coreSubject = String(parsed.coreSubject || cleanSearchPhrase || rawQuery).trim();
+      const aliases = Array.isArray(parsed.aliases)
+        ? parsed.aliases.map((a: any) => String(a).trim()).filter(Boolean)
+        : [];
+      const isCompound = Boolean(parsed.isCompound && Array.isArray(parsed.subQueries) && parsed.subQueries.length > 1);
+      const subQueries = Array.isArray(parsed.subQueries) && parsed.subQueries.length > 0
+        ? parsed.subQueries.map((sq: any) => ({
+            topic: String(sq.topic || sq.searchPhrase || cleanSearchPhrase).trim(),
+            searchPhrase: String(sq.searchPhrase || sq.topic || cleanSearchPhrase).trim(),
+          })).filter((sq: any) => sq.searchPhrase.length > 0)
+        : [{ topic: cleanSearchPhrase, searchPhrase: cleanSearchPhrase }];
+
+      return {
+        rawQuery,
+        cleanSearchPhrase: cleanSearchPhrase || rawQuery,
+        coreSubject: coreSubject || cleanSearchPhrase || rawQuery,
+        aliases,
+        isCompound,
+        subQueries,
+      };
     } catch (err) {
-      this.logger.warn(`Query decomposition fallback to single query: ${err}`);
+      this.logger.warn(`Query understanding fallback to raw query: ${err instanceof Error ? err.message : err}`);
+      return {
+        rawQuery,
+        cleanSearchPhrase: rawQuery,
+        coreSubject: rawQuery,
+        aliases: [],
+        isCompound: false,
+        subQueries: [{ topic: rawQuery, searchPhrase: rawQuery }],
+      };
+    }
+  }
+
+  async decomposeQuery(rawQuery: string): Promise<QueryDecomposition> {
+    const understood = await this.understandQuery(rawQuery);
+    return {
+      isCompound: understood.isCompound,
+      subQueries: understood.subQueries,
+    };
+  }
+
+  async verifyCandidate(
+    framePaths: string[],
+    query: string,
+    transcriptSnippet?: string,
+  ): Promise<{ matched: boolean; confidence: number; explanation: string; usage?: ModelUsage }> {
+    if (!this.isConfigured() || framePaths.length === 0) {
+      return { matched: false, confidence: 0, explanation: 'Gemini not configured or frames missing' };
     }
 
-    return {
-      isCompound: false,
-      subQueries: [{ topic: rawQuery, searchPhrase: rawQuery }],
-    };
+    const existingFrames = framePaths.filter((p) => p && fs.existsSync(p));
+    if (existingFrames.length === 0) {
+      return { matched: false, confidence: 0, explanation: 'Keyframe files missing on disk' };
+    }
+
+    const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [
+      {
+        text: `You are an expert forensic video retrieval verifier.
+User query: "${query}"
+Scene transcript context: "${transcriptSnippet || 'N/A'}"
+
+Attached are representative keyframes from this candidate scene.
+Evaluate whether this scene DIRECTLY depicts or discusses what the user searched for.
+Special instruction: If the user search includes a specific qualifier or modifier (e.g. "respiratory", "red", "driving", "goal"), verify that this specific modifier is actually depicted or discussed. Do not approve scenes that only share a generic category term.
+
+Return JSON only:
+{
+  "matched": true | false,
+  "confidence": <number between 0.00 and 1.00>,
+  "explanation": "<one concise sentence explaining why this matches or does not match the search query>"
+}`,
+      },
+    ];
+
+    for (const framePath of existingFrames.slice(0, 3)) {
+      try {
+        const data = fs.readFileSync(framePath).toString('base64');
+        parts.push({ inlineData: { mimeType: 'image/jpeg', data } });
+      } catch (readErr) {
+        this.logger.warn(`Could not read frame for verification: ${framePath}`);
+      }
+    }
+
+    try {
+      const result = await this.generateContent('stage2_verification', [{ role: 'user', parts }]);
+      const parsed = this.parseJson<{ matched?: boolean; confidence?: number; explanation?: string }>(result.text);
+      return {
+        matched: Boolean(parsed.matched),
+        confidence: Number(parsed.confidence ?? (parsed.matched ? 0.85 : 0.2)),
+        explanation: String(parsed.explanation ?? ''),
+        usage: this.usageFromGenerate('stage2_verification', result),
+      };
+    } catch (err) {
+      this.logger.warn(`Stage-2 verification failed for query "${query}": ${err}`);
+      return { matched: false, confidence: 0, explanation: 'Stage-2 verification error' };
+    }
   }
 
   private emptyUsage(stage: string): ModelUsage {

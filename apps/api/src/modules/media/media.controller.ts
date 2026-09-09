@@ -18,6 +18,8 @@ import { AuthGuard } from '../auth/auth.guard';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { FeedbackPayload } from './media.types';
+
 @Controller('media')
 @UseGuards(AuthGuard)
 export class MediaController {
@@ -129,10 +131,9 @@ export class MediaController {
     @Req() req: any,
   ) {
     const userId = req.user?.id;
-    if (!body?.query) return { query: '', count: 0, results: [], hasExactMatch: false };
-    const results = await this.mediaService.search(body.query, body.assetId, 15, userId);
-    const hasExactMatch = results.some((r) => r.matchQuality === 'direct');
-    return { query: body.query, count: results.length, results, hasExactMatch };
+    if (!body?.query) return { query: '', count: 0, results: [], hasExactMatch: false, queryIntent: 'mixed' };
+    const searchRes = await this.mediaService.searchDetailed(body.query, body.assetId, 15, userId);
+    return { query: body.query, count: searchRes.results.length, ...searchRes };
   }
 
   @Get('search')
@@ -142,10 +143,22 @@ export class MediaController {
     @Req() req: any,
   ) {
     const userId = req.user?.id;
-    if (!q) return { query: '', count: 0, results: [], hasExactMatch: false };
-    const results = await this.mediaService.search(q, assetId, 15, userId);
-    const hasExactMatch = results.some((r) => r.matchQuality === 'direct');
-    return { query: q, count: results.length, results, hasExactMatch };
+    if (!q) return { query: '', count: 0, results: [], hasExactMatch: false, queryIntent: 'mixed' };
+    const searchRes = await this.mediaService.searchDetailed(q, assetId, 15, userId);
+    return { query: q, count: searchRes.results.length, ...searchRes };
+  }
+
+  @Post('feedback')
+  async recordFeedback(
+    @Body() body: FeedbackPayload,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id;
+    if (!body?.query || !body?.assetId || !body?.feedback) {
+      throw new BadRequestException('query, assetId, and feedback are required');
+    }
+    const success = await this.mediaService.saveFeedback(body, userId);
+    return { success };
   }
 
   @Post('benchmark/run/:id')
@@ -160,6 +173,18 @@ export class MediaController {
       accuracyPercentage: results.length ? Math.round((hits / results.length) * 100) : 0,
       results,
     };
+  }
+
+  @Post('benchmark/library')
+  async runLibraryBenchmark(@Req() req: any) {
+    const userId = req.user?.id;
+    return this.mediaService.runLibraryBenchmarkSuite(userId);
+  }
+
+  @Get('economics')
+  async getEconomics(@Req() req: any) {
+    const userId = req.user?.id;
+    return this.mediaService.getUnitEconomics(userId);
   }
 
   @Get(':id/status')

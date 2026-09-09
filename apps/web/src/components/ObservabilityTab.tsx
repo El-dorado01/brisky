@@ -1,9 +1,20 @@
 import React from 'react';
-import { Activity, AlertCircle, Clock, Flame, RefreshCw } from 'lucide-react';
-import { IndexingJobItem, parseJsonSafe } from '../types';
+import {
+  Activity,
+  AlertCircle,
+  Clock,
+  DollarSign,
+  Flame,
+  Layers,
+  RefreshCw,
+  ShieldCheck,
+  ThumbsUp,
+} from 'lucide-react';
+import { IndexingJobItem, UnitEconomicsSummary, parseJsonSafe } from '../types';
 
 interface ObservabilityTabProps {
   jobs: IndexingJobItem[];
+  economics?: UnitEconomicsSummary | null;
   retryingId: string | null;
   onRefresh: () => void;
   onRetry: (assetId: string) => void;
@@ -11,20 +22,22 @@ interface ObservabilityTabProps {
 
 export const ObservabilityTab: React.FC<ObservabilityTabProps> = ({
   jobs,
+  economics,
   retryingId,
   onRefresh,
   onRetry,
 }) => {
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-3.5">
+      {/* Header */}
       <div className="flex items-center justify-between bg-slate-900/70 border border-slate-800 p-3 rounded-xl">
         <div>
           <h4 className="text-xs font-semibold text-white flex items-center gap-1.5">
             <Activity className="w-4 h-4 text-indigo-400" />
-            Queue Observability & Pipeline Telemetry
+            Queue Observability & Unit Economics
           </h4>
           <p className="text-[11px] text-slate-400 mt-0.5">
-            Live BullMQ job state, stage durations, model routing, and error diagnostics.
+            Ingestion costs, Stage-2 search verification spend, and job queue telemetry.
           </p>
         </div>
         <button
@@ -35,12 +48,86 @@ export const ObservabilityTab: React.FC<ObservabilityTabProps> = ({
         </button>
       </div>
 
+      {/* Unit Economics Dashboard Card */}
+      {economics && (
+        <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col gap-3 shadow-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+              <DollarSign className="w-3.5 h-3.5 text-emerald-400" />
+              Unit Economics & Cost Breakdown
+            </span>
+            <span className="text-[10px] bg-indigo-950 text-indigo-300 border border-indigo-800/60 px-2 py-0.5 rounded font-mono">
+              Stage 1 vs Stage 2
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+            {/* Stage 1 Ingestion */}
+            <div className="bg-slate-950/70 border border-slate-800/80 rounded-lg p-2.5 flex flex-col gap-1">
+              <div className="flex items-center gap-1 text-[11px] font-semibold text-slate-300">
+                <Flame className="w-3.5 h-3.5 text-amber-400" />
+                <span>Stage-1 Ingestion</span>
+              </div>
+              <span className="text-base font-bold font-mono text-amber-300">
+                ${economics.stage1Ingestion.totalCostUsd.toFixed(4)}{' '}
+                <span className="text-[10px] font-sans text-slate-500">total</span>
+              </span>
+              <div className="text-[10px] text-slate-400 flex flex-col gap-0.5 mt-1 font-mono">
+                <div>Rate: ${economics.stage1Ingestion.costPerSourceMinuteUsd.toFixed(4)}/min</div>
+                <div>Source: {economics.stage1Ingestion.totalSourceMinutes} mins indexed</div>
+                <div>Frames: {economics.stage1Ingestion.totalFramesAnalyzed} analyzed</div>
+              </div>
+            </div>
+
+            {/* Stage 2 Search Verification */}
+            <div className="bg-slate-950/70 border border-slate-800/80 rounded-lg p-2.5 flex flex-col gap-1">
+              <div className="flex items-center gap-1 text-[11px] font-semibold text-slate-300">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Stage-2 Verification</span>
+              </div>
+              <span className="text-base font-bold font-mono text-emerald-300">
+                ${economics.stage2Verification.estimatedCostUsd.toFixed(4)}{' '}
+                <span className="text-[10px] font-sans text-slate-500">spent</span>
+              </span>
+              <div className="text-[10px] text-slate-400 flex flex-col gap-0.5 mt-1 font-mono">
+                <div>Queries: {economics.stage2Verification.totalQueriesVerified} deep verified</div>
+                <div>Per Query: ~${economics.stage2Verification.costPerQueryUsd.toFixed(5)}</div>
+                <div>Cache Hit Rate: {Math.round(economics.stage2Verification.cacheHitRate * 100)}%</div>
+              </div>
+            </div>
+
+            {/* User Relevance Feedback */}
+            <div className="bg-slate-950/70 border border-slate-800/80 rounded-lg p-2.5 flex flex-col gap-1">
+              <div className="flex items-center gap-1 text-[11px] font-semibold text-slate-300">
+                <ThumbsUp className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Relevance Feedback</span>
+              </div>
+              <span className="text-base font-bold font-mono text-cyan-300">
+                {(economics.searchFeedback.positiveRatio * 100).toFixed(0)}%{' '}
+                <span className="text-[10px] font-sans text-slate-500">satisfaction</span>
+              </span>
+              <div className="text-[10px] text-slate-400 flex flex-col gap-0.5 mt-1 font-mono">
+                <div className="text-emerald-400">👍 Helpful: {economics.searchFeedback.positiveCount}</div>
+                <div className="text-rose-400">👎 Incorrect: {economics.searchFeedback.negativeCount}</div>
+                <div>Total: {economics.searchFeedback.positiveCount + economics.searchFeedback.negativeCount} logged</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Job Queue Header & List */}
+      <div className="text-xs font-semibold text-slate-300 flex items-center gap-1.5 px-1">
+        <Layers className="w-3.5 h-3.5 text-indigo-400" />
+        Pipeline Job Telemetry ({jobs.length})
+      </div>
+
       {jobs.length === 0 ? (
         <div className="p-8 text-center border border-dashed border-slate-800 rounded-xl text-slate-500 text-sm">
           No indexing jobs recorded yet. Upload a video to observe pipeline telemetry.
         </div>
       ) : (
-        <div className="flex flex-col gap-3 max-h-[520px] overflow-y-auto pr-1">
+        <div className="flex flex-col gap-3 max-h-[460px] overflow-y-auto pr-1">
           {jobs.map((job) => {
             const timings = parseJsonSafe<Array<{ stage: string; durationMs: number }>>(
               job.timings,
@@ -132,7 +219,7 @@ export const ObservabilityTab: React.FC<ObservabilityTabProps> = ({
                     </span>
                     <span>•</span>
                     <span>
-                      Model: <strong className="text-slate-200">{job.model || 'gemini-2.5-flash'}</strong>
+                      Model: <strong className="text-slate-200">{job.model || 'gemini-3.5-flash-lite'}</strong>
                     </span>
                   </div>
                   {cost.estimatedUsd !== undefined && (

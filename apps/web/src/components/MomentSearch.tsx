@@ -1,6 +1,20 @@
-import React from 'react';
-import { CheckCircle2, Clock, Film, Play, Search, Sparkles } from 'lucide-react';
-import { SearchHit, dynamicPills, formatTime } from '../types';
+import React, { useState } from 'react';
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Clock,
+  Eye,
+  Film,
+  Layers,
+  Mic,
+  Play,
+  Search,
+  ShieldCheck,
+  Sparkles,
+  ThumbsDown,
+  ThumbsUp,
+} from 'lucide-react';
+import { SearchHit, SearchMeta, dynamicPills, formatTime } from '../types';
 
 interface MomentSearchProps {
   query: string;
@@ -9,11 +23,18 @@ interface MomentSearchProps {
   hasSearched: boolean;
   lastQuery: string;
   hasExactMatch: boolean;
+  searchMeta?: SearchMeta | null;
   results: SearchHit[];
   token: string | null;
   artifacts: Record<string, unknown> | null;
   onSearch: (overrideQuery?: string) => void;
   onSelectMoment: (assetId: string, time: number) => void;
+  onFeedback?: (
+    assetId: string,
+    segmentId: string,
+    timestampSec: number,
+    feedback: 'positive' | 'negative',
+  ) => Promise<void>;
 }
 
 export const MomentSearch: React.FC<MomentSearchProps> = ({
@@ -23,12 +44,33 @@ export const MomentSearch: React.FC<MomentSearchProps> = ({
   hasSearched,
   lastQuery,
   hasExactMatch,
+  searchMeta,
   results,
   token,
   artifacts,
   onSearch,
   onSelectMoment,
+  onFeedback,
 }) => {
+  const [feedbackState, setFeedbackState] = useState<Record<string, 'positive' | 'negative'>>({});
+  const [submittingId, setSubmittingId] = useState<string | null>(null);
+
+  const handleFeedbackClick = async (
+    hit: SearchHit,
+    feedback: 'positive' | 'negative',
+    e: React.MouseEvent,
+  ) => {
+    e.stopPropagation();
+    if (!onFeedback) return;
+    setSubmittingId(hit.segmentId);
+    try {
+      await onFeedback(hit.assetId, hit.segmentId, hit.startTime, feedback);
+      setFeedbackState((prev) => ({ ...prev, [hit.segmentId]: feedback }));
+    } finally {
+      setSubmittingId(null);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-4">
       {/* Search Bar */}
@@ -68,6 +110,37 @@ export const MomentSearch: React.FC<MomentSearchProps> = ({
         ))}
       </div>
 
+      {/* Query Intent & Routing Telemetry Badge */}
+      {hasSearched && searchMeta && (
+        <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs">
+          <div className="flex items-center gap-2 flex-wrap">
+            {searchMeta.queryIntent === 'spoken' && (
+              <span className="flex items-center gap-1 text-[11px] text-cyan-300 bg-cyan-950/70 border border-cyan-800/50 px-2.5 py-0.5 rounded-full font-mono">
+                <Mic className="w-3 h-3 text-cyan-400" />
+                Spoken Intent (Transcript BM25 Router)
+              </span>
+            )}
+            {searchMeta.queryIntent === 'visual' && (
+              <span className="flex items-center gap-1 text-[11px] text-emerald-300 bg-emerald-950/70 border border-emerald-800/50 px-2.5 py-0.5 rounded-full font-mono">
+                <Eye className="w-3 h-3 text-emerald-400" />
+                Visual Intent (OCR & Keyframe Router)
+              </span>
+            )}
+            {searchMeta.queryIntent === 'mixed' && (
+              <span className="flex items-center gap-1 text-[11px] text-purple-300 bg-purple-950/70 border border-purple-800/50 px-2.5 py-0.5 rounded-full font-mono">
+                <Layers className="w-3 h-3 text-purple-400" />
+                Mixed Multi-Modal (Cross-Attention Fusion Router)
+              </span>
+            )}
+            {searchMeta.primaryModifier && (
+              <span className="text-[11px] text-slate-400 font-mono bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                Primary Modifier: <strong className="text-slate-200">&quot;{searchMeta.primaryModifier}&quot;</strong>
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Results List */}
       <div className="flex flex-col gap-2.5 max-h-[500px] overflow-y-auto pr-1">
         {results.length === 0 &&
@@ -78,7 +151,8 @@ export const MomentSearch: React.FC<MomentSearchProps> = ({
                 No matching moments found for &quot;{lastQuery}&quot;
               </p>
               <p className="text-xs text-slate-500 mt-1">
-                None of your videos contain direct mentions or strong semantic matches for this topic.
+                {searchMeta?.explanation ||
+                  'None of your videos contain direct mentions or strong semantic matches for this topic.'}
               </p>
             </div>
           ) : (
@@ -87,15 +161,35 @@ export const MomentSearch: React.FC<MomentSearchProps> = ({
             </div>
           ))}
 
+        {/* Honest Modifier Gating Notice Banner */}
         {results.length > 0 && !hasExactMatch && (
-          <div className="p-2.5 bg-amber-950/30 border border-amber-800/40 rounded-lg flex items-center justify-between text-xs text-amber-300/90">
-            <span>
-              No direct mentions of <strong>&quot;{lastQuery}&quot;</strong> found. Showing related
-              topics:
-            </span>
-            <span className="text-[10px] bg-amber-900/60 px-2 py-0.5 rounded text-amber-200 uppercase tracking-wider font-semibold">
-              Related Topics
-            </span>
+          <div className="p-3 bg-amber-950/40 border border-amber-800/50 rounded-xl flex flex-col gap-1.5 text-xs text-amber-200 shadow-sm">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 font-semibold">
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>No Direct Evidence in Video Library</span>
+              </div>
+              <span className="text-[10px] bg-amber-900/70 border border-amber-700/50 px-2 py-0.5 rounded uppercase font-bold tracking-wider text-amber-300">
+                Related Topics
+              </span>
+            </div>
+            <p className="text-[11px] text-amber-300/85 pl-6">
+              {searchMeta?.explanation ||
+                `None of your indexed videos contain direct evidence of "${lastQuery}". Displaying closest related topics:`}
+            </p>
+            {searchMeta?.missingTerms && searchMeta.missingTerms.length > 0 && (
+              <div className="flex items-center gap-1.5 pl-6 pt-0.5 text-[10px]">
+                <span className="text-amber-400/80">Missing specific terms:</span>
+                {searchMeta.missingTerms.map((term) => (
+                  <span
+                    key={term}
+                    className="bg-amber-900/60 border border-amber-700/50 px-1.5 py-0.5 rounded font-mono text-amber-200"
+                  >
+                    {term}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -103,6 +197,7 @@ export const MomentSearch: React.FC<MomentSearchProps> = ({
           const isRelated = hit.matchQuality === 'related';
           const startFmt = formatTime(hit.startTime);
           const endFmt = formatTime(hit.endTime);
+          const hitFeedback = feedbackState[hit.segmentId];
 
           return (
             <div
@@ -153,6 +248,19 @@ export const MomentSearch: React.FC<MomentSearchProps> = ({
                     )}
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
+                    {/* Stage-2 Deep Verification Badge */}
+                    {hit.stage2Verified && (
+                      <span
+                        className="text-[9px] uppercase font-bold text-emerald-300 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-500/60 flex items-center gap-1 shadow-sm"
+                        title={hit.verificationExplanation || 'Deep VLM verified candidate keyframes'}
+                      >
+                        <ShieldCheck className="w-3 h-3 text-emerald-400" />
+                        Stage-2 Verified
+                        {hit.verificationConfidence !== undefined &&
+                          ` (${Math.round(hit.verificationConfidence * 100)}%)`}
+                      </span>
+                    )}
+
                     {hit.subTopic && (
                       <span
                         className="text-[9px] font-semibold text-cyan-300 bg-cyan-950/70 px-2 py-0.5 rounded border border-cyan-800/50 max-w-[140px] truncate"
@@ -213,6 +321,58 @@ export const MomentSearch: React.FC<MomentSearchProps> = ({
                         hit.description ||
                         `Relevant moment for "${lastQuery}".`}
                     </p>
+                  </div>
+
+                  {/* Stage-2 Verification Explanation snippet if present */}
+                  {hit.verificationExplanation && (
+                    <div className="flex items-start gap-2 pt-2 border-t border-slate-800/60 text-[11px] text-emerald-300/90">
+                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                      <span>
+                        <strong>VLM Verification:</strong> {hit.verificationExplanation}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Relevance Feedback Row */}
+                  <div className="flex items-center justify-between pt-2 border-t border-slate-800/60 mt-0.5">
+                    <span className="text-[10px] text-slate-500">
+                      {hitFeedback ? (
+                        <span className="text-emerald-400 flex items-center gap-1">
+                          <CheckCircle2 className="w-3 h-3" />
+                          Feedback recorded: {hitFeedback === 'positive' ? 'Helpful match' : 'Incorrect moment'}
+                        </span>
+                      ) : (
+                        'Is this the right moment?'
+                      )}
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={(e) => handleFeedbackClick(hit, 'positive', e)}
+                        disabled={submittingId === hit.segmentId || hitFeedback === 'positive'}
+                        className={`text-[11px] px-2 py-0.5 rounded-lg border transition flex items-center gap-1 ${
+                          hitFeedback === 'positive'
+                            ? 'bg-emerald-950/80 border-emerald-600 text-emerald-300 font-semibold'
+                            : 'bg-slate-800/80 hover:bg-slate-800 border-slate-700 text-slate-400 hover:text-emerald-300'
+                        }`}
+                        title="👍 This is the moment"
+                      >
+                        <ThumbsUp className="w-3 h-3" />
+                        <span>Relevant</span>
+                      </button>
+                      <button
+                        onClick={(e) => handleFeedbackClick(hit, 'negative', e)}
+                        disabled={submittingId === hit.segmentId || hitFeedback === 'negative'}
+                        className={`text-[11px] px-2 py-0.5 rounded-lg border transition flex items-center gap-1 ${
+                          hitFeedback === 'negative'
+                            ? 'bg-rose-950/80 border-rose-600 text-rose-300 font-semibold'
+                            : 'bg-slate-800/80 hover:bg-slate-800 border-slate-700 text-slate-400 hover:text-rose-300'
+                        }`}
+                        title="👎 Wrong moment"
+                      >
+                        <ThumbsDown className="w-3 h-3" />
+                        <span>Wrong</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

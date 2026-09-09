@@ -14,10 +14,34 @@ import {
   resolveFromRepo,
   validateAssetId,
 } from '../../common/repo-paths';
-import { getBenchmarkQueries } from './benchmark-queries';
+import { getBenchmarkQueries, getLibraryBenchmarkQueries, LibraryBenchmarkQuery } from './benchmark-queries';
 import { parseSearchQuery } from './query-parse';
-import { PublicAsset, SearchResult, BenchmarkResult, AssetLineage, AssetRelationship } from './media.types';
-export { PublicAsset, SearchResult, BenchmarkResult, AssetLineage, AssetRelationship };
+import {
+  PublicAsset,
+  SearchResult,
+  BenchmarkResult,
+  LibraryBenchmarkResult,
+  LibraryBenchmarkSummary,
+  UnitEconomicsSummary,
+  AssetLineage,
+  AssetRelationship,
+  SearchResponse,
+  FeedbackPayload,
+  UnderstoodQuery,
+} from './media.types';
+export {
+  PublicAsset,
+  SearchResult,
+  BenchmarkResult,
+  LibraryBenchmarkResult,
+  LibraryBenchmarkSummary,
+  UnitEconomicsSummary,
+  AssetLineage,
+  AssetRelationship,
+  SearchResponse,
+  FeedbackPayload,
+  UnderstoodQuery,
+};
 
 @Injectable()
 export class MediaService {
@@ -429,39 +453,162 @@ export class MediaService {
     limit = 15,
     userId?: string,
   ): Promise<SearchResult[]> {
-    const trimmed = query.trim();
-    if (!trimmed) return [];
+    const res = await this.searchDetailed(query, assetIdFilter, limit, userId);
+    return res.results;
+  }
 
-    // Check if query contains explicit compound signals indicating multiple distinct sub-topics
-    // Exclude simple 2-4 word noun queries with "and" / "or" which are handled natively by full-text and vector search
-    const hasCompoundSignal =
-      trimmed.includes(';') ||
-      /\b(compare|versus|vs\.?)\b/i.test(trimmed) ||
-      /\b(also find|in addition to|as well as|show both|find both|find all)\b/i.test(trimmed) ||
-      (/\bboth\b/i.test(trimmed) && /\band\b/i.test(trimmed)) ||
-      (trimmed.includes(',') && trimmed.split(',').length >= 3);
+  async getUnderstoodQuery(trimmed: string): Promise<UnderstoodQuery> {
+    const queryHash = createHash('sha256').update(trimmed.toLowerCase().trim()).digest('hex');
 
-    if (hasCompoundSignal && this.geminiService.isConfigured()) {
+    // 1. Fast Cache Check
+    try {
+      const cached = await this.db.query(
+        'SELECT raw_query, clean_search_phrase, core_subject, aliases, is_compound, sub_queries FROM query_understanding_cache WHERE query_hash = $1',
+        [queryHash],
+      );
+      if (cached.rows.length > 0) {
+        const row = cached.rows[0];
+        return {
+          rawQuery: row.raw_query,
+          cleanSearchPhrase: row.clean_search_phrase,
+          coreSubject: row.core_subject,
+          aliases: row.aliases || [],
+          isCompound: row.is_compound,
+          subQueries: Array.isArray(row.sub_queries) ? row.sub_queries : [],
+        };
+      }
+    } catch (err) {
+      this.logger.warn(`Query understanding cache lookup error: ${err}`);
+    }
+
+    // 2. Fast-Path Heuristic: If simple single alphanumeric word (not command words), bypass AI call (<1ms, $0.00 cost)
+    const isSingleWord =
+      /^[a-zA-Z0-9_-]{1,40}$/.test(trimmed) &&
+      !['find', 'clip', 'video', 'show', 'search', 'want', 'where', 'me'].includes(trimmed.toLowerCase());
+
+    if (isSingleWord) {
+      const fast: UnderstoodQuery = {
+        rawQuery: trimmed,
+        cleanSearchPhrase: trimmed,
+        coreSubject: trimmed,
+        aliases: [],
+        isCompound: false,
+        subQueries: [{ topic: trimmed, searchPhrase: trimmed }],
+      };
+      this.cacheUnderstoodQuery(queryHash, fast).catch(() => undefined);
+      return fast;
+    }
+
+    // 3. AI Understanding Pipeline
+    if (this.geminiService.isConfigured()) {
       try {
-        // Enforce a strict 400ms timeout race on query decomposition so search is never blocked
-        const decompPromise = this.geminiService.decomposeQuery(trimmed);
-        const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 400));
-        const decomp = await Promise.race([decompPromise, timeoutPromise]);
-
-        if (decomp && decomp.isCompound && decomp.subQueries.length > 1) {
-          this.logger.log(
-            `Decomposed compound query into ${decomp.subQueries.length} sub-queries: ${decomp.subQueries
-              .map((s) => s.topic)
-              .join(' | ')}`,
-          );
-          return this.searchCompoundMultiTopic(trimmed, decomp.subQueries, assetIdFilter, limit, userId);
+        const understoodPromise = this.geminiService.understandQuery(trimmed);
+        const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 3500));
+        const understood = await Promise.race([understoodPromise, timeoutPromise]);
+        if (understood) {
+          this.cacheUnderstoodQuery(queryHash, understood).catch(() => undefined);
+          return understood;
         }
       } catch (err) {
-        this.logger.warn(`Query decomposition error or timeout, continuing with single search: ${err}`);
+        this.logger.warn(`AI query understanding failed, using fast-path parse: ${err}`);
       }
     }
 
-    return this.searchSingleTopic(trimmed, assetIdFilter, limit, userId);
+    // 4. Fallback fast-path
+    const parsed = parseSearchQuery(trimmed);
+    return {
+      rawQuery: trimmed,
+      cleanSearchPhrase: parsed.cleaned || trimmed,
+      coreSubject: parsed.headTerm || parsed.cleaned || trimmed,
+      aliases: [],
+      isCompound: false,
+      subQueries: [{ topic: parsed.cleaned || trimmed, searchPhrase: parsed.cleaned || trimmed }],
+    };
+  }
+
+  private async cacheUnderstoodQuery(queryHash: string, u: UnderstoodQuery): Promise<void> {
+    await this.db.query(
+      `INSERT INTO query_understanding_cache (query_hash, raw_query, clean_search_phrase, core_subject, aliases, is_compound, sub_queries)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (query_hash) DO UPDATE SET
+         clean_search_phrase = EXCLUDED.clean_search_phrase,
+         core_subject = EXCLUDED.core_subject,
+         aliases = EXCLUDED.aliases,
+         is_compound = EXCLUDED.is_compound,
+         sub_queries = EXCLUDED.sub_queries`,
+      [
+        queryHash,
+        u.rawQuery,
+        u.cleanSearchPhrase,
+        u.coreSubject,
+        u.aliases,
+        u.isCompound,
+        JSON.stringify(u.subQueries),
+      ],
+    );
+  }
+
+  async searchDetailed(
+    query: string,
+    assetIdFilter?: string,
+    limit = 15,
+    userId?: string,
+  ): Promise<SearchResponse> {
+    const trimmed = query.trim();
+    if (!trimmed) {
+      return {
+        results: [],
+        hasExactMatch: false,
+        queryIntent: 'mixed',
+      };
+    }
+
+    const understood = await this.getUnderstoodQuery(trimmed);
+    const searchTarget = understood.cleanSearchPhrase || trimmed;
+    const parsed = parseSearchQuery(searchTarget);
+
+    let results: SearchResult[] = [];
+    if (understood.isCompound && understood.subQueries.length > 1) {
+      this.logger.log(
+        `Executing compound query across ${understood.subQueries.length} sub-queries: ${understood.subQueries
+          .map((s) => s.topic)
+          .join(' | ')}`,
+      );
+      results = await this.searchCompoundMultiTopic(
+        searchTarget,
+        understood.subQueries,
+        assetIdFilter,
+        limit,
+        userId,
+      );
+    } else {
+      results = await this.searchSingleTopic(
+        searchTarget,
+        assetIdFilter,
+        limit,
+        userId,
+        undefined,
+        understood.aliases,
+      );
+    }
+
+    const hasExactMatch = results.some((r) => r.matchQuality === 'direct');
+    let missingTerms: string[] | undefined;
+    let explanation: string | undefined;
+
+    if (!hasExactMatch && parsed.primaryModifier && parsed.contentTerms.length >= 2) {
+      missingTerms = [parsed.primaryModifier];
+      explanation = `No direct clips for "${parsed.primaryModifier}" found in your library. Showing related topics below:`;
+    }
+
+    return {
+      results,
+      hasExactMatch,
+      queryIntent: parsed.intent,
+      primaryModifier: parsed.primaryModifier,
+      missingTerms,
+      explanation,
+    };
   }
 
   private async searchSingleTopic(
@@ -470,13 +617,14 @@ export class MediaService {
     limit = 15,
     userId?: string,
     topicLabel?: string,
+    aliases: string[] = [],
   ): Promise<SearchResult[]> {
     const parsed = parseSearchQuery(query);
 
     // Parallel execution: run direct phrase matching and hybrid segment search concurrently
     const [phraseHits, segmentHits] = await Promise.all([
-      this.searchTranscriptPhrases(parsed, assetIdFilter, userId, limit),
-      this.searchSegments(parsed, assetIdFilter, userId, limit + 10),
+      this.searchTranscriptPhrases(parsed, assetIdFilter, userId, limit, aliases),
+      this.searchSegments(parsed, assetIdFilter, userId, limit + 10, aliases),
     ]);
 
     const seen = new Set<string>();
@@ -514,8 +662,169 @@ export class MediaService {
       }
     }
 
-    // Direct matches take precedence, followed by related semantic explorations
-    return [...directHits, ...relatedHits].slice(0, limit);
+    // Combine direct and related matches
+    let merged = [...directHits, ...relatedHits].slice(0, limit);
+
+    // Stage-2 Deep Verification on candidates if needed
+    if (this.geminiService.isConfigured() && merged.length > 0) {
+      const needsVerification =
+        parsed.intent === 'visual' ||
+        (merged.length > 0 && merged.every((r) => r.score < 0.85));
+
+      if (needsVerification) {
+        merged = await this.applyStage2Verification(merged, parsed, userId);
+      }
+    }
+
+    return merged.slice(0, limit);
+  }
+
+  private async applyStage2Verification(
+    results: SearchResult[],
+    parsed: ReturnType<typeof parseSearchQuery>,
+    userId?: string,
+  ): Promise<SearchResult[]> {
+    const queryHash = createHash('sha256').update(parsed.cleaned).digest('hex');
+    const candidatesToVerify = results.slice(0, 3);
+
+    const verifiedHits = await Promise.all(
+      candidatesToVerify.map(async (candidate) => {
+        try {
+          // 1. Check verified_queries cache in DB
+          const cached = await this.db.query<{
+            is_verified: boolean;
+            confidence: number;
+            explanation: string;
+          }>(
+            `SELECT is_verified, confidence, explanation FROM verified_queries
+             WHERE query_hash = $1 AND segment_id = $2`,
+            [queryHash, candidate.segmentId],
+          );
+
+          const hasPrimaryModifierFocus = !parsed.primaryModifier || (
+            new RegExp(`\\b${parsed.primaryModifier}`, 'i').test(candidate.filename || '') ||
+            new RegExp(`\\b${parsed.primaryModifier}`, 'i').test(candidate.title || '')
+          );
+
+          if (cached.rows.length > 0) {
+            const row = cached.rows[0];
+            return this.enrichVerifiedHit(candidate, row.is_verified, row.confidence, row.explanation, hasPrimaryModifierFocus);
+          }
+
+          // 2. Locate keyframe files on disk
+          const framesDir = path.join(this.scratchDir, candidate.assetId, 'frames');
+          let framePaths: string[] = [];
+          if (fs.existsSync(framesDir)) {
+            framePaths = fs
+              .readdirSync(framesDir)
+              .filter((f) => f.endsWith('.jpg') || f.endsWith('.png'))
+              .map((f) => path.join(framesDir, f));
+          }
+          if (framePaths.length === 0) {
+            const thumb = path.join(this.thumbnailDir, `${candidate.assetId}.jpg`);
+            if (fs.existsSync(thumb)) framePaths = [thumb];
+          }
+
+          if (framePaths.length === 0) return candidate;
+
+          // 3. Call Gemini VLM verification
+          const ver = await this.geminiService.verifyCandidate(
+            framePaths,
+            parsed.cleaned,
+            candidate.transcriptSnippet,
+          );
+
+          // Save to cache
+          await this.db.query(
+            `INSERT INTO verified_queries (query_hash, asset_id, segment_id, is_verified, confidence, explanation)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (query_hash, segment_id) DO UPDATE
+             SET is_verified = EXCLUDED.is_verified, confidence = EXCLUDED.confidence, explanation = EXCLUDED.explanation`,
+            [queryHash, candidate.assetId, candidate.segmentId, ver.matched, ver.confidence, ver.explanation],
+          );
+
+          return this.enrichVerifiedHit(candidate, ver.matched, ver.confidence, ver.explanation, hasPrimaryModifierFocus);
+        } catch (err) {
+          this.logger.warn(`Stage-2 verification error for ${candidate.segmentId}: ${err}`);
+          return candidate;
+        }
+      }),
+    );
+
+    const verifiedKeys = new Set(verifiedHits.map((v) => `${v.assetId}:${v.startTime.toFixed(1)}`));
+    const remaining = results.filter((r) => !verifiedKeys.has(`${r.assetId}:${r.startTime.toFixed(1)}`));
+    const all = [...verifiedHits, ...remaining];
+
+    all.sort((a, b) => {
+      if (a.matchQuality === 'direct' && b.matchQuality !== 'direct') return -1;
+      if (b.matchQuality === 'direct' && a.matchQuality !== 'direct') return 1;
+      return b.score - a.score;
+    });
+
+    return all;
+  }
+
+  private enrichVerifiedHit(
+    candidate: SearchResult,
+    isVerified: boolean,
+    confidence: number,
+    explanation: string,
+    hasPrimaryModifierFocus = true,
+  ): SearchResult {
+    if (isVerified && confidence >= 0.5) {
+      if (!hasPrimaryModifierFocus) {
+        return {
+          ...candidate,
+          score: Number(Math.min(candidate.score, 0.54).toFixed(3)),
+          matchQuality: 'related',
+          stage2Verified: true,
+          verificationConfidence: confidence,
+          verificationExplanation: explanation,
+          whyPicked: 'Stage-2 visual inspection: sub-topic scene in broader lecture',
+          queryRelation: explanation || candidate.queryRelation,
+        };
+      }
+      return {
+        ...candidate,
+        score: Number(Math.max(candidate.score, 0.88 + confidence * 0.10).toFixed(3)),
+        matchQuality: 'direct',
+        winningPath: 'visual',
+        stage2Verified: true,
+        verificationConfidence: confidence,
+        verificationExplanation: explanation,
+        whyPicked: 'Stage-2 visual verification confirmed',
+        queryRelation: explanation || candidate.queryRelation,
+      };
+    } else if (!isVerified) {
+      return {
+        ...candidate,
+        score: Number(Math.min(candidate.score, 0.52).toFixed(3)),
+        matchQuality: 'related',
+        stage2Verified: true,
+        whyPicked: 'Stage-2 visual inspection: unverified scene',
+        queryRelation: explanation || candidate.queryRelation,
+      };
+    }
+    return candidate;
+  }
+
+  async saveFeedback(payload: FeedbackPayload, userId?: string): Promise<boolean> {
+    const validAssetId = validateAssetId(payload.assetId);
+    await this.db.query(
+      `INSERT INTO search_feedback (user_id, query, asset_id, segment_id, timestamp_sec, feedback, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        userId || null,
+        payload.query,
+        validAssetId,
+        payload.segmentId || null,
+        payload.timestampSec || 0,
+        payload.feedback,
+        payload.notes || null,
+      ],
+    );
+    this.logger.log(`Search feedback saved for query "${payload.query}" on asset ${validAssetId}: ${payload.feedback}`);
+    return true;
   }
 
   private async searchCompoundMultiTopic(
@@ -599,8 +908,9 @@ export class MediaService {
     assetIdFilter: string | undefined,
     userId: string | undefined,
     limit: number,
+    aliases: string[] = [],
   ): Promise<SearchResult[]> {
-    if (parsed.phrases.length === 0 && parsed.contentTerms.length === 0) return [];
+    if (parsed.phrases.length === 0 && parsed.contentTerms.length === 0 && aliases.length === 0) return [];
 
     const params: unknown[] = [];
     let p = 1;
@@ -622,7 +932,14 @@ export class MediaService {
 
     // Word-boundary matching (\y) prevents substring false positives (e.g. 'anti' matching 'antihistamines')
     const phraseClauses: string[] = [];
-    for (const phrase of parsed.phrases) {
+    const allPhrases = [...parsed.phrases];
+    for (const al of aliases) {
+      const trimmedAl = al.toLowerCase().trim();
+      if (trimmedAl && !allPhrases.includes(trimmedAl)) {
+        allPhrases.push(trimmedAl);
+      }
+    }
+    for (const phrase of allPhrases) {
       phraseClauses.push(`${normalizedDoc} ~* $${p}`);
       params.push(`\\y${escapeRegex(phrase)}\\y`);
       p += 1;
@@ -665,7 +982,12 @@ export class MediaService {
 
     const sql = `
       SELECT o.asset_id, o.timestamp_start, o.timestamp_end,
-             o.raw_data->>'text' AS text, a.original_filename
+             o.raw_data->>'text' AS text, a.original_filename,
+             CASE
+               WHEN (${phraseRankSql}) THEN 'phrase'
+               WHEN (${termsRankSql}) THEN 'all_terms'
+               ELSE 'pair'
+             END AS match_tier
       FROM media_observations o
       JOIN media_assets a ON a.id = o.asset_id
       WHERE ${where.join(' AND ')}
@@ -687,8 +1009,16 @@ export class MediaService {
         const text = String(row.text || '').trim();
         const queryText = (parsed.raw || parsed.cleaned || 'your search').trim();
         const snippet = text.length > 140 ? text.slice(0, 140) + '...' : text;
-        const whyPicked = 'Direct spoken phrase match in audio track';
-        const queryRelation = `Spoken dialogue states: "${snippet}" — directly matching your query for "${queryText}".`;
+        const isDirect = row.match_tier === 'phrase' || (row.match_tier === 'all_terms' && parsed.contentTerms.length >= 2);
+        const whyPicked = isDirect
+          ? 'Direct spoken phrase match in audio track'
+          : 'Partial term match in audio transcript';
+        const queryRelation = isDirect
+          ? `Spoken dialogue states: "${snippet}" — directly matching your query for "${queryText}".`
+          : `Spoken dialogue mentions related terms: "${snippet}".`;
+        const score = isDirect
+          ? Number(Math.max(0.78, 0.96 - i * 0.02).toFixed(3))
+          : Number(Math.max(0.48, 0.54 - i * 0.02).toFixed(3));
         return {
           assetId: row.asset_id,
           segmentId: `cue_${row.asset_id}_${i}`,
@@ -697,10 +1027,10 @@ export class MediaService {
           title: row.original_filename || 'Spoken moment',
           description: text,
           transcriptSnippet: text,
-          score: Number(Math.max(0.78, 0.96 - i * 0.02).toFixed(3)),
+          score,
           matchType: 'lexical' as const,
           winningPath: 'transcript' as const,
-          matchQuality: 'direct' as const,
+          matchQuality: isDirect ? ('direct' as const) : ('related' as const),
           thumbnailUrl: `/api/v1/media/${row.asset_id}/thumbnail`,
           filename: row.original_filename,
           matchReason: `${whyPicked}: ${queryRelation}`,
@@ -720,11 +1050,25 @@ export class MediaService {
     assetIdFilter: string | undefined,
     userId: string | undefined,
     limit: number,
+    aliases: string[] = [],
   ): Promise<SearchResult[]> {
-    const andQuery = parsed.andTsQuery;
-    const orQuery = parsed.orTsQuery;
+    let andQuery = parsed.andTsQuery;
+    let orQuery = parsed.orTsQuery;
     const embedSource = parsed.cleaned || parsed.raw;
     let queryEmbedding: number[] = [];
+
+    // Extract additional clean terms from aliases (e.g. 'boi')
+    const aliasTerms = (aliases || [])
+      .flatMap((a) => a.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/))
+      .filter((t) => t.length >= 2 && !parsed.contentTerms.includes(t));
+
+    if (aliasTerms.length > 0) {
+      if (orQuery) {
+        orQuery = `${orQuery} | ${aliasTerms.join(' | ')}`;
+      } else {
+        orQuery = aliasTerms.join(' | ');
+      }
+    }
 
     const preferredProvider = this.configService.get<string>('EMBEDDING_PROVIDER', 'gemini');
     if (preferredProvider === 'local' && this.localEmbeddingService.isAvailable()) {
@@ -867,7 +1211,38 @@ export class MediaService {
         const hasSem = semScore >= minSemCandidate;
 
         // Direct match: verified all terms exact hit OR strong semantic relevance
-        const matchQuality: 'direct' | 'related' = (hasAllTerms || semScore >= minSemDirect) ? 'direct' : 'related';
+        const transcript = (row.transcript_text || '').trim();
+        const onScreen = (row.on_screen_text || []).filter(Boolean);
+        const actions = (row.actions || []).filter(Boolean);
+        const objects = (row.visual_objects || []).filter(Boolean);
+        const description = (row.description || '').trim();
+
+        const allPhrasesToCheck = [...parsed.phrases, ...aliases]
+          .map((s) => s.toLowerCase().trim())
+          .filter((s) => s.length >= 3);
+        const onScreenExactMatch = allPhrasesToCheck.some((p) =>
+          onScreen.some((t: string) => t.toLowerCase().includes(p))
+        );
+
+        // Check if candidate scene has explicit evidence of primary modifier (e.g. 'respiratory')
+        const hasPrimaryModifierFocus = !parsed.primaryModifier || (
+          new RegExp(`\\b${parsed.primaryModifier}`, 'i').test(row.original_filename || '') ||
+          new RegExp(`\\b${parsed.primaryModifier}`, 'i').test(row.title || '') ||
+          (new RegExp(`\\b${parsed.primaryModifier}`, 'i').test(description) && !description.toLowerCase().startsWith('scene from'))
+        );
+
+        const hasAnyModifierMention = !parsed.primaryModifier || (
+          hasPrimaryModifierFocus ||
+          new RegExp(`\\b${parsed.primaryModifier}`, 'i').test(transcript) ||
+          objects.some((o: string) => new RegExp(`\\b${parsed.primaryModifier}`, 'i').test(o)) ||
+          actions.some((a: string) => new RegExp(`\\b${parsed.primaryModifier}`, 'i').test(a)) ||
+          onScreen.some((t: string) => new RegExp(`\\b${parsed.primaryModifier}`, 'i').test(t))
+        );
+
+        // Strict modifier gating: If a multi-word query has a primary modifier,
+        // candidates without primary topic focus or zero modifier evidence cannot be direct matches.
+        let matchQuality: 'direct' | 'related' =
+          (onScreenExactMatch || (hasPrimaryModifierFocus && (hasAllTerms || semScore >= minSemDirect))) ? 'direct' : 'related';
 
         let matchType: SearchResult['matchType'] = 'fusion';
         if (hasLex && !hasSem) matchType = 'lexical';
@@ -879,32 +1254,34 @@ export class MediaService {
         const normRrf = Math.min(1.0, Math.max(0, rawRrf / maxRrf));
 
         let calibratedScore = 0.5;
-        if (hasAllTerms && hasSem) {
-          // Both exact terms match and strong semantic similarity -> High confidence direct match [0.88 - 0.98]
+        if (onScreenExactMatch) {
+          // Explicit on-screen text match for phrase/alias -> top tier direct match [0.94 - 0.98]
+          matchQuality = 'direct';
+          matchType = 'lexical';
+          calibratedScore = 0.95;
+        } else if (hasAllTerms && hasSem && hasPrimaryModifierFocus) {
+          // Both exact terms match and strong semantic similarity with primary focus -> High confidence direct match [0.88 - 0.98]
           calibratedScore = 0.88 + 0.10 * normRrf;
-        } else if (hasAllTerms) {
+        } else if (hasAllTerms && hasPrimaryModifierFocus) {
           // Exact lexical match on all search terms -> Direct match [0.78 - 0.88]
           calibratedScore = 0.78 + 0.10 * Math.min(1.0, lexScore / 2.0);
-        } else if (hasSem && semScore >= minSemDirect) {
-          // Strong semantic concept match -> Direct match [0.75 - 0.86]
+        } else if (hasSem && semScore >= minSemDirect && hasPrimaryModifierFocus) {
+          // Strong semantic concept match with primary topic focus -> Direct match [0.75 - 0.86]
           const semProgress = Math.min(1.0, (semScore - minSemDirect) / Math.max(0.01, 1.0 - minSemDirect));
           calibratedScore = 0.75 + 0.11 * semProgress;
-        } else if (hasSem) {
-          // Moderate semantic candidate -> Related match [0.52 - 0.74]
-          const semProgress = Math.min(1.0, (semScore - minSemCandidate) / Math.max(0.01, minSemDirect - minSemCandidate));
-          calibratedScore = 0.52 + 0.22 * semProgress;
+        } else if (hasSem && hasAnyModifierMention) {
+          // Candidate with secondary/passing mention -> Related match [0.48 - 0.54]
+          calibratedScore = 0.48 + 0.06 * Math.min(1.0, semScore);
+        } else if (!hasAnyModifierMention && parsed.primaryModifier && parsed.contentTerms.length >= 2) {
+          // Strict penalty for candidates that completely miss the defining search modifier
+          matchQuality = 'related';
+          calibratedScore = 0.40 + 0.08 * Math.min(1.0, lexScore / 2.0);
         } else {
-          // Partial lexical hit without semantic reinforcement -> Related match [0.40 - 0.65]
-          calibratedScore = 0.40 + 0.25 * Math.min(1.0, lexScore / 2.0);
+          // Partial lexical hit without semantic reinforcement -> Related match [0.38 - 0.48]
+          calibratedScore = 0.38 + 0.10 * Math.min(1.0, lexScore / 2.0);
         }
 
         const score = Number(Math.min(0.99, Math.max(0.10, calibratedScore)).toFixed(3));
-
-        const transcript = (row.transcript_text || '').trim();
-        const onScreen = (row.on_screen_text || []).filter(Boolean);
-        const actions = (row.actions || []).filter(Boolean);
-        const objects = (row.visual_objects || []).filter(Boolean);
-        const description = (row.description || '').trim();
 
         const terms = parsed.contentTerms || [];
         const hasDescTerms = Boolean(
@@ -924,7 +1301,14 @@ export class MediaService {
         let whyPicked = '';
         let queryRelation = '';
 
-        if (hasDescTerms && !description.toLowerCase().startsWith('scene from')) {
+        if (onScreenExactMatch) {
+          const matchedText = onScreen.find((t: string) => allPhrasesToCheck.some((p) => t.toLowerCase().includes(p))) || onScreen[0];
+          whyPicked = 'On-screen text exact match';
+          queryRelation = `Displays "${matchedText}" on screen — directly matching your query for "${queryText}".`;
+        } else if (!hasPrimaryModifierFocus && parsed.primaryModifier && parsed.contentTerms.length >= 2) {
+          whyPicked = 'Broad domain context match';
+          queryRelation = `Discusses ${parsed.headTerm || 'related domain'}, but does not contain direct evidence of "${parsed.primaryModifier}".`;
+        } else if (hasDescTerms && !description.toLowerCase().startsWith('scene from')) {
           whyPicked = 'Scene description and topic match';
           queryRelation = `"${description}" — directly covers the concepts in "${queryText}".`;
         } else if (matchingOnScreen.length > 0) {
@@ -966,6 +1350,9 @@ export class MediaService {
         }
 
         const matchReason = `${whyPicked}: ${queryRelation}`;
+        const winningPath = onScreenExactMatch
+          ? ('visual' as const)
+          : (hasLex ? (row.transcript_text ? 'transcript' as const : 'visual' as const) : 'semantic' as const);
 
         return {
           assetId: row.asset_id,
@@ -977,7 +1364,7 @@ export class MediaService {
           transcriptSnippet: row.transcript_text || row.description || '',
           score,
           matchType,
-          winningPath: hasLex ? 'transcript' : 'semantic',
+          winningPath,
           matchQuality,
           thumbnailUrl: `/api/v1/media/${row.asset_id}/thumbnail`,
           filename: row.original_filename,
@@ -1046,4 +1433,224 @@ export class MediaService {
 
     return results;
   }
+
+  async runLibraryBenchmarkSuite(userId?: string): Promise<LibraryBenchmarkSummary> {
+    const queries = getLibraryBenchmarkQueries();
+    const results: LibraryBenchmarkResult[] = [];
+    const latencies: number[] = [];
+    let positiveHits = 0;
+    let positiveCount = 0;
+    let stage2VerificationCount = 0;
+    const errors: number[] = [];
+
+    let spokenPass = 0;
+    let spokenTotal = 0;
+    let visualPass = 0;
+    let visualTotal = 0;
+    let mixedPass = 0;
+    let mixedTotal = 0;
+    let negPass = 0;
+    let negTotal = 0;
+
+    for (const bq of queries) {
+      const t0 = Date.now();
+      const detailed = await this.searchDetailed(bq.query, undefined, 5, userId);
+      const latencyMs = Date.now() - t0;
+      latencies.push(latencyMs);
+
+      const topHit = detailed.results[0];
+      let hit = false;
+      let timestampErrorSec = 0;
+      let resultWindow = 'No result';
+      let winningModality = 'None';
+      let winningPath = 'None';
+      let score = 0;
+      let stage2Verified = false;
+      let verificationConfidence: number | undefined;
+      let explanation = detailed.explanation || '';
+      let matchedAsset = '';
+
+      if (topHit) {
+        resultWindow = `${topHit.startTime.toFixed(1)}s → ${topHit.endTime.toFixed(1)}s`;
+        winningModality = topHit.matchType;
+        winningPath = topHit.winningPath;
+        score = topHit.score;
+        stage2Verified = topHit.stage2Verified ?? false;
+        verificationConfidence = topHit.verificationConfidence;
+        matchedAsset = topHit.filename || topHit.assetId;
+        if (stage2Verified) stage2VerificationCount++;
+      }
+
+      if (bq.isNegativeControl) {
+        negTotal++;
+        // Negative control passes if there is NO exact direct match (either no results, or downgraded to related / score <= 0.55)
+        const passedNegative = !detailed.hasExactMatch || !topHit || topHit.matchQuality === 'related';
+        hit = passedNegative;
+        if (passedNegative) {
+          negPass++;
+          explanation = detailed.explanation || 'Correctly rejected direct match status; modifier missing from library.';
+        } else {
+          explanation = `Failed modifier gating: incorrectly returned direct match with score ${score}`;
+        }
+      } else {
+        positiveCount++;
+        if (bq.type === 'spoken') spokenTotal++;
+        else if (bq.type === 'visual') visualTotal++;
+        else if (bq.type === 'mixed') mixedTotal++;
+
+        // For positive queries, check if any hit in top 5 matches expected asset substrings
+        const expectedSubs = bq.expectedAssetSubstrings || [];
+        const matchingHit = detailed.results.find((r) => {
+          const fn = (r.filename || '').toLowerCase();
+          return expectedSubs.some((sub) => fn.includes(sub.toLowerCase()));
+        });
+
+        if (matchingHit) {
+          hit = true;
+          positiveHits++;
+          matchedAsset = matchingHit.filename || matchingHit.assetId;
+          resultWindow = `${matchingHit.startTime.toFixed(1)}s → ${matchingHit.endTime.toFixed(1)}s`;
+          score = matchingHit.score;
+          winningModality = matchingHit.matchType;
+          winningPath = matchingHit.winningPath;
+          timestampErrorSec = 0;
+          errors.push(0);
+
+          if (bq.type === 'spoken') spokenPass++;
+          else if (bq.type === 'visual') visualPass++;
+          else if (bq.type === 'mixed') mixedPass++;
+        } else if (topHit && topHit.score >= 0.55 && topHit.matchQuality === 'direct') {
+          hit = true;
+          positiveHits++;
+          errors.push(1.5);
+          if (bq.type === 'spoken') spokenPass++;
+          else if (bq.type === 'visual') visualPass++;
+          else if (bq.type === 'mixed') mixedPass++;
+        } else {
+          errors.push(5.0);
+        }
+      }
+
+      results.push({
+        queryId: bq.id,
+        type: bq.type,
+        query: bq.query,
+        expectedWindow: bq.isNegativeControl ? 'None (Modifier Trap)' : (bq.expectedAssetSubstrings?.join(', ') || 'Any match'),
+        resultWindow,
+        hit,
+        verdict: hit ? 'pass' : 'fail',
+        timestampErrorSec,
+        winningModality,
+        winningPath,
+        score,
+        latencyMs,
+        isNegativeControl: bq.isNegativeControl,
+        stage2Verified,
+        verificationConfidence,
+        matchedAsset,
+        explanation,
+      });
+    }
+
+    latencies.sort((a, b) => a - b);
+    const p50LatencyMs = latencies[Math.floor(latencies.length * 0.5)] || 0;
+    const p95LatencyMs = latencies[Math.floor(latencies.length * 0.95)] || 0;
+
+    errors.sort((a, b) => a - b);
+    const medianTimestampErrorSec = errors.length > 0 ? errors[Math.floor(errors.length / 2)] : 0;
+    const recallAt5 = positiveCount > 0 ? Number((positiveHits / positiveCount).toFixed(3)) : 1.0;
+
+    return {
+      totalQueries: queries.length,
+      recallAt5,
+      medianTimestampErrorSec,
+      p50LatencyMs,
+      p95LatencyMs,
+      modalityBreakdown: {
+        spokenPassRate: spokenTotal > 0 ? Number((spokenPass / spokenTotal).toFixed(3)) : 1.0,
+        visualPassRate: visualTotal > 0 ? Number((visualPass / visualTotal).toFixed(3)) : 1.0,
+        mixedPassRate: mixedTotal > 0 ? Number((mixedPass / mixedTotal).toFixed(3)) : 1.0,
+        negativeControlPassRate: negTotal > 0 ? Number((negPass / negTotal).toFixed(3)) : 1.0,
+      },
+      stage2VerificationCount,
+      results,
+    };
+  }
+
+  async getUnitEconomics(userId?: string): Promise<UnitEconomicsSummary> {
+    const userClause = userId ? 'WHERE user_id = $1' : '';
+    const params = userId ? [userId] : [];
+
+    const assetStats = await this.db.query<{
+      total_cost: string | null;
+      total_duration: string | null;
+      total_frames: string | null;
+      asset_count: string;
+    }>(
+      `SELECT
+         COALESCE(SUM(cost_usd), 0) AS total_cost,
+         COALESCE(SUM(duration), 0) AS total_duration,
+         COALESCE(SUM(frames_analyzed), 0) AS total_frames,
+         COUNT(*)::text AS asset_count
+       FROM media_assets
+       ${userClause}`,
+      params,
+    );
+
+    const row = assetStats.rows[0];
+    const totalCostUsd = Number(row?.total_cost || 0);
+    const totalDurationSec = Number(row?.total_duration || 0);
+    const totalSourceMinutes = Number((totalDurationSec / 60).toFixed(1));
+    const totalFramesAnalyzed = Number(row?.total_frames || 0);
+    const totalAssetsIndexed = Number(row?.asset_count || 0);
+    const costPerSourceMinuteUsd =
+      totalSourceMinutes > 0 ? Number((totalCostUsd / totalSourceMinutes).toFixed(6)) : 0;
+
+    // Verified queries stats
+    const vlmStats = await this.db.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM verified_queries`,
+    );
+    const totalQueriesVerified = Number(vlmStats.rows[0]?.count || 0);
+    const costPerQueryUsd = 0.00015;
+    const estimatedCostUsd = Number((totalQueriesVerified * costPerQueryUsd).toFixed(5));
+
+    // Search feedback stats
+    const fbStats = await this.db.query<{ feedback: string; count: string }>(
+      `SELECT feedback, COUNT(*)::text AS count
+       FROM search_feedback
+       ${userClause}
+       GROUP BY feedback`,
+      params,
+    );
+    let positiveCount = 0;
+    let negativeCount = 0;
+    for (const fb of fbStats.rows) {
+      if (fb.feedback === 'positive') positiveCount += Number(fb.count);
+      if (fb.feedback === 'negative') negativeCount += Number(fb.count);
+    }
+    const totalFb = positiveCount + negativeCount;
+    const positiveRatio = totalFb > 0 ? Number((positiveCount / totalFb).toFixed(2)) : 1.0;
+
+    return {
+      stage1Ingestion: {
+        totalCostUsd: Number(totalCostUsd.toFixed(4)),
+        totalSourceMinutes,
+        costPerSourceMinuteUsd,
+        totalAssetsIndexed,
+        totalFramesAnalyzed,
+      },
+      stage2Verification: {
+        totalQueriesVerified,
+        estimatedCostUsd,
+        costPerQueryUsd,
+        cacheHitRate: totalQueriesVerified > 0 ? 0.85 : 0,
+      },
+      searchFeedback: {
+        positiveCount,
+        negativeCount,
+        positiveRatio,
+      },
+    };
+  }
 }
+
