@@ -39,3 +39,6 @@ storage/scratch/
 *.njsproj
 # Scratch test scripts
 scratch/
+
+# Git worktrees
+.worktrees/
