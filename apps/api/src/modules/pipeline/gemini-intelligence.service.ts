@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { guessMime } from '../../common/repo-paths';
 import { FfmpegPipelineService } from './ffmpeg-pipeline.service';
+import { flattenSceneKeyframes } from './scene-sampling';
 import {
   FrameObservation,
   GeminiVideoAnalysis,
@@ -378,7 +379,8 @@ Rules:
   ): Promise<{ observations: FrameObservation[]; usage: ModelUsage }> {
     if (!this.isConfigured()) throw new Error('Gemini client not configured. Set GEMINI_API_KEY or GEMINI_API_KEYS.');
 
-    const frames = scenes.filter((s) => s.keyframePath && fs.existsSync(s.keyframePath));
+    const flattened = flattenSceneKeyframes(scenes);
+    const frames = flattened.filter((f) => f.path && fs.existsSync(f.path));
     if (frames.length === 0) {
       return { observations: [], usage: this.emptyUsage('frame_analysis') };
     }
@@ -410,8 +412,8 @@ Use the provided timestamps. JSON only.`,
       ];
 
       for (const frame of batchFrames) {
-        const data = fs.readFileSync(frame.keyframePath).toString('base64');
-        parts.push({ text: `Frame at ${frame.representativeTimestamp.toFixed(2)}s:` });
+        const data = fs.readFileSync(frame.path).toString('base64');
+        parts.push({ text: `Frame at ${frame.timestamp.toFixed(2)}s:` });
         parts.push({ inlineData: { mimeType: 'image/jpeg', data } });
       }
 
@@ -579,15 +581,15 @@ User Query: "${rawQuery.replace(/"/g, '\\"')}"`;
   }
 
   async verifyCandidate(
-    framePaths: string[],
+    frames: { timestamp: number; path: string }[],
     query: string,
     transcriptSnippet?: string,
-  ): Promise<{ matched: boolean; confidence: number; explanation: string; usage?: ModelUsage }> {
-    if (!this.isConfigured() || framePaths.length === 0) {
+  ): Promise<{ matched: boolean; confidence: number; explanation: string; matchedTimestamp?: number; usage?: ModelUsage }> {
+    if (!this.isConfigured() || frames.length === 0) {
       return { matched: false, confidence: 0, explanation: 'Gemini not configured or frames missing' };
     }
 
-    const existingFrames = framePaths.filter((p) => p && fs.existsSync(p));
+    const existingFrames = frames.filter((f) => f.path && fs.existsSync(f.path));
     if (existingFrames.length === 0) {
       return { matched: false, confidence: 0, explanation: 'Keyframe files missing on disk' };
     }
@@ -602,31 +604,37 @@ Attached are representative keyframes from this candidate scene.
 Evaluate whether this scene DIRECTLY depicts or discusses what the user searched for.
 Special instruction: If the user search includes a specific qualifier or modifier (e.g. "respiratory", "red", "driving", "goal"), verify that this specific modifier is actually depicted or discussed. Do not approve scenes that only share a generic category term.
 
+Each attached frame is captioned with its timestamp in seconds before the image.
+If matched, identify which single attached frame's timestamp best shows the match.
+
 Return JSON only:
 {
   "matched": true | false,
   "confidence": <number between 0.00 and 1.00>,
+  "matchedTimestamp": <the timestamp in seconds of the single best-matching attached frame, or null if not matched>,
   "explanation": "<one concise sentence explaining why this matches or does not match the search query>"
 }`,
       },
     ];
 
-    for (const framePath of existingFrames.slice(0, 3)) {
+    for (const frame of existingFrames.slice(0, 3)) {
       try {
-        const data = fs.readFileSync(framePath).toString('base64');
+        const data = fs.readFileSync(frame.path).toString('base64');
+        parts.push({ text: `Frame at ${frame.timestamp.toFixed(2)}s:` });
         parts.push({ inlineData: { mimeType: 'image/jpeg', data } });
       } catch (readErr) {
-        this.logger.warn(`Could not read frame for verification: ${framePath}`);
+        this.logger.warn(`Could not read frame for verification: ${frame.path}`);
       }
     }
 
     try {
       const result = await this.generateContent('stage2_verification', [{ role: 'user', parts }]);
-      const parsed = this.parseJson<{ matched?: boolean; confidence?: number; explanation?: string }>(result.text);
+      const parsed = this.parseJson<{ matched?: boolean; confidence?: number; explanation?: string; matchedTimestamp?: number | null }>(result.text);
       return {
         matched: Boolean(parsed.matched),
         confidence: Number(parsed.confidence ?? (parsed.matched ? 0.85 : 0.2)),
         explanation: String(parsed.explanation ?? ''),
+        matchedTimestamp: typeof parsed.matchedTimestamp === 'number' ? parsed.matchedTimestamp : undefined,
         usage: this.usageFromGenerate('stage2_verification', result),
       };
     } catch (err) {

@@ -11,6 +11,7 @@ import { IntelligenceMergerService } from '../pipeline/intelligence-merger.servi
 import { WhisperTranscriptionService } from '../pipeline/whisper-transcription.service';
 import { IndexingJobData } from './indexing.types';
 import {
+  ANALYSIS_VERSION,
   GeminiVideoAnalysis,
   ModelUsage,
   StageTiming,
@@ -484,12 +485,14 @@ export class IndexingProcessor extends WorkerHost {
         `INSERT INTO media_segments (
            id, asset_id, user_id, start_time, end_time, title, description,
            visual_objects, actions, transcript_text, on_screen_text,
-           keyframe_path, sources, provider, model, embedding, embedding_384, embedding_dim, analysis_version
+           keyframe_path, sources, provider, model, embedding, embedding_384, embedding_dim, analysis_version,
+           keyframe_paths
          ) VALUES (
            $1, $2, $3, $4, $5, $6, $7,
            $8, $9, $10, $11,
            $12, $13, $14, $15,
-           $16::vector, $17::vector, $18, $19
+           $16::vector, $17::vector, $18, $19,
+           $20::jsonb
          )`,
         [
           seg.id,
@@ -511,6 +514,7 @@ export class IndexingProcessor extends WorkerHost {
           is384 ? embeddingStr : null,
           dim || 3072,
           seg.analysisVersion || 2,
+          JSON.stringify(seg.keyframePaths || []),
         ],
       );
     }
@@ -595,7 +599,7 @@ export class IndexingProcessor extends WorkerHost {
     // Clone segments with multi-model embeddings
     const segs = await this.db.query(
       `SELECT start_time, end_time, title, description, visual_objects, actions,
-              transcript_text, on_screen_text, keyframe_path, sources, provider, model,
+              transcript_text, on_screen_text, keyframe_path, keyframe_paths, sources, provider, model,
               embedding::text AS embedding, embedding_384::text AS embedding_384, embedding_dim
        FROM media_segments
        WHERE asset_id = $1`,
@@ -609,12 +613,12 @@ export class IndexingProcessor extends WorkerHost {
         `INSERT INTO media_segments (
            id, asset_id, user_id, start_time, end_time, title, description,
            visual_objects, actions, transcript_text, on_screen_text,
-           keyframe_path, sources, provider, model, embedding, embedding_384, embedding_dim, analysis_version
+           keyframe_path, keyframe_paths, sources, provider, model, embedding, embedding_384, embedding_dim, analysis_version
          ) VALUES (
            $1, $2, $3, $4, $5, $6, $7,
            $8, $9, $10, $11,
-           $12, $13, $14, $15,
-           $16::vector, $17::vector, $18, 2
+           $12, $13::jsonb, $14, $15, $16,
+           $17::vector, $18::vector, $19, $20
          )`,
         [
           newSegId,
@@ -629,12 +633,14 @@ export class IndexingProcessor extends WorkerHost {
           s.transcript_text,
           s.on_screen_text,
           s.keyframe_path,
+          s.keyframe_paths,
           s.sources,
           s.provider,
           s.model,
           s.embedding,
           s.embedding_384,
           s.embedding_dim || 3072,
+          ANALYSIS_VERSION,
         ],
       );
     }

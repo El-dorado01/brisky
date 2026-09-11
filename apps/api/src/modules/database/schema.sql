@@ -125,6 +125,7 @@ ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS availability VARCHAR(32) DEFAU
 ALTER TABLE media_segments ADD COLUMN IF NOT EXISTS embedding_384 vector(384);
 ALTER TABLE media_segments ADD COLUMN IF NOT EXISTS embedding_dim INT DEFAULT 3072;
 ALTER TABLE media_observations ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE media_segments ADD COLUMN IF NOT EXISTS keyframe_paths JSONB DEFAULT '[]';
 ALTER TABLE indexing_jobs ADD COLUMN IF NOT EXISTS provider VARCHAR(64) DEFAULT 'google';
 ALTER TABLE indexing_jobs ADD COLUMN IF NOT EXISTS model VARCHAR(64) DEFAULT 'gemini-2.5-flash';
 

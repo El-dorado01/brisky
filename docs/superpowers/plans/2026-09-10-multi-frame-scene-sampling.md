@@ -67,7 +67,7 @@
 ```ts
 // apps/api/src/modules/pipeline/scene-sampling.spec.ts
 import { test } from 'node:test';
-import assert from 'node:assert/strict';
+import * as assert from 'node:assert/strict';
 import {
   framesPerWindow,
   computeFrameTimestamps,

@@ -16,6 +16,7 @@ import {
 } from '../../common/repo-paths';
 import { getBenchmarkQueries, getLibraryBenchmarkQueries, LibraryBenchmarkQuery } from './benchmark-queries';
 import { parseSearchQuery } from './query-parse';
+import { parseKeyframePaths, narrowResultWindow } from '../pipeline/scene-sampling';
 import {
   PublicAsset,
   SearchResult,
@@ -720,28 +721,32 @@ export class MediaService {
 
           if (cached.rows.length > 0) {
             const row = cached.rows[0];
-            return this.enrichVerifiedHit(candidate, row.is_verified, row.confidence, row.explanation);
+            return this.enrichVerifiedHit(candidate, row.is_verified, row.confidence, row.explanation, undefined);
           }
 
-          // 2. Locate keyframe files on disk
-          const framesDir = path.join(this.scratchDir, candidate.assetId, 'frames');
-          let framePaths: string[] = [];
-          if (fs.existsSync(framesDir)) {
-            framePaths = fs
-              .readdirSync(framesDir)
-              .filter((f) => f.endsWith('.jpg') || f.endsWith('.png'))
-              .map((f) => path.join(framesDir, f));
+          // 2. Locate this candidate's own keyframes (not the whole asset's frame directory)
+          let frames: { timestamp: number; path: string }[] = [];
+          let usedThumbnailFallback = false;
+          const segRow = await this.db.query<{ keyframe_paths: unknown }>(
+            `SELECT keyframe_paths FROM media_segments WHERE id = $1`,
+            [candidate.segmentId],
+          );
+          if (segRow.rows.length > 0) {
+            frames = parseKeyframePaths(segRow.rows[0].keyframe_paths).filter((f) => f.path && fs.existsSync(f.path));
           }
-          if (framePaths.length === 0) {
+          if (frames.length === 0) {
             const thumb = path.join(this.thumbnailDir, `${candidate.assetId}.jpg`);
-            if (fs.existsSync(thumb)) framePaths = [thumb];
+            if (fs.existsSync(thumb)) {
+              frames = [{ timestamp: candidate.startTime, path: thumb }];
+              usedThumbnailFallback = true;
+            }
           }
 
-          if (framePaths.length === 0) return candidate;
+          if (frames.length === 0) return candidate;
 
           // 3. Call Gemini VLM verification
           const ver = await this.geminiService.verifyCandidate(
-            framePaths,
+            frames,
             parsed.cleaned,
             candidate.transcriptSnippet,
           );
@@ -755,7 +760,13 @@ export class MediaService {
             [queryHash, candidate.assetId, candidate.segmentId, ver.matched, ver.confidence, ver.explanation],
           );
 
-          return this.enrichVerifiedHit(candidate, ver.matched, ver.confidence, ver.explanation);
+          return this.enrichVerifiedHit(
+            candidate,
+            ver.matched,
+            ver.confidence,
+            ver.explanation,
+            usedThumbnailFallback ? undefined : ver.matchedTimestamp,
+          );
         } catch (err) {
           this.logger.warn(`Stage-2 verification error for ${candidate.segmentId}: ${err}`);
           return candidate;
@@ -763,7 +774,7 @@ export class MediaService {
       }),
     );
 
-    const verifiedKeys = new Set(verifiedHits.map((v) => `${v.assetId}:${v.startTime.toFixed(1)}`));
+    const verifiedKeys = new Set(candidatesToVerify.map((c) => `${c.assetId}:${c.startTime.toFixed(1)}`));
     const remaining = results.filter((r) => !verifiedKeys.has(`${r.assetId}:${r.startTime.toFixed(1)}`));
     const all = [...verifiedHits, ...remaining];
 
@@ -781,10 +792,14 @@ export class MediaService {
     isVerified: boolean,
     confidence: number,
     explanation: string,
+    matchedTimestamp?: number,
   ): SearchResult {
     if (isVerified && confidence >= 0.5) {
+      const narrowed = narrowResultWindow(candidate.startTime, candidate.endTime, matchedTimestamp);
       return {
         ...candidate,
+        startTime: narrowed.startTime,
+        endTime: narrowed.endTime,
         score: Number(Math.max(candidate.score, 0.88 + confidence * 0.10).toFixed(3)),
         matchQuality: 'direct',
         winningPath: 'visual',

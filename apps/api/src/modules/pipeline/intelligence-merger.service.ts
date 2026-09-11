@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { GeminiIntelligenceService } from './gemini-intelligence.service';
 import { LocalEmbeddingService } from './local-embedding.service';
+import { aggregateFrameObservations, unique } from './scene-sampling';
 import {
   ANALYSIS_VERSION,
   FrameObservation,
@@ -79,6 +80,14 @@ export class IntelligenceMergerService {
             : best;
         }, undefined);
 
+      const aggregated = aggregateFrameObservations(
+        frameObs.map((obs) => ({
+          objects: obs.objects || [],
+          activity: obs.activity || [],
+          onScreenText: obs.onScreenText || [],
+        })),
+      );
+
       const overlappingTranscript = transcript
         .filter((cue) => cue.start_time < end && cue.end_time > start && (cue.text || '').trim())
         .map((cue) => cue.text.trim())
@@ -89,15 +98,15 @@ export class IntelligenceMergerService {
       );
 
       const objects = unique([
-        ...(nearestFrame?.objects || []),
+        ...aggregated.objects,
         ...overlappingGemini.flatMap((g) => g.visual_objects || []),
       ]);
       const actions = unique([
-        ...(nearestFrame?.activity || []),
+        ...aggregated.activity,
         ...overlappingGemini.flatMap((g) => g.actions || []),
       ]);
       const onScreenText = unique([
-        ...(nearestFrame?.onScreenText || []),
+        ...aggregated.onScreenText,
         ...overlappingGemini
           .flatMap((g) => [g.title || ''])
           .filter((t) => /overlay|caption|text/i.test(t)),
@@ -155,6 +164,7 @@ export class IntelligenceMergerService {
         transcriptText: overlappingTranscript,
         onScreenText,
         keyframePath: scene.keyframePath,
+        keyframePaths: scene.keyframes,
         embedding: embedded.values,
         embeddingDim: embedded.values.length,
         sources,
@@ -232,18 +242,4 @@ export class IntelligenceMergerService {
     this.logger.log(`Persisted hybrid intelligence for ${assetId} to ${scratchDir}`);
     return artifacts;
   }
-}
-
-function unique(values: string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const value of values) {
-    const trimmed = (value || '').trim();
-    if (!trimmed) continue;
-    const key = trimmed.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(trimmed);
-  }
-  return out;
 }

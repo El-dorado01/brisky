@@ -8,6 +8,7 @@ import * as path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { SceneBoundary, VideoMetadata } from './pipeline.types';
+import { framesPerWindow, computeFrameTimestamps } from './scene-sampling';
 
 const execAsync = promisify(exec);
 
@@ -260,6 +261,8 @@ export class FfmpegPipelineService {
     const cuts = await this.detectSceneCuts(videoPath, duration, threshold);
     const windows = this.buildSceneWindows(cuts, duration, maxScenes, minSceneSec);
 
+    const maxFramesPerScene = Number(this.configService.get('MAX_FRAMES_PER_SCENE', 3));
+
     const scenes: SceneBoundary[] = [];
     for (let i = 0; i < windows.length; i++) {
       if (onProgress) {
@@ -267,14 +270,24 @@ export class FfmpegPipelineService {
       }
       const { startTime, endTime } = windows[i];
       const representativeTimestamp = Number(((startTime + endTime) / 2).toFixed(2));
-      const keyframeFile = `scene_${String(i + 1).padStart(3, '0')}.jpg`;
-      const keyframePath = path.join(framesOutputDir, keyframeFile);
 
-      try {
-        await this.extractFrame(videoPath, keyframePath, representativeTimestamp, '640x?');
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        this.logger.warn(`Failed extracting keyframe for scene ${i + 1}: ${message}`);
+      const windowLength = endTime - startTime;
+      const frameCount = framesPerWindow(windowLength, maxFramesPerScene);
+      const frameTimestamps =
+        frameCount === 1 ? [representativeTimestamp] : computeFrameTimestamps(startTime, endTime, frameCount);
+
+      const keyframes: { timestamp: number; path: string }[] = [];
+      for (let f = 0; f < frameTimestamps.length; f++) {
+        const ts = frameTimestamps[f];
+        const keyframeFile = `scene_${String(i + 1).padStart(3, '0')}_f${String(f + 1).padStart(2, '0')}.jpg`;
+        const keyframePath = path.join(framesOutputDir, keyframeFile);
+        try {
+          await this.extractFrame(videoPath, keyframePath, ts, '640x?');
+          keyframes.push({ timestamp: ts, path: keyframePath });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          this.logger.warn(`Failed extracting keyframe ${f + 1}/${frameTimestamps.length} for scene ${i + 1}: ${message}`);
+        }
       }
 
       scenes.push({
@@ -282,7 +295,8 @@ export class FfmpegPipelineService {
         startTime,
         endTime,
         representativeTimestamp,
-        keyframePath,
+        keyframePath: keyframes[0]?.path || '',
+        keyframes,
       });
     }
 

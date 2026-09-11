@@ -14,6 +14,7 @@ export interface SceneBoundary {
   endTime: number;
   representativeTimestamp: number;
   keyframePath: string;
+  keyframes: { timestamp: number; path: string }[];
 }
 
 export interface FrameObservation {
@@ -89,6 +90,7 @@ export interface UnifiedSegment {
   transcriptText: string;
   onScreenText: string[];
   keyframePath?: string;
+  keyframePaths: { timestamp: number; path: string }[];
   embedding?: number[];
   embeddingDim?: number;
   sources: string[];
@@ -121,4 +123,4 @@ export interface PipelineArtifacts {
   analysisVersion: number;
 }
 
-export const ANALYSIS_VERSION = 2;
+export const ANALYSIS_VERSION = 3;
