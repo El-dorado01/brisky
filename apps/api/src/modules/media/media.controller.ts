@@ -11,16 +11,16 @@ import {
   BadRequestException,
   UseGuards,
   Query,
-} from '@nestjs/common';
-import { FastifyRequest, FastifyReply } from 'fastify';
-import { MediaService } from './media.service';
-import { AuthGuard } from '../auth/auth.guard';
-import * as fs from 'fs';
-import * as path from 'path';
+} from "@nestjs/common";
+import { FastifyRequest, FastifyReply } from "fastify";
+import { MediaService } from "./media.service";
+import { AuthGuard } from "../auth/auth.guard";
+import * as fs from "fs";
+import * as path from "path";
 
-import { FeedbackPayload } from './media.types';
+import { FeedbackPayload } from "./media.types";
 
-@Controller('media')
+@Controller("media")
 @UseGuards(AuthGuard)
 export class MediaController {
   private readonly logger = new Logger(MediaController.name);
@@ -34,12 +34,15 @@ export class MediaController {
     return { count: assets.length, assets };
   }
 
-  @Post('upload')
+  @Post("upload")
   async uploadVideo(@Req() req: any) {
     const userId = req.user?.id;
     const fastifyReq = req as FastifyRequest & {
       isMultipart?: () => boolean;
-      file?: () => Promise<{ filename: string; file: NodeJS.ReadableStream; mimetype?: string } | undefined>;
+      file?: () => Promise<
+        | { filename: string; file: NodeJS.ReadableStream; mimetype?: string }
+        | undefined
+      >;
       files: () => AsyncIterableIterator<{
         filename: string;
         file: NodeJS.ReadableStream;
@@ -47,22 +50,25 @@ export class MediaController {
         type: string;
       }>;
     };
-    if (typeof fastifyReq.isMultipart === 'function' && !fastifyReq.isMultipart()) {
-      throw new BadRequestException('Request must be multipart/form-data');
+    if (
+      typeof fastifyReq.isMultipart === "function" &&
+      !fastifyReq.isMultipart()
+    ) {
+      throw new BadRequestException("Request must be multipart/form-data");
     }
 
     const ALLOWED_EXTENSIONS = new Set([
-      '.mp4',
-      '.mov',
-      '.webm',
-      '.mkv',
-      '.avi',
-      '.m4v',
-      '.ogv',
-      '.mpg',
-      '.mpeg',
-      '.ts',
-      '.3gp',
+      ".mp4",
+      ".mov",
+      ".webm",
+      ".mkv",
+      ".avi",
+      ".m4v",
+      ".ogv",
+      ".mpg",
+      ".mpeg",
+      ".ts",
+      ".3gp",
     ]);
 
     const accepted: any[] = [];
@@ -74,14 +80,14 @@ export class MediaController {
       if (!part.file || !part.filename) continue;
       const ext = path.extname(part.filename).toLowerCase();
       const isVideoMime =
-        part.mimetype?.startsWith('video/') ||
-        part.mimetype === 'application/octet-stream';
+        part.mimetype?.startsWith("video/") ||
+        part.mimetype === "application/octet-stream";
 
       if (!ALLOWED_EXTENSIONS.has(ext) && !isVideoMime) {
         part.file.resume();
         rejected.push({
           filename: part.filename,
-          reason: `Unsupported container '${ext || 'unknown'}'. Supported formats: MP4, MOV, WebM, MKV, AVI, M4V, MPG, TS.`,
+          reason: `Unsupported container '${ext || "unknown"}'. Supported formats: MP4, MOV, WebM, MKV, AVI, M4V, MPG, TS.`,
         });
         continue;
       }
@@ -107,12 +113,12 @@ export class MediaController {
 
     if (accepted.length === 0 && rejected.length > 0) {
       throw new BadRequestException(
-        rejected.map((r) => `${r.filename}: ${r.reason}`).join('; '),
+        rejected.map((r) => `${r.filename}: ${r.reason}`).join("; "),
       );
     }
 
     if (accepted.length === 0) {
-      throw new BadRequestException('No files uploaded');
+      throw new BadRequestException("No files uploaded");
     }
 
     return {
@@ -124,45 +130,67 @@ export class MediaController {
     };
   }
 
-
-  @Post('search')
+  @Post("search")
   async searchMoments(
     @Body() body: { query: string; assetId?: string },
     @Req() req: any,
   ) {
     const userId = req.user?.id;
-    if (!body?.query) return { query: '', count: 0, results: [], hasExactMatch: false, queryIntent: 'mixed' };
-    const searchRes = await this.mediaService.searchDetailed(body.query, body.assetId, 15, userId);
+    if (!body?.query)
+      return {
+        query: "",
+        count: 0,
+        results: [],
+        hasExactMatch: false,
+        queryIntent: "mixed",
+      };
+    const searchRes = await this.mediaService.searchDetailed(
+      body.query,
+      body.assetId,
+      15,
+      userId,
+    );
     return { query: body.query, count: searchRes.results.length, ...searchRes };
   }
 
-  @Get('search')
+  @Get("search")
   async searchMomentsGet(
-    @Query('q') q: string,
-    @Query('assetId') assetId: string,
+    @Query("q") q: string,
+    @Query("assetId") assetId: string,
     @Req() req: any,
   ) {
     const userId = req.user?.id;
-    if (!q) return { query: '', count: 0, results: [], hasExactMatch: false, queryIntent: 'mixed' };
-    const searchRes = await this.mediaService.searchDetailed(q, assetId, 15, userId);
+    if (!q)
+      return {
+        query: "",
+        count: 0,
+        results: [],
+        hasExactMatch: false,
+        queryIntent: "mixed",
+      };
+    const searchRes = await this.mediaService.searchDetailed(
+      q,
+      assetId,
+      15,
+      userId,
+    );
     return { query: q, count: searchRes.results.length, ...searchRes };
   }
 
-  @Post('feedback')
-  async recordFeedback(
-    @Body() body: FeedbackPayload,
-    @Req() req: any,
-  ) {
+  @Post("feedback")
+  async recordFeedback(@Body() body: FeedbackPayload, @Req() req: any) {
     const userId = req.user?.id;
     if (!body?.query || !body?.assetId || !body?.feedback) {
-      throw new BadRequestException('query, assetId, and feedback are required');
+      throw new BadRequestException(
+        "query, assetId, and feedback are required",
+      );
     }
     const success = await this.mediaService.saveFeedback(body, userId);
     return { success };
   }
 
-  @Post('benchmark/run/:id')
-  async runBenchmark(@Param('id') id: string, @Req() req: any) {
+  @Post("benchmark/run/:id")
+  async runBenchmark(@Param("id") id: string, @Req() req: any) {
     const userId = req.user?.id;
     const results = await this.mediaService.runBenchmarkSuite(id, userId);
     const hits = results.filter((r) => r.hit).length;
@@ -170,38 +198,40 @@ export class MediaController {
       assetId: id,
       totalQueries: results.length,
       passedHits: hits,
-      accuracyPercentage: results.length ? Math.round((hits / results.length) * 100) : 0,
+      accuracyPercentage: results.length
+        ? Math.round((hits / results.length) * 100)
+        : 0,
       results,
     };
   }
 
-  @Post('benchmark/library')
+  @Post("benchmark/library")
   async runLibraryBenchmark(@Req() req: any) {
     const userId = req.user?.id;
     return this.mediaService.runLibraryBenchmarkSuite(userId);
   }
 
-  @Get('economics')
+  @Get("economics")
   async getEconomics(@Req() req: any) {
     const userId = req.user?.id;
     return this.mediaService.getUnitEconomics(userId);
   }
 
-  @Get(':id/status')
-  async getStatus(@Param('id') id: string, @Req() req: any) {
+  @Get(":id/status")
+  async getStatus(@Param("id") id: string, @Req() req: any) {
     const userId = req.user?.id;
     return this.mediaService.getPublicAsset(id, userId);
   }
 
-  @Get(':id/lineage')
-  async getLineage(@Param('id') id: string, @Req() req: any) {
+  @Get(":id/lineage")
+  async getLineage(@Param("id") id: string, @Req() req: any) {
     const userId = req.user?.id;
     return this.mediaService.getLineage(id, userId);
   }
 
-  @Get(':id/stream')
+  @Get(":id/stream")
   async streamMedia(
-    @Param('id') id: string,
+    @Param("id") id: string,
     @Req() req: any,
     @Res() res: FastifyReply,
   ) {
@@ -212,58 +242,70 @@ export class MediaController {
     const range = req.headers.range;
 
     if (range) {
-      const parts = range.replace(/bytes=/, '').split('-');
+      const parts = range.replace(/bytes=/, "").split("-");
       const start = parseInt(parts[0], 10);
       const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
       const chunksize = end - start + 1;
       const file = fs.createReadStream(filePath, { start, end });
       res.status(206);
       res.headers({
-        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-        'Accept-Ranges': 'bytes',
-        'Content-Length': chunksize,
-        'Content-Type': 'video/mp4',
+        "Content-Range": `bytes ${start}-${end}/${fileSize}`,
+        "Accept-Ranges": "bytes",
+        "Content-Length": chunksize,
+        "Content-Type": "video/mp4",
       });
       return res.send(file);
     }
 
     res.headers({
-      'Content-Length': fileSize,
-      'Content-Type': 'video/mp4',
-      'Accept-Ranges': 'bytes',
+      "Content-Length": fileSize,
+      "Content-Type": "video/mp4",
+      "Accept-Ranges": "bytes",
     });
     return res.send(fs.createReadStream(filePath));
   }
 
-  @Get(':id/thumbnail')
+  @Get(":id/thumbnail")
   async getThumbnail(
-    @Param('id') id: string,
+    @Param("id") id: string,
     @Req() req: any,
     @Res() res: FastifyReply,
   ) {
     const userId = req.user?.id;
     const thumbPath = await this.mediaService.getThumbnailPath(id, userId);
+    const stat = fs.statSync(thumbPath);
     const stream = fs.createReadStream(thumbPath);
-    res.header('Content-Type', 'image/jpeg');
+    res.header("Content-Type", "image/jpeg");
+
+    const hasVersion = Boolean(
+      (req.query as Record<string, unknown> | undefined)?.v,
+    );
+    if (hasVersion) {
+      res.header("Cache-Control", "public, max-age=31536000, immutable");
+    } else {
+      res.header("Cache-Control", "no-cache");
+      res.header("Last-Modified", stat.mtime.toUTCString());
+    }
+
     return res.send(stream);
   }
 
-  @Get(':id')
-  async getAsset(@Param('id') id: string, @Req() req: any) {
+  @Get(":id")
+  async getAsset(@Param("id") id: string, @Req() req: any) {
     const userId = req.user?.id;
     return this.mediaService.getPublicArtifacts(id, userId);
   }
 
-  @Post(':id/delete-original')
-  async deleteOriginal(@Param('id') id: string, @Req() req: any) {
+  @Post(":id/delete-original")
+  async deleteOriginal(@Param("id") id: string, @Req() req: any) {
     const userId = req.user?.id;
     const deleted = await this.mediaService.deleteOriginalSource(id, userId);
     return {
-      status: 'success',
+      status: "success",
       assetId: id,
       originalDeleted: deleted,
       message:
-        'Original master upload bytes deleted from disk. Proxy stream and PostgreSQL intelligence index remain functional.',
+        "Original master upload bytes deleted from disk. Proxy stream and PostgreSQL intelligence index remain functional.",
     };
   }
 }

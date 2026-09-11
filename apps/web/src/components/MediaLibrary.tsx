@@ -102,7 +102,7 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
                 {asset.status === 'indexed' && asset.thumbnailUrl ? (
                   <>
                     <img
-                      src={`${asset.thumbnailUrl}?token=${encodeURIComponent(token || '')}`}
+                      src={`${asset.thumbnailUrl}?token=${encodeURIComponent(token || '')}&v=${encodeURIComponent(asset.indexedAt || '')}`}
                       alt={asset.originalFilename}
                       className="w-full h-full object-cover"
                       onError={(e) => {

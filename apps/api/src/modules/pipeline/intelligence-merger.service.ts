@@ -105,12 +105,7 @@ export class IntelligenceMergerService {
         ...aggregated.activity,
         ...overlappingGemini.flatMap((g) => g.actions || []),
       ]);
-      const onScreenText = unique([
-        ...aggregated.onScreenText,
-        ...overlappingGemini
-          .flatMap((g) => [g.title || ''])
-          .filter((t) => /overlay|caption|text/i.test(t)),
-      ]);
+      const onScreenText = aggregated.onScreenText;
 
       const title =
         overlappingGemini[0]?.title ||

@@ -402,11 +402,12 @@ Return JSON:
       "objects": ["person", "car"],
       "scene": "short scene type",
       "activity": ["sitting"],
-      "on_screen_text": ["any readable text"],
+      "on_screen_text": ["verbatim text, one entry per distinct text element"],
       "description": "one sentence describing the frame"
     }
   ]
 }
+For "on_screen_text": transcribe every piece of text actually visible in the frame — signs, slides, captions, lower-thirds, subtitles, labels, logos with readable text, documents or screens shown on camera. Transcribe verbatim, exactly as written; do not summarize, paraphrase, or shorten it. Include small or secondary text, not just the most prominent element. One array entry per distinct text element (e.g. each bullet point on a slide is its own entry). If no text is visible, use an empty array.
 Use the provided timestamps. JSON only.`,
         },
       ];
