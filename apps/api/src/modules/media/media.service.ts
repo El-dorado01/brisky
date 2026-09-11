@@ -188,7 +188,9 @@ export class MediaService {
     const params = userId ? [assetId, userId] : [assetId];
 
     const res = await this.db.query(
-      `SELECT * FROM media_assets WHERE id = $1 ${userClause}`,
+      `SELECT *,
+              (SELECT started_at FROM indexing_jobs WHERE asset_id = media_assets.id ORDER BY (status = 'active') DESC, created_at DESC LIMIT 1) AS job_started_at
+       FROM media_assets WHERE id = $1 ${userClause}`,
       params,
     );
     const row = res.rows[0];
@@ -215,6 +217,7 @@ export class MediaService {
       codec: row.codec,
       segmentCount,
       indexedAt: row.indexed_at,
+      startedAt: row.job_started_at,
       thumbnailUrl: `/api/v1/media/${row.id}/thumbnail`,
       streamUrl: `/api/v1/media/${row.id}/stream`,
       costUsd: row.cost_usd,
@@ -234,7 +237,8 @@ export class MediaService {
     const params = userId ? [userId] : [];
 
     const res = await this.db.query(
-      `SELECT a.*, COUNT(s.id)::int AS segment_count
+      `SELECT a.*, COUNT(s.id)::int AS segment_count,
+              (SELECT started_at FROM indexing_jobs WHERE asset_id = a.id ORDER BY (status = 'active') DESC, created_at DESC LIMIT 1) AS job_started_at
        FROM media_assets a
        LEFT JOIN media_segments s ON s.asset_id = a.id
        ${userClause}
@@ -258,6 +262,7 @@ export class MediaService {
       codec: row.codec,
       segmentCount: row.segment_count || 0,
       indexedAt: row.indexed_at,
+      startedAt: row.job_started_at,
       thumbnailUrl: `/api/v1/media/${row.id}/thumbnail`,
       streamUrl: `/api/v1/media/${row.id}/stream`,
       costUsd: row.cost_usd,

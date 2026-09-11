@@ -18,6 +18,7 @@ export interface AssetSummary {
   codec: string;
   segmentCount: number;
   indexedAt?: string;
+  startedAt?: string;
   thumbnailUrl: string;
   streamUrl: string;
   costUsd?: number;

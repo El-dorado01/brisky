@@ -1,6 +1,53 @@
 import React from 'react';
-import { Film, GitBranch, RefreshCw } from 'lucide-react';
+import { Film, GitBranch, RefreshCw, Clock } from 'lucide-react';
 import { AssetSummary, formatTime } from '../types';
+
+// Timer feature to show elapsed time for processing assets and indexing duration for indexed assets
+// Maybe deleted for users.
+function formatElapsed(ms: number): string {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+const ElapsedTimer: React.FC<{
+  status: AssetSummary['status'];
+  startedAt?: string;
+  indexDurationMs?: number;
+}> = ({ status, startedAt, indexDurationMs }) => {
+  const [now, setNow] = React.useState(() => Date.now());
+
+  React.useEffect(() => {
+    if (status !== 'processing' || !startedAt) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [status, startedAt]);
+
+  if (status === 'processing' && startedAt) {
+    const elapsedMs = now - new Date(startedAt).getTime();
+    return (
+      <span className="text-[10px] text-amber-400/90 font-mono flex items-center gap-1 mt-0.5">
+        <Clock className="w-2.5 h-2.5" />
+        {formatElapsed(elapsedMs)} elapsed
+      </span>
+    );
+  }
+
+  if (status === 'indexed' && typeof indexDurationMs === 'number' && indexDurationMs > 0) {
+    return (
+      <span className="text-[10px] text-slate-500 font-mono flex items-center gap-1 mt-0.5">
+        <Clock className="w-2.5 h-2.5" />
+        Indexed in {formatElapsed(indexDurationMs)}
+      </span>
+    );
+  }
+
+  return null;
+};
 
 interface MediaLibraryProps {
   assets: AssetSummary[];
@@ -116,6 +163,11 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
                 >
                   {asset.originalFilename}
                 </p>
+                <ElapsedTimer
+                  status={asset.status}
+                  startedAt={asset.startedAt}
+                  indexDurationMs={asset.indexDurationMs}
+                />
                 <div className="flex items-center justify-between text-[11px] text-slate-400 mt-0.5">
                   <span>{asset.segmentCount} moments</span>
                   <button
