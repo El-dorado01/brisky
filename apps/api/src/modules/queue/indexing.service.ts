@@ -88,6 +88,19 @@ export class IndexingService implements OnApplicationBootstrap {
     // Smaller files get lower priority numbers (BullMQ processes lower number first)
     const priority = Math.min(1000, Math.max(1, Math.round(data.fileSize / (1024 * 1024))));
 
+    // Clean up any existing waiting/delayed jobs for this asset before re-queuing
+    try {
+      const existingJobs = await this.queue.getJobs(['waiting', 'delayed']);
+      for (const exJob of existingJobs) {
+        if (exJob.data?.assetId === data.assetId) {
+          this.logger.log(`Removing redundant waiting job ${exJob.id} for asset ${data.assetId}`);
+          await exJob.remove().catch(() => undefined);
+        }
+      }
+    } catch {
+      // ignore
+    }
+
     const job = await this.queue.add('index-video', data, {
       priority,
       attempts: 3,

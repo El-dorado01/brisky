@@ -21,9 +21,10 @@ import { resolveFromRepo } from '../../common/repo-paths';
 import { ConnectorRegistry } from '../connector/connector.registry';
 import { ConnectorsService } from '../connector/connectors.service';
 
-@Processor('indexing-queue', { concurrency: 2 })
+@Processor('indexing-queue', { concurrency: 1 })
 export class IndexingProcessor extends WorkerHost {
   private readonly logger = new Logger(IndexingProcessor.name);
+  private readonly activeAssets = new Set<string>();
   private storageRoot: string;
   private proxyDir: string;
   private thumbnailDir: string;
@@ -53,6 +54,25 @@ export class IndexingProcessor extends WorkerHost {
   }
 
   async process(job: Job<IndexingJobData>): Promise<void> {
+    const { assetId, userId, sourcePath, originalFilename, checksum } = job.data;
+
+    // Concurrency guard: Guarantee only one worker processes this asset at a time
+    if (this.activeAssets.has(assetId)) {
+      this.logger.warn(
+        `Asset ${assetId} (${originalFilename}) is already actively being processed by another worker instance. Skipping duplicate job ${job.id}.`,
+      );
+      return;
+    }
+    this.activeAssets.add(assetId);
+
+    try {
+      await this.executeProcessing(job);
+    } finally {
+      this.activeAssets.delete(assetId);
+    }
+  }
+
+  private async executeProcessing(job: Job<IndexingJobData>): Promise<void> {
     const { assetId, userId, sourcePath, originalFilename, checksum } = job.data;
     const indexStartedAt = Date.now();
     const timings: StageTiming[] = [];
