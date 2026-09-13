@@ -1,3 +1,5 @@
+name: brisky
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
