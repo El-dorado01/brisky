@@ -103,6 +103,13 @@ export class IntelligenceMergerService {
         (seg) => seg.start_time < end && seg.end_time > start,
       );
 
+      const title =
+        overlappingGemini[0]?.title || nearestFrame?.scene || `Scene ${i + 1}`;
+      const description =
+        [nearestFrame?.description, overlappingGemini[0]?.description]
+          .filter(Boolean)
+          .join(' ') || `Scene from ${start.toFixed(1)}s to ${end.toFixed(1)}s`;
+
       // Add spatial hints to objects for better micro-detail detection
       // Example: "watch:background", "hand:holding", "car:nearby"
       const objectsWithHints = unique([
@@ -118,13 +125,6 @@ export class IntelligenceMergerService {
         ...overlappingGemini.flatMap((g) => g.actions || []),
       ]);
       const onScreenText = aggregated.onScreenText;
-
-      const title =
-        overlappingGemini[0]?.title || nearestFrame?.scene || `Scene ${i + 1}`;
-      const description =
-        [nearestFrame?.description, overlappingGemini[0]?.description]
-          .filter(Boolean)
-          .join(' ') || `Scene from ${start.toFixed(1)}s to ${end.toFixed(1)}s`;
 
       const sources: string[] = [];
       if (nearestFrame) sources.push('visual');

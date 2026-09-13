@@ -189,22 +189,34 @@ export class IndexingProcessor extends WorkerHost {
           throw new Error(`Missing connectorAccountId for asset ${assetId} (provider: ${provider})`);
         }
 
-        const connector = this.connectorRegistry.get(provider);
-        const auth = await this.connectorsService.getAuthContext(
-          job.data.connectorAccountId,
-          userId,
-        );
+        const alreadyDownloaded =
+          fs.existsSync(effectiveSourcePath) &&
+          job.data.fileSize > 0 &&
+          fs.statSync(effectiveSourcePath).size === job.data.fileSize;
 
-        await mark('download_from_connector', 5, async () => {
-          await connector.downloadAsset(
-            auth,
-            remoteId!,
-            effectiveSourcePath,
-            (pct: number) => {
-              setStage('downloading_from_connector', 2 + Math.round((pct / 100) * 5)).catch(() => undefined);
-            },
+        if (alreadyDownloaded) {
+          this.logger.log(
+            `Source for ${assetId} already exists in scratch with valid size (${(job.data.fileSize / (1024 * 1024)).toFixed(2)} MB); skipping re-download`,
           );
-        });
+          await setStage('downloading_from_connector', 7, true);
+        } else {
+          const connector = this.connectorRegistry.get(provider);
+          const auth = await this.connectorsService.getAuthContext(
+            job.data.connectorAccountId,
+            userId,
+          );
+
+          await mark('download_from_connector', 5, async () => {
+            await connector.downloadAsset(
+              auth,
+              remoteId!,
+              effectiveSourcePath,
+              (pct: number) => {
+                setStage('downloading_from_connector', 2 + Math.round((pct / 100) * 5)).catch(() => undefined);
+              },
+            );
+          });
+        }
       } else {
         if (!fs.existsSync(sourcePath)) {
           throw new Error(`Source video file not found on disk: ${sourcePath}`);

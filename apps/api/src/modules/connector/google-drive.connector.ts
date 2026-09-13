@@ -61,7 +61,11 @@ export class GoogleDriveConnector implements MediaConnector<OAuth2Client> {
         attempt += 1;
         const status = err?.status || err?.code || err?.response?.status;
         const isRateLimit = status === 429 || String(err?.message || '').toLowerCase().includes('rate limit');
-        const isTransient = status === 503 || status === 500;
+        const isTransient =
+          status === 503 ||
+          status === 500 ||
+          status === 'ECONNRESET' ||
+          String(err?.message || '').toLowerCase().includes('aborted');
 
         if (attempt >= maxRetries || (!isRateLimit && !isTransient)) {
           throw err;
@@ -260,44 +264,50 @@ export class GoogleDriveConnector implements MediaConnector<OAuth2Client> {
 
     fs.mkdirSync(path.dirname(destPath), { recursive: true });
 
-    const res = await this.withRetry(() =>
-      drive.files.get(
+    await this.withRetry(async () => {
+      const res = await drive.files.get(
         { fileId: remoteId, alt: 'media' },
         { responseType: 'stream' },
-      ),
-    );
+      );
 
-    let downloadedBytes = 0;
-    let lastProgress = 0;
+      let downloadedBytes = 0;
+      let lastProgress = 0;
 
-    await new Promise<void>((resolve, reject) => {
+      const { pipeline } = await import('node:stream/promises');
+      const { Transform } = await import('node:stream');
+
+      const progressTracker = new Transform({
+        transform(chunk, encoding, callback) {
+          downloadedBytes += chunk.length;
+          if (totalBytes > 0 && onProgress) {
+            const pct = Math.min(100, Math.round((downloadedBytes / totalBytes) * 100));
+            if (pct - lastProgress >= 5 || pct === 100) {
+              lastProgress = pct;
+              onProgress(pct);
+            }
+          }
+          callback(null, chunk);
+        },
+      });
+
       const writeStream = fs.createWriteStream(destPath);
-
-      (res.data as NodeJS.ReadableStream).on('data', (chunk: Buffer) => {
-        downloadedBytes += chunk.length;
-        if (totalBytes > 0 && onProgress) {
-          const pct = Math.min(100, Math.round((downloadedBytes / totalBytes) * 100));
-          if (pct - lastProgress >= 5 || pct === 100) {
-            lastProgress = pct;
-            onProgress(pct);
+      try {
+        await pipeline(res.data as NodeJS.ReadableStream, progressTracker, writeStream);
+      } catch (streamErr) {
+        if (fs.existsSync(destPath)) {
+          try {
+            fs.unlinkSync(destPath);
+          } catch {
+            /* ignore */
           }
         }
-      });
+        throw streamErr;
+      }
 
-      (res.data as NodeJS.ReadableStream).on('error', (err) => {
-        writeStream.destroy();
-        reject(err);
-      });
-
-      writeStream.on('finish', () => resolve());
-      writeStream.on('error', reject);
-
-      (res.data as NodeJS.ReadableStream).pipe(writeStream);
-    });
-
-    this.logger.log(
-      `[GoogleDriveConnector] Downloaded remoteId=${remoteId} (${(downloadedBytes / (1024 * 1024)).toFixed(2)} MB) to scratch: ${destPath}`,
-    );
+      this.logger.log(
+        `[GoogleDriveConnector] Downloaded remoteId=${remoteId} (${(downloadedBytes / (1024 * 1024)).toFixed(2)} MB) to scratch: ${destPath}`,
+      );
+    }, 3, 2000);
   }
 
   async getByteRange(

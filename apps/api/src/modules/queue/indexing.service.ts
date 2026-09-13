@@ -226,9 +226,12 @@ export class IndexingService implements OnApplicationBootstrap {
       original_path: string;
       original_filename: string;
       checksum: string;
-      file_size: string;
+      file_size: number;
+      source_type?: string;
+      connector_account_id?: string;
+      external_file_id?: string;
     }>(
-      `SELECT id, original_path, original_filename, checksum, file_size
+      `SELECT id, original_path, original_filename, checksum, file_size, source_type, connector_account_id, external_file_id
        FROM media_assets
        WHERE id = $1 AND user_id = $2`,
       [assetId, userId],
@@ -239,19 +242,24 @@ export class IndexingService implements OnApplicationBootstrap {
     }
 
     const row = res.rows[0];
-    const sourcePath = this.resolveSourcePath(row.id, row.original_path);
+    const isConnectorAsset = Boolean(row.connector_account_id && row.external_file_id);
+    let sourcePath = '';
 
-    // Check if source file or web proxy exists on disk before re-queuing
-    if (!sourcePath) {
-      throw new BadRequestException(
-        `Cannot retry indexing for ${row.original_filename} (${assetId}): neither original master file nor generated web proxy exists.`,
-      );
-    }
+    if (!isConnectorAsset) {
+      const resolved = this.resolveSourcePath(row.id, row.original_path);
+      // Check if source file or web proxy exists on disk before re-queuing
+      if (!resolved) {
+        throw new BadRequestException(
+          `Cannot retry indexing for ${row.original_filename} (${assetId}): neither original master file nor generated web proxy exists.`,
+        );
+      }
+      sourcePath = resolved;
 
-    if (sourcePath !== row.original_path) {
-      this.logger.log(
-        `Original file for ${row.original_filename} (${assetId}) was deleted; falling back to web proxy at ${sourcePath}`,
-      );
+      if (sourcePath !== row.original_path) {
+        this.logger.log(
+          `Original file for ${row.original_filename} (${assetId}) was deleted; falling back to web proxy at ${sourcePath}`,
+        );
+      }
     }
 
     await this.db.query(
@@ -268,6 +276,11 @@ export class IndexingService implements OnApplicationBootstrap {
       originalFilename: row.original_filename,
       checksum: row.checksum,
       fileSize: Number(row.file_size || 0),
+      sourceType: (row.source_type as any) || 'upload',
+      provider: row.source_type || 'upload',
+      remoteId: row.external_file_id,
+      externalFileId: row.external_file_id,
+      connectorAccountId: row.connector_account_id,
       forceReindex: true,
     });
 
