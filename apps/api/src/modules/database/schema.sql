@@ -1,4 +1,4 @@
--- PostgreSQL Schema for Media Intel Phase 2
+-- PostgreSQL Schema for Brisky Phase 2
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS media_assets (
   thumbnail_path VARCHAR(1024),
   original_path VARCHAR(1024),
   proxy_status VARCHAR(32) DEFAULT 'ready',
-  availability VARCHAR(32) DEFAULT 'available',
+  availability VARCHAR(32) DEFAULT 'online',
   parent_asset_id VARCHAR(64) REFERENCES media_assets(id) ON DELETE SET NULL,
   relationship_type VARCHAR(32) DEFAULT 'original',
   phash VARCHAR(64),
@@ -222,5 +222,33 @@ CREATE TABLE IF NOT EXISTS query_understanding_cache (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_query_understanding_hash ON query_understanding_cache(query_hash);
+
+-- Phase 4: Cloud Connectors & Google Drive Account Storage
+CREATE TABLE IF NOT EXISTS connector_accounts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  provider VARCHAR(32) NOT NULL DEFAULT 'google_drive',
+  email VARCHAR(255),
+  account_name VARCHAR(255),
+  encrypted_tokens TEXT NOT NULL,
+  selected_folders JSONB DEFAULT '[]',
+  sync_cursor VARCHAR(255),
+  status VARCHAR(32) DEFAULT 'connected',
+  last_synced_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_connector_accounts_user ON connector_accounts(user_id);
+
+-- Alter media_assets for Cloud Connectors (Google Drive)
+ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS external_file_id VARCHAR(255);
+ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS connector_account_id UUID REFERENCES connector_accounts(id) ON DELETE SET NULL;
+ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS drive_modified_time TIMESTAMPTZ;
+ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS drive_web_view_link VARCHAR(1024);
+ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS proxy_remote_id VARCHAR(255);
+ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS thumbnail_remote_id VARCHAR(255);
+CREATE INDEX IF NOT EXISTS idx_assets_external_file ON media_assets(external_file_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_assets_connector_acc ON media_assets(connector_account_id);
+
 
 

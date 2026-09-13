@@ -18,6 +18,8 @@ import {
   TranscriptCue,
 } from '../pipeline/pipeline.types';
 import { resolveFromRepo } from '../../common/repo-paths';
+import { ConnectorRegistry } from '../connector/connector.registry';
+import { ConnectorsService } from '../connector/connectors.service';
 
 @Processor('indexing-queue', { concurrency: 2 })
 export class IndexingProcessor extends WorkerHost {
@@ -34,6 +36,8 @@ export class IndexingProcessor extends WorkerHost {
     private readonly whisperService: WhisperTranscriptionService,
     private readonly mergerService: IntelligenceMergerService,
     private readonly configService: ConfigService,
+    private readonly connectorRegistry: ConnectorRegistry,
+    private readonly connectorsService: ConnectorsService,
   ) {
     super();
     this.storageRoot = resolveFromRepo(
@@ -167,16 +171,49 @@ export class IndexingProcessor extends WorkerHost {
         return;
       }
 
-      if (!fs.existsSync(sourcePath)) {
-        throw new Error(`Source video file not found on disk: ${sourcePath}`);
-      }
-
       const scratch = path.join(this.scratchDir, assetId);
       fs.mkdirSync(scratch, { recursive: true });
 
+      const provider = job.data.provider || (job.data.sourceType === 'drive' ? 'google_drive' : 'upload');
+      const remoteId = job.data.remoteId || job.data.externalFileId;
+      const isRemoteMaster = provider !== 'upload' && Boolean(remoteId);
+
+      let effectiveSourcePath = sourcePath;
+
+      if (isRemoteMaster) {
+        const sourceExt = path.extname(job.data.originalFilename || '') || '.mp4';
+        effectiveSourcePath = path.join(scratch, `source${sourceExt}`);
+        await setStage('downloading_from_connector', 2, true);
+
+        if (!job.data.connectorAccountId) {
+          throw new Error(`Missing connectorAccountId for asset ${assetId} (provider: ${provider})`);
+        }
+
+        const connector = this.connectorRegistry.get(provider);
+        const auth = await this.connectorsService.getAuthContext(
+          job.data.connectorAccountId,
+          userId,
+        );
+
+        await mark('download_from_connector', 5, async () => {
+          await connector.downloadAsset(
+            auth,
+            remoteId!,
+            effectiveSourcePath,
+            (pct: number) => {
+              setStage('downloading_from_connector', 2 + Math.round((pct / 100) * 5)).catch(() => undefined);
+            },
+          );
+        });
+      } else {
+        if (!fs.existsSync(sourcePath)) {
+          throw new Error(`Source video file not found on disk: ${sourcePath}`);
+        }
+      }
+
       // Stage 1: Probe Metadata
       const metadata = await mark('probe_metadata', 8, () =>
-        this.ffmpegPipeline.probeMetadata(sourcePath),
+        this.ffmpegPipeline.probeMetadata(effectiveSourcePath),
       );
 
       await this.db.query(
@@ -198,7 +235,7 @@ export class IndexingProcessor extends WorkerHost {
       const framesDir = path.join(scratch, 'frames');
       const scenes = await mark('scene_detection', 14, () =>
         this.ffmpegPipeline.detectScenesAndExtractFrames(
-          sourcePath,
+          effectiveSourcePath,
           metadata.duration,
           framesDir,
           (current, total) => {
@@ -217,7 +254,7 @@ export class IndexingProcessor extends WorkerHost {
       const [, audioOk] = await mark('ffmpeg_outputs', 28, async () => {
         // 1. Fast thumbnail extraction first (~0.2s)
         await this.ffmpegPipeline.generateThumbnail(
-          sourcePath,
+          effectiveSourcePath,
           thumbnailPath,
           scenes[0]?.representativeTimestamp || 1,
         );
@@ -225,19 +262,19 @@ export class IndexingProcessor extends WorkerHost {
 
         // 2. Fast audio stream extraction (~1-2s)
         const audioExtracted = metadata.hasAudio
-          ? await this.ffmpegPipeline.extractAudio(sourcePath, audioPath)
+          ? await this.ffmpegPipeline.extractAudio(effectiveSourcePath, audioPath)
           : false;
         await setStage('audio_extracted', 33, true);
 
         // 3. Web-safe 720p H.264 proxy encoding (hook into ffmpeg progress)
-        const isSelfProxy = path.resolve(sourcePath) === path.resolve(proxyPath);
+        const isSelfProxy = path.resolve(effectiveSourcePath) === path.resolve(proxyPath);
         if (isSelfProxy && fs.existsSync(proxyPath)) {
           this.logger.log(`Source is already the web proxy; skipping re-encoding of ${proxyPath}`);
           await setStage('proxy_ready', 60, true);
           await this.db.query(`UPDATE media_assets SET proxy_status = 'ready' WHERE id = $1`, [assetId]);
         } else {
           await this.ffmpegPipeline.generateProxy(
-            sourcePath,
+            effectiveSourcePath,
             proxyPath,
             (percent) => {
               const scaled = 33 + Math.round((percent / 100) * 27);
@@ -250,6 +287,35 @@ export class IndexingProcessor extends WorkerHost {
 
         return [proxyPath, audioExtracted];
       });
+
+      // Section 5 (03-media-storage-brief.md): Upload proxy & preview to user connector under Brisky/
+      if (isRemoteMaster && provider === 'google_drive' && job.data.connectorAccountId) {
+        try {
+          const driveConnector = this.connectorRegistry.get('google_drive') as any;
+          const auth = await this.connectorsService.getAuthContext(
+            job.data.connectorAccountId,
+            userId,
+          );
+          if (driveConnector?.ensureBriskyStructure) {
+            const folders = await driveConnector.ensureBriskyStructure(auth);
+            const [proxyUpload, thumbUpload] = await Promise.all([
+              driveConnector.uploadAsset(auth, folders.proxiesId, proxyPath, `${assetId}_proxy.mp4`),
+              driveConnector.uploadAsset(auth, folders.previewsId, thumbnailPath, `${assetId}_thumb.jpg`),
+            ]);
+            await this.db.query(
+              `UPDATE media_assets SET proxy_remote_id = $1, thumbnail_remote_id = $2 WHERE id = $3`,
+              [proxyUpload.remoteId, thumbUpload.remoteId, assetId],
+            );
+            this.logger.log(
+              `[03-media-storage-brief.md] Uploaded proxy & preview to user Google Drive under Brisky/ for asset ${assetId}`,
+            );
+          }
+        } catch (connectorUploadErr) {
+          this.logger.warn(
+            `Failed to upload proxy/preview to user connector (intelligence and local proxy remain safe): ${connectorUploadErr}`,
+          );
+        }
+      }
 
       // Stage 4: AI Analysis (concurrency-managed by GeminiIntelligenceService semaphore)
       await setStage('ai_analysis', 62, true);
@@ -302,7 +368,7 @@ export class IndexingProcessor extends WorkerHost {
           this.logger.warn(`Frame analysis failed: ${err instanceof Error ? err.message : err}`);
           return { observations: [], usage: null };
         }),
-        this.geminiService.analyzeVideo(sourcePath).catch((err) => {
+        this.geminiService.analyzeVideo(effectiveSourcePath).catch((err) => {
           this.logger.warn(`Gemini video failed: ${err instanceof Error ? err.message : err}`);
           return { analysis: emptyGemini, usage: null };
         }),
@@ -321,7 +387,7 @@ export class IndexingProcessor extends WorkerHost {
         assetId,
         originalFilename,
         checksum,
-        originalPath: sourcePath,
+        originalPath: isRemoteMaster ? '' : effectiveSourcePath,
         proxyPath,
         thumbnailPath,
         scratchDir: scratch,
@@ -344,9 +410,21 @@ export class IndexingProcessor extends WorkerHost {
         artifacts,
         proxyPath,
         thumbnailPath,
-        sourcePath,
+        sourcePath: isRemoteMaster ? '' : effectiveSourcePath,
+        isRemoteMaster,
       });
       await setStage('database_persisted', 98, true);
+
+      // Enforce the Phase 4 Core Thesis: "We keep the intelligence, not the tape."
+      // Ephemeral scratch (downloaded master bytes, extracted frames, temp audio) is purged.
+      if (fs.existsSync(scratch)) {
+        try {
+          fs.rmSync(scratch, { recursive: true, force: true });
+          this.logger.log(`[MediaConnector: ${provider}] Purged ephemeral scratch directory: ${scratch}`);
+        } catch (purgeErr) {
+          this.logger.warn(`Could not unlink ephemeral scratch directory: ${purgeErr}`);
+        }
+      }
 
       // Mark Complete
       await setStage('completed', 100, true);
@@ -433,6 +511,14 @@ export class IndexingProcessor extends WorkerHost {
         );
       }
 
+      // Cleanup ephemeral scratch master if downloaded
+      const scratchMaster = path.join(this.scratchDir, assetId, 'source.mp4');
+      if (fs.existsSync(scratchMaster)) {
+        try {
+          fs.unlinkSync(scratchMaster);
+        } catch { /* ignore */ }
+      }
+
       // CRITICAL: Rethrow error so BullMQ registers the failure, triggers backoff retries,
       // and properly transitions the job to failed / dead-letter status.
       throw err;
@@ -458,15 +544,16 @@ export class IndexingProcessor extends WorkerHost {
     proxyPath: string;
     thumbnailPath: string;
     sourcePath: string;
+    isRemoteMaster?: boolean;
   }) {
-    const { assetId, userId, artifacts, proxyPath, thumbnailPath, sourcePath } = params;
+    const { assetId, userId, artifacts, proxyPath, thumbnailPath, sourcePath, isRemoteMaster } = params;
 
     // Update asset paths
     await this.db.query(
       `UPDATE media_assets
-       SET proxy_path = $1, thumbnail_path = $2, original_path = $3
-       WHERE id = $4`,
-      [proxyPath, thumbnailPath, sourcePath, assetId],
+       SET proxy_path = $1, thumbnail_path = $2, original_path = $3, original_deleted = $4
+       WHERE id = $5`,
+      [proxyPath, thumbnailPath, sourcePath, Boolean(isRemoteMaster), assetId],
     );
 
     // Delete any old segments for this asset

@@ -25,6 +25,36 @@ export interface AssetSummary {
   costPerSourceMinuteUsd?: number;
   framesAnalyzed?: number;
   indexDurationMs?: number;
+  sourceType?: 'upload' | 'google_drive' | 'drive' | 'dropbox' | 'onedrive' | 's3' | string;
+  externalFileId?: string;
+  connectorAccountId?: string;
+  driveWebViewLink?: string;
+  availability?: 'online' | 'archived' | 'missing' | 'pending';
+  proxyStatus?: 'pending' | 'processing' | 'ready' | 'failed';
+}
+
+export interface ConnectorAccount {
+  id: string;
+  provider: string;
+  email: string;
+  accountName: string;
+  selectedFolders: Array<{ id: string; name: string }>;
+  status: string;
+  lastSyncedAt?: string;
+  createdAt: string;
+}
+
+export interface ConnectorFolder {
+  id: string;
+  name: string;
+  parentId?: string;
+}
+
+export interface SyncResult {
+  discovered: number;
+  queued: number;
+  existing: number;
+  archived: number;
 }
 
 export interface IndexingStats {

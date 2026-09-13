@@ -772,7 +772,7 @@ Replace with (adds `keyframe_paths` column + `$20` placeholder + the JSON-string
 
 Run: `docker compose up -d postgres` (or however the local Postgres container is normally started per `docker-compose.yml`), then start the API once (`cd apps/api && npm run dev` briefly, or however schema is normally applied per `DatabaseService`'s startup hook), then check:
 
-Run: `docker compose exec postgres psql -U postgres -d media_intel -c "\d media_segments"` (adjust user/db name to match `docker-compose.yml`)
+Run: `docker compose exec postgres psql -U postgres -d brisky -c "\d media_segments"` (adjust user/db name to match `docker-compose.yml`)
 Expected: `keyframe_paths | jsonb | ... default '[]'::jsonb` appears in the column list.
 
 - [ ] **Step 4: Type-check**
@@ -1114,7 +1114,7 @@ Expected: PASS, all tests green
 
 Start the stack per the existing local dev flow (`docker compose up -d`, then `npm run dev` and `npm run dev:worker` in `apps/api`, per `phase-plan.md`'s Phase 0/1 setup). Upload one video that previously scored poorly on a visual/micro-detail query. After indexing completes, inspect its `media_segments` rows:
 
-Run: `docker compose exec postgres psql -U postgres -d media_intel -c "SELECT id, start_time, end_time, jsonb_array_length(keyframe_paths) AS frame_count FROM media_segments WHERE asset_id = '<assetId>' ORDER BY start_time;"`
+Run: `docker compose exec postgres psql -U postgres -d brisky -c "SELECT id, start_time, end_time, jsonb_array_length(keyframe_paths) AS frame_count FROM media_segments WHERE asset_id = '<assetId>' ORDER BY start_time;"`
 Expected: at least some rows with `frame_count > 1` for scenes longer than 6 seconds.
 
 - [ ] **Step 5: Before/after benchmark comparison**

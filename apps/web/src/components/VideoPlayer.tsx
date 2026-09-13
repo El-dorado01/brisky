@@ -91,14 +91,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                   <span>${selected.costUsd.toFixed(4)}</span>
                 </div>
               )}
-              <button
-                onClick={onDeleteOriginal}
-                disabled={selected.originalDeleted}
-                className="p-1.5 text-xs text-rose-400 hover:bg-rose-950/40 rounded border border-rose-900/40 disabled:opacity-40 transition"
-                title="Simulate thesis: Delete original master bytes"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
+              {selected.sourceType === 'upload' && (
+                <button
+                  onClick={onDeleteOriginal}
+                  disabled={selected.originalDeleted}
+                  className="p-1.5 text-xs text-rose-400 hover:bg-rose-950/40 rounded border border-rose-900/40 disabled:opacity-40 transition"
+                  title="Simulate thesis: Delete master upload bytes"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              )}
             </div>
           </div>
 

@@ -29,7 +29,7 @@ export class AuthService implements OnModuleInit {
   ) {
     this.jwtSecret =
       this.configService.get<string>('JWT_SECRET') ||
-      'media-intel-development-secret-key-32-chars-long';
+      'brisky-development-secret-key-32-chars-long';
   }
 
   async onModuleInit() {
@@ -161,7 +161,7 @@ export class AuthService implements OnModuleInit {
 
   private async seedDefaultUser() {
     try {
-      const defaultEmail = 'demo@mediaintel.local';
+      const defaultEmail = 'demo@brisky.local';
       const existing = await this.db.query<{ id: string }>(
         'SELECT id FROM users WHERE email = $1',
         [defaultEmail],

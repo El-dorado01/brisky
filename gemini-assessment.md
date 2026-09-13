@@ -45,7 +45,7 @@ flowchart TD
 - **User searches:** `"red card tackle"` in a football clip.
 - The commentator screams: *"And the referee is over there, tempers are flaring!"*
 - If the system relies primarily on speech, it finds **nothing**.
-- But in [intelligence-merger.service.ts](file:///c:/Users/hp/Desktop/media-intel/apps/api/src/modules/pipeline/intelligence-merger.service.ts), our pipeline extracts `actions: ['tackle', 'foul', 'referee pulling card']` and `objects: ['soccer ball', 'referee', 'whistle']`.
+- But in [intelligence-merger.service.ts](file:///c:/Users/hp/Desktop/brisky/apps/api/src/modules/pipeline/intelligence-merger.service.ts), our pipeline extracts `actions: ['tackle', 'foul', 'referee pulling card']` and `objects: ['soccer ball', 'referee', 'whistle']`.
 - **Trap of a hard threshold (e.g. 0.70):** The text `"red card tackle"` compared against `"referee holds up card after player collision"` might score **0.62** cosine similarity. A rigid 0.70 cutoff would discard the exact clip the user wanted!
 
 #### Edge Case 2: The TikTok / Shorts Meme Music Trap

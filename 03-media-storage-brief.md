@@ -186,7 +186,7 @@ User Storage
 │
 ├── Original media
 │
-└── Mowmentia/
+└── Brisky/
     ├── previews/
     ├── proxies/
     ├── clips/
@@ -353,7 +353,7 @@ A future desktop agent could act as an authenticated media gateway.
 ```text
 Phone
   ↓
-Mowmentia
+Brisky
   ↓
 Desktop Agent
   ↓
@@ -374,7 +374,7 @@ However, this is **not an MVP requirement**. It introduces NAT traversal, securi
 
 The architecture should ultimately enable:
 
-> **Your media can live anywhere. Mowmentia understands it everywhere.**
+> **Your media can live anywhere. Brisky understands it everywhere.**
 
 The user shouldn't have to migrate their library into our ecosystem.
 

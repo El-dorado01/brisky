@@ -14,7 +14,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   async onModuleInit() {
     const connectionString = this.configService.get<string>(
       'DATABASE_URL',
-      'postgresql://postgres:postgrespassword@localhost:5432/media_intel',
+      'postgresql://postgres:postgrespassword@localhost:5432/brisky',
     );
 
     this.pool = new Pool({

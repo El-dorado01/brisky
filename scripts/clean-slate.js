@@ -48,7 +48,7 @@ async function main() {
   }
 
   // 2. Clear Database Records
-  const dbUrl = process.env.DATABASE_URL || 'postgresql://postgres:postgrespassword@localhost:5432/media_intel';
+  const dbUrl = process.env.DATABASE_URL || 'postgresql://postgres:postgrespassword@localhost:5432/brisky';
   let pool;
   try {
     pool = new Pool({ connectionString: dbUrl });
@@ -65,7 +65,7 @@ async function main() {
     await pool.query('TRUNCATE TABLE users CASCADE;');
     console.log('[PostgreSQL] Truncated users table.');
 
-    // Seed default demo user: demo@mediaintel.local / demopassword123
+    // Seed default demo user: demo@brisky.local / demopassword123
     const { scryptSync, randomBytes } = require('crypto');
     const salt = randomBytes(16).toString('hex');
     const hash = scryptSync('demopassword123', salt, 64).toString('hex');
@@ -74,7 +74,7 @@ async function main() {
       INSERT INTO users (email, password_hash, name)
       VALUES ($1, $2, $3)
       RETURNING id, email, name;
-    `, ['demo@mediaintel.local', passwordHash, 'Demo Creator']);
+    `, ['demo@brisky.local', passwordHash, 'Demo Creator']);
     console.log(`[PostgreSQL] Re-seeded default user: ${userRes.rows[0].email} (${userRes.rows[0].id})`);
 
   } catch (err) {

@@ -21,7 +21,7 @@ const Pool = require(require.resolve('pg', { paths: [apiDir] })).Pool;
 const { GoogleGenAI } = require(require.resolve('@google/genai', { paths: [apiDir] }));
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://postgres:postgrespassword@localhost:5432/media_intel',
+  connectionString: process.env.DATABASE_URL || 'postgresql://postgres:postgrespassword@localhost:5432/brisky',
 });
 
 // Setup key pool

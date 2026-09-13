@@ -71,7 +71,9 @@ export class GeminiIntelligenceService {
     private readonly configService: ConfigService,
     private readonly ffmpegPipeline: FfmpegPipelineService,
   ) {
-    const maxConcurrency = Number(this.configService.get('GEMINI_MAX_CONCURRENCY', 2));
+    const maxConcurrency = Number(
+      this.configService.get('GEMINI_MAX_CONCURRENCY', 2),
+    );
     this.semaphore = new AsyncSemaphore(Math.max(1, maxConcurrency));
 
     const keysStr =
@@ -92,7 +94,9 @@ export class GeminiIntelligenceService {
         `Gemini GenAI SDK initialized (${this.aiClients.length} API key(s) in pool; max concurrent requests: ${maxConcurrency}; models: ${this.getModelCascade().join(' → ')}).`,
       );
     } else {
-      this.logger.warn('No GEMINI_API_KEY or GEMINI_API_KEYS found in environment.');
+      this.logger.warn(
+        'No GEMINI_API_KEY or GEMINI_API_KEYS found in environment.',
+      );
     }
   }
 
@@ -102,7 +106,9 @@ export class GeminiIntelligenceService {
 
   private getClient(offset = 0): GoogleGenAI {
     if (this.aiClients.length === 0) {
-      throw new Error('Gemini client not configured. Set GEMINI_API_KEY or GEMINI_API_KEYS.');
+      throw new Error(
+        'Gemini client not configured. Set GEMINI_API_KEY or GEMINI_API_KEYS.',
+      );
     }
     const idx = (this.currentKeyIndex + offset) % this.aiClients.length;
     return this.aiClients[idx];
@@ -118,7 +124,10 @@ export class GeminiIntelligenceService {
   }
 
   getPrimaryModel(): string {
-    return this.configService.get<string>('GEMINI_MODEL', 'gemini-3.5-flash-lite');
+    return this.configService.get<string>(
+      'GEMINI_MODEL',
+      'gemini-3.5-flash-lite',
+    );
   }
 
   getModelCascade(): string[] {
@@ -135,19 +144,33 @@ export class GeminiIntelligenceService {
   }
 
   getEmbeddingModel(): string {
-    return this.configService.get<string>('GEMINI_EMBEDDING_MODEL', 'gemini-embedding-001');
+    return this.configService.get<string>(
+      'GEMINI_EMBEDDING_MODEL',
+      'gemini-embedding-001',
+    );
   }
 
-  estimateUsd(inputTokens: number, outputTokens: number, embedding = false): number {
+  estimateUsd(
+    inputTokens: number,
+    outputTokens: number,
+    embedding = false,
+  ): number {
     const inRate = Number(
       this.configService.get(
-        embedding ? 'GEMINI_EMBEDDING_USD_PER_MILLION' : 'GEMINI_INPUT_USD_PER_MILLION',
+        embedding
+          ? 'GEMINI_EMBEDDING_USD_PER_MILLION'
+          : 'GEMINI_INPUT_USD_PER_MILLION',
         embedding ? 0.15 : 0.15,
       ),
     );
-    const outRate = Number(this.configService.get('GEMINI_OUTPUT_USD_PER_MILLION', 0.6));
+    const outRate = Number(
+      this.configService.get('GEMINI_OUTPUT_USD_PER_MILLION', 0.6),
+    );
     return Number(
-      ((inputTokens / 1_000_000) * inRate + (outputTokens / 1_000_000) * outRate).toFixed(6),
+      (
+        (inputTokens / 1_000_000) * inRate +
+        (outputTokens / 1_000_000) * outRate
+      ).toFixed(6),
     );
   }
 
@@ -167,7 +190,10 @@ export class GeminiIntelligenceService {
   async analyzeVideo(
     videoPath: string,
   ): Promise<{ analysis: GeminiVideoAnalysis; usage: ModelUsage }> {
-    if (!this.isConfigured()) throw new Error('Gemini client not configured. Set GEMINI_API_KEY or GEMINI_API_KEYS.');
+    if (!this.isConfigured())
+      throw new Error(
+        'Gemini client not configured. Set GEMINI_API_KEY or GEMINI_API_KEYS.',
+      );
 
     const prompt = `Analyze this video with high temporal precision.
 Return JSON with this schema:
@@ -211,12 +237,17 @@ Timestamps are seconds. Return JSON only.`;
   async transcribeAudio(
     audioPath: string,
   ): Promise<{ transcript: TranscriptCue[]; usage: ModelUsage }> {
-    if (!this.isConfigured()) throw new Error('Gemini client not configured. Set GEMINI_API_KEY or GEMINI_API_KEYS.');
+    if (!this.isConfigured())
+      throw new Error(
+        'Gemini client not configured. Set GEMINI_API_KEY or GEMINI_API_KEYS.',
+      );
     if (!fs.existsSync(audioPath)) {
       throw new Error(`Audio file missing; cannot transcribe: ${audioPath}`);
     }
 
-    const chunkSeconds = Number(this.configService.get('TRANSCRIPT_CHUNK_SECONDS', 150));
+    const chunkSeconds = Number(
+      this.configService.get('TRANSCRIPT_CHUNK_SECONDS', 150),
+    );
     const chunkDir = path.join(path.dirname(audioPath), 'audio-chunks');
     const chunks = await this.ffmpegPipeline.splitAudioIntoChunks(
       audioPath,
@@ -235,21 +266,34 @@ Timestamps are seconds. Return JSON only.`;
           `Transcribing chunk ${i + 1}/${chunks.length} (offset ${chunk.offset}s)`,
         );
         try {
-          const result = await this.transcribeOneChunk(chunk.path, chunk.offset, chunkSeconds);
+          const result = await this.transcribeOneChunk(
+            chunk.path,
+            chunk.offset,
+            chunkSeconds,
+          );
           allCues.push(...result.transcript);
           usages.push(result.usage);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          this.logger.warn(`Chunk ${i + 1} failed (${message}); retrying once after 5s backoff`);
+          this.logger.warn(
+            `Chunk ${i + 1} failed (${message}); retrying once after 5s backoff`,
+          );
           await new Promise((r) => setTimeout(r, 5000));
           try {
-            const result = await this.transcribeOneChunk(chunk.path, chunk.offset, chunkSeconds);
+            const result = await this.transcribeOneChunk(
+              chunk.path,
+              chunk.offset,
+              chunkSeconds,
+            );
             allCues.push(...result.transcript);
             usages.push(result.usage);
           } catch (retryErr) {
             failedChunks += 1;
-            const retryMessage = retryErr instanceof Error ? retryErr.message : String(retryErr);
-            this.logger.error(`Chunk ${i + 1} failed permanently: ${retryMessage}`);
+            const retryMessage =
+              retryErr instanceof Error ? retryErr.message : String(retryErr);
+            this.logger.error(
+              `Chunk ${i + 1} failed permanently: ${retryMessage}`,
+            );
           }
         }
       }
@@ -323,8 +367,13 @@ Rules:
     return { text: result.text, usage: this.usageFromGenerate(stage, result) };
   }
 
-  private normalizeCues(raw: unknown, offset: number, chunkSeconds: number): TranscriptCue[] {
-    const record = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  private normalizeCues(
+    raw: unknown,
+    offset: number,
+    chunkSeconds: number,
+  ): TranscriptCue[] {
+    const record =
+      raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
     const list = Array.isArray(raw)
       ? raw
       : Array.isArray(record.cues)
@@ -340,7 +389,12 @@ Rules:
       if (!item || typeof item !== 'object') continue;
       const row = item as Record<string, unknown>;
       const text = String(
-        row.text ?? row.transcript ?? row.content ?? row.dialogue ?? row.words ?? '',
+        row.text ??
+          row.transcript ??
+          row.content ??
+          row.dialogue ??
+          row.words ??
+          '',
       ).trim();
       if (!text) continue;
       let start = Number(row.start_time ?? row.start ?? row.startTime ?? 0);
@@ -369,7 +423,9 @@ Rules:
       modelVersion: usages[0].modelVersion,
       inputTokens: usages.reduce((n, u) => n + u.inputTokens, 0),
       outputTokens: usages.reduce((n, u) => n + u.outputTokens, 0),
-      estimatedUsd: Number(usages.reduce((n, u) => n + u.estimatedUsd, 0).toFixed(6)),
+      estimatedUsd: Number(
+        usages.reduce((n, u) => n + u.estimatedUsd, 0).toFixed(6),
+      ),
       durationMs: usages.reduce((n, u) => n + u.durationMs, 0),
     };
   }
@@ -377,7 +433,10 @@ Rules:
   async analyzeFrames(
     scenes: SceneBoundary[],
   ): Promise<{ observations: FrameObservation[]; usage: ModelUsage }> {
-    if (!this.isConfigured()) throw new Error('Gemini client not configured. Set GEMINI_API_KEY or GEMINI_API_KEYS.');
+    if (!this.isConfigured())
+      throw new Error(
+        'Gemini client not configured. Set GEMINI_API_KEY or GEMINI_API_KEYS.',
+      );
 
     const flattened = flattenSceneKeyframes(scenes);
     const frames = flattened.filter((f) => f.path && fs.existsSync(f.path));
@@ -391,7 +450,9 @@ Rules:
 
     for (let b = 0; b < frames.length; b += BATCH_SIZE) {
       const batchFrames = frames.slice(b, b + BATCH_SIZE);
-      const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [
+      const parts: Array<
+        { text: string } | { inlineData: { mimeType: string; data: string } }
+      > = [
         {
           text: `You are given representative frames from a video. Each image is labeled with its timestamp in seconds.
 Return JSON:
@@ -418,7 +479,9 @@ Use the provided timestamps. JSON only.`,
         parts.push({ inlineData: { mimeType: 'image/jpeg', data } });
       }
 
-      const result = await this.generateContent('frame_analysis', [{ role: 'user', parts }]);
+      const result = await this.generateContent('frame_analysis', [
+        { role: 'user', parts },
+      ]);
       const parsed = this.parseJson<{
         observations?: Array<{
           timestamp: number;
@@ -430,17 +493,19 @@ Use the provided timestamps. JSON only.`,
         }>;
       }>(result.text);
 
-      const batchObs: FrameObservation[] = (parsed.observations || []).map((obs) => ({
-        timestamp: Number(obs.timestamp),
-        objects: obs.objects || [],
-        scene: obs.scene || '',
-        activity: obs.activity || [],
-        onScreenText: obs.on_screen_text || [],
-        description: obs.description || '',
-        provider: 'google',
-        model: result.model,
-        modelVersion: result.modelVersion,
-      }));
+      const batchObs: FrameObservation[] = (parsed.observations || []).map(
+        (obs) => ({
+          timestamp: Number(obs.timestamp),
+          objects: obs.objects || [],
+          scene: obs.scene || '',
+          activity: obs.activity || [],
+          onScreenText: obs.on_screen_text || [],
+          description: obs.description || '',
+          provider: 'google',
+          model: result.model,
+          modelVersion: result.modelVersion,
+        }),
+      );
 
       allObservations.push(...batchObs);
       usages.push(this.usageFromGenerate('frame_analysis', result));
@@ -456,7 +521,10 @@ Use the provided timestamps. JSON only.`,
   async generateEmbedding(
     text: string,
   ): Promise<{ values: number[]; usage: ModelUsage }> {
-    if (!this.isConfigured()) throw new Error('Gemini client not configured. Set GEMINI_API_KEY or GEMINI_API_KEYS.');
+    if (!this.isConfigured())
+      throw new Error(
+        'Gemini client not configured. Set GEMINI_API_KEY or GEMINI_API_KEYS.',
+      );
     const release = await this.semaphore.acquire();
     const model = this.getEmbeddingModel();
     const t0 = Date.now();
@@ -487,7 +555,8 @@ Use the provided timestamps. JSON only.`,
     } finally {
       release();
     }
-  }  async understandQuery(rawQuery: string): Promise<UnderstoodQuery> {
+  }
+  async understandQuery(rawQuery: string): Promise<UnderstoodQuery> {
     if (!this.isConfigured()) {
       return {
         rawQuery,
@@ -531,35 +600,57 @@ Rules:
 User Query: "${rawQuery.replace(/"/g, '\\"')}"`;
 
     try {
-      const result = await this.generateContent('query_understanding', [prompt]);
+      const result = await this.generateContent('query_understanding', [
+        prompt,
+      ]);
       const parsed = this.parseJson<any>(result.text || '{}');
-      const cleanSearchPhrase = String(parsed.cleanSearchPhrase || rawQuery).trim();
-      const targetEntity = parsed.targetEntity ? String(parsed.targetEntity).trim() : undefined;
+      const cleanSearchPhrase = String(
+        parsed.cleanSearchPhrase || rawQuery,
+      ).trim();
+      const targetEntity = parsed.targetEntity
+        ? String(parsed.targetEntity).trim()
+        : undefined;
       const aspect = parsed.aspect ? String(parsed.aspect).trim() : undefined;
-      const coreSubject = String(targetEntity || parsed.coreSubject || cleanSearchPhrase || rawQuery).trim();
+      const coreSubject = String(
+        targetEntity || parsed.coreSubject || cleanSearchPhrase || rawQuery,
+      ).trim();
       const aliases = Array.isArray(parsed.aliases)
         ? parsed.aliases.map((a: any) => String(a).trim()).filter(Boolean)
         : [];
-      const isCompound = Boolean(parsed.isCompound && Array.isArray(parsed.subQueries) && parsed.subQueries.length > 1);
-      const subQueries = Array.isArray(parsed.subQueries) && parsed.subQueries.length > 0
-        ? parsed.subQueries.map((sq: any) => ({
-            topic: String(sq.topic || sq.searchPhrase || cleanSearchPhrase).trim(),
-            searchPhrase: String(sq.searchPhrase || sq.topic || cleanSearchPhrase).trim(),
-          })).filter((sq: any) => sq.searchPhrase.length > 0)
-        : [{ topic: cleanSearchPhrase, searchPhrase: cleanSearchPhrase }];
+      const isCompound = Boolean(
+        parsed.isCompound &&
+        Array.isArray(parsed.subQueries) &&
+        parsed.subQueries.length > 1,
+      );
+      const subQueries =
+        Array.isArray(parsed.subQueries) && parsed.subQueries.length > 0
+          ? parsed.subQueries
+              .map((sq: any) => ({
+                topic: String(
+                  sq.topic || sq.searchPhrase || cleanSearchPhrase,
+                ).trim(),
+                searchPhrase: String(
+                  sq.searchPhrase || sq.topic || cleanSearchPhrase,
+                ).trim(),
+              }))
+              .filter((sq: any) => sq.searchPhrase.length > 0)
+          : [{ topic: cleanSearchPhrase, searchPhrase: cleanSearchPhrase }];
 
       return {
         rawQuery,
         cleanSearchPhrase: cleanSearchPhrase || rawQuery,
         coreSubject: coreSubject || cleanSearchPhrase || rawQuery,
-        targetEntity: targetEntity || coreSubject || cleanSearchPhrase || rawQuery,
+        targetEntity:
+          targetEntity || coreSubject || cleanSearchPhrase || rawQuery,
         aspect,
         aliases,
         isCompound,
         subQueries,
       };
     } catch (err) {
-      this.logger.warn(`Query understanding fallback to raw query: ${err instanceof Error ? err.message : err}`);
+      this.logger.warn(
+        `Query understanding fallback to raw query: ${err instanceof Error ? err.message : err}`,
+      );
       return {
         rawQuery,
         cleanSearchPhrase: rawQuery,
@@ -585,25 +676,56 @@ User Query: "${rawQuery.replace(/"/g, '\\"')}"`;
     frames: { timestamp: number; path: string }[],
     query: string,
     transcriptSnippet?: string,
-  ): Promise<{ matched: boolean; confidence: number; explanation: string; matchedTimestamp?: number; usage?: ModelUsage }> {
+    detailMode = false,
+  ): Promise<{
+    matched: boolean;
+    confidence: number;
+    explanation: string;
+    matchedTimestamp?: number;
+    usage?: ModelUsage;
+  }> {
     if (!this.isConfigured() || frames.length === 0) {
-      return { matched: false, confidence: 0, explanation: 'Gemini not configured or frames missing' };
+      return {
+        matched: false,
+        confidence: 0,
+        explanation: 'Gemini not configured or frames missing',
+      };
     }
 
-    const existingFrames = frames.filter((f) => f.path && fs.existsSync(f.path));
+    const existingFrames = frames.filter(
+      (f) => f.path && fs.existsSync(f.path),
+    );
     if (existingFrames.length === 0) {
-      return { matched: false, confidence: 0, explanation: 'Keyframe files missing on disk' };
+      return {
+        matched: false,
+        confidence: 0,
+        explanation: 'Keyframe files missing on disk',
+      };
     }
 
-    const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [
+    const detailPrompt = detailMode
+      ? `\nSPATIAL CONTEXT & FLEETING ACTIONS (Needle-in-haystack mode):\n- Look for micro-details including small or background objects not in primary focus\n- Examine ENTIRE frame: edges, periphery, background areas\n- Identify fleeting actions/expressions (even 0.5-1 second glimpses)\n- Pay special attention to objects held, partially visible, or appearing off-center\n- Note specific colors, clothing details, spatial positioning (left/right/background/foreground)\n- Match against spatial hints like "object:background", "hand:holding", "fleeting" if present\n- Be thorough: if the query element exists anywhere in the frame, report it as a match.`
+      : '';
+
+    const spatialContextNote = detailMode
+      ? '\nNote: We have extracted micro-keyframes (every 2 seconds) to capture fleeting moments. Review all frames carefully.'
+      : '';
+
+    const parts: Array<
+      { text: string } | { inlineData: { mimeType: string; data: string } }
+    > = [
       {
-        text: `You are an expert forensic video retrieval verifier.
+        text: `You are an expert forensic video retrieval verifier with attention to spatial detail and micro-moments.
 User query: "${query}"
 Scene transcript context: "${transcriptSnippet || 'N/A'}"
 
-Attached are representative keyframes from this candidate scene.
+Attached are representative keyframes from this candidate scene.${spatialContextNote}
 Evaluate whether this scene DIRECTLY depicts or discusses what the user searched for.
-Special instruction: If the user search includes a specific qualifier or modifier (e.g. "respiratory", "red", "driving", "goal"), verify that this specific modifier is actually depicted or discussed. Do not approve scenes that only share a generic category term.
+
+Core verification rules:
+1. If the query includes a specific qualifier/modifier (e.g. "respiratory", "red", "driving", "goal"), verify that this SPECIFIC modifier is depicted or discussed
+2. Do not approve scenes that only share a generic category term without the defining modifier
+3. Match spatial context: if searching for "background object", do not accept it as primary focus${detailPrompt}
 
 Each attached frame is captioned with its timestamp in seconds before the image.
 If matched, identify which single attached frame's timestamp best shows the match.
@@ -624,23 +746,42 @@ Return JSON only:
         parts.push({ text: `Frame at ${frame.timestamp.toFixed(2)}s:` });
         parts.push({ inlineData: { mimeType: 'image/jpeg', data } });
       } catch (readErr) {
-        this.logger.warn(`Could not read frame for verification: ${frame.path}`);
+        this.logger.warn(
+          `Could not read frame for verification: ${frame.path}`,
+        );
       }
     }
 
     try {
-      const result = await this.generateContent('stage2_verification', [{ role: 'user', parts }]);
-      const parsed = this.parseJson<{ matched?: boolean; confidence?: number; explanation?: string; matchedTimestamp?: number | null }>(result.text);
+      const stage = detailMode ? 'stage2_deep_detail' : 'stage2_verification';
+      const result = await this.generateContent(stage, [
+        { role: 'user', parts },
+      ]);
+      const parsed = this.parseJson<{
+        matched?: boolean;
+        confidence?: number;
+        explanation?: string;
+        matchedTimestamp?: number | null;
+      }>(result.text);
       return {
         matched: Boolean(parsed.matched),
         confidence: Number(parsed.confidence ?? (parsed.matched ? 0.85 : 0.2)),
         explanation: String(parsed.explanation ?? ''),
-        matchedTimestamp: typeof parsed.matchedTimestamp === 'number' ? parsed.matchedTimestamp : undefined,
-        usage: this.usageFromGenerate('stage2_verification', result),
+        matchedTimestamp:
+          typeof parsed.matchedTimestamp === 'number'
+            ? parsed.matchedTimestamp
+            : undefined,
+        usage: this.usageFromGenerate(stage, result),
       };
     } catch (err) {
-      this.logger.warn(`Stage-2 verification failed for query "${query}": ${err}`);
-      return { matched: false, confidence: 0, explanation: 'Stage-2 verification error' };
+      this.logger.warn(
+        `Stage-2 verification failed for query "${query}": ${err}`,
+      );
+      return {
+        matched: false,
+        confidence: 0,
+        explanation: 'Stage-2 verification error',
+      };
     }
   }
 
@@ -696,10 +837,15 @@ Return JSON only:
         },
         prompt,
       ]);
-      return { text: result.text, usage: this.usageFromGenerate(stage, result) };
+      return {
+        text: result.text,
+        usage: this.usageFromGenerate(stage, result),
+      };
     } finally {
       if (uploaded?.name) {
-        await client.files.delete({ name: uploaded.name }).catch(() => undefined);
+        await client.files
+          .delete({ name: uploaded.name })
+          .catch(() => undefined);
       }
     }
   }
@@ -756,11 +902,15 @@ Return JSON only:
               message.includes('UNAVAILABLE') ||
               message.includes('demand') ||
               message.includes('429');
-            this.logger.warn(`${model} failed for ${stage} (attempt ${attempt}): ${message}`);
+            this.logger.warn(
+              `${model} failed for ${stage} (attempt ${attempt}): ${message}`,
+            );
             if (quotaExhausted) {
               this.rotateKey();
               if (this.aiClients.length > 1) {
-                this.logger.log(`Rotating to alternate key in pool and retrying immediately...`);
+                this.logger.log(
+                  `Rotating to alternate key in pool and retrying immediately...`,
+                );
                 continue;
               }
               this.logger.warn(
@@ -770,7 +920,9 @@ Return JSON only:
               if (attempt < 3) continue;
             }
             if (modelUnavailable) {
-              this.logger.warn(`Model ${model} unavailable (404/not found); skipping to next model`);
+              this.logger.warn(
+                `Model ${model} unavailable (404/not found); skipping to next model`,
+              );
               break;
             }
             if (retryable && attempt < 3) {
@@ -784,7 +936,9 @@ Return JSON only:
           }
         }
       }
-      throw lastError instanceof Error ? lastError : new Error(String(lastError));
+      throw lastError instanceof Error
+        ? lastError
+        : new Error(String(lastError));
     } finally {
       release();
     }

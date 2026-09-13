@@ -9,9 +9,11 @@ import {
   NotFoundException,
   Logger,
   BadRequestException,
+  ForbiddenException,
   UseGuards,
   Query,
 } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { FastifyRequest, FastifyReply } from "fastify";
 import { MediaService } from "./media.service";
 import { AuthGuard } from "../auth/auth.guard";
@@ -25,7 +27,10 @@ import { FeedbackPayload } from "./media.types";
 export class MediaController {
   private readonly logger = new Logger(MediaController.name);
 
-  constructor(private readonly mediaService: MediaService) {}
+  constructor(
+    private readonly mediaService: MediaService,
+    private readonly configService: ConfigService,
+  ) {}
 
   @Get()
   async listAssets(@Req() req: any) {
@@ -36,6 +41,13 @@ export class MediaController {
 
   @Post("upload")
   async uploadVideo(@Req() req: any) {
+    const isDevUploadEnabled =
+      this.configService.get<string>("ENABLE_DEV_UPLOAD", "false") === "true";
+    if (!isDevUploadEnabled) {
+      throw new ForbiddenException(
+        "Direct master upload is disabled in Phase 4. Connect cloud storage (e.g. Google Drive) to index media.",
+      );
+    }
     const userId = req.user?.id;
     const fastifyReq = req as FastifyRequest & {
       isMultipart?: () => boolean;

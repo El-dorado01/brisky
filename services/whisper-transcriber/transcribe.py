@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MediaIntel faster-whisper Transcription Engine
+Brisky faster-whisper Transcription Engine
 High-performance local transcription with Silero VAD and auto-language detection.
 """
 

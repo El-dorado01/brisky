@@ -1,5 +1,5 @@
 import React from 'react';
-import { Film, GitBranch, RefreshCw, Clock } from 'lucide-react';
+import { Film, GitBranch, RefreshCw, Clock, ExternalLink, Cloud } from 'lucide-react';
 import { AssetSummary, formatTime } from '../types';
 
 // Timer feature to show elapsed time for processing assets and indexing duration for indexed assets
@@ -124,8 +124,38 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
                   </div>
                 )}
 
-                {/* Status badge */}
-                <div className="absolute top-1 right-1">
+                {/* Cloud source / Purged Master badge */}
+                <div className="absolute top-1 left-1 flex items-center gap-1">
+                  {(asset.sourceType === 'google_drive' || asset.driveWebViewLink) && (
+                    <span className="bg-blue-950/90 border border-blue-500/50 text-blue-300 text-[9px] px-1 py-0.5 rounded font-medium flex items-center gap-0.5">
+                      <Cloud className="w-2.5 h-2.5" />
+                      Drive
+                    </span>
+                  )}
+                  {asset.originalDeleted && (
+                    <span
+                      className="bg-purple-950/90 border border-purple-500/40 text-purple-300 text-[9px] px-1 py-0.5 rounded font-medium"
+                      title="Raw master video purged from server; 720p/480p preview proxy and intelligence retained"
+                    >
+                      Proxy
+                    </span>
+                  )}
+                </div>
+
+                {/* Status badge & External Link */}
+                <div className="absolute top-1 right-1 flex items-center gap-1">
+                  {asset.driveWebViewLink && (
+                    <a
+                      href={asset.driveWebViewLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className="bg-slate-900/90 border border-slate-700 text-slate-300 hover:text-white text-[10px] p-1 rounded transition"
+                      title="Open Original in Google Drive"
+                    >
+                      <ExternalLink className="w-2.5 h-2.5" />
+                    </a>
+                  )}
                   {asset.status === 'indexed' && (
                     <span className="bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 text-[10px] px-1.5 py-0.5 rounded font-medium">
                       Indexed

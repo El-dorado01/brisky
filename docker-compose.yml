@@ -1,26 +1,26 @@
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: media-intel-postgres
+    container_name: brisky-postgres
     restart: unless-stopped
     ports:
       - "5432:5432"
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgrespassword
-      POSTGRES_DB: media_intel
+      POSTGRES_DB: brisky
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d media_intel"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d brisky"]
       interval: 5s
       timeout: 5s
       retries: 5
 
   redis:
     image: redis:7-alpine
-    container_name: media-intel-redis
+    container_name: brisky-redis
     restart: unless-stopped
     ports:
       - "6379:6379"

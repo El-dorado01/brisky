@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MediaIntel Local Vector Embedding Engine
+Brisky Local Vector Embedding Engine
 High-performance CPU inference via ONNX Runtime & all-MiniLM-L6-v2.
 Produces 384-dimensional normalized semantic vectors in ~3ms.
 """
@@ -86,7 +86,7 @@ def embed_batch(texts: list[str]) -> list[list[float]]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="MediaIntel ONNX Embedding Engine")
+    parser = argparse.ArgumentParser(description="Brisky ONNX Embedding Engine")
     parser.add_argument("--text", help="Single text string to embed")
     parser.add_argument("--batch", help="Path to JSON file containing array of text strings")
     parser.add_argument("--output", help="Optional output JSON file path")

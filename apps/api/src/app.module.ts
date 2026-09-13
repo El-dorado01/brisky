@@ -8,6 +8,7 @@ import { FfmpegModule } from './modules/ffmpeg/ffmpeg.module';
 import { PipelineModule } from './modules/pipeline/pipeline.module';
 import { QueueModule } from './modules/queue/queue.module';
 import { MediaModule } from './modules/media/media.module';
+import { ConnectorsModule } from './modules/connector/connectors.module';
 import * as path from 'path';
 
 @Module({
@@ -32,6 +33,7 @@ import * as path from 'path';
       }),
     }),
     QueueModule,
+    ConnectorsModule,
     FfmpegModule,
     PipelineModule,
     HealthModule,

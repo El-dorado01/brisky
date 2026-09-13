@@ -49,7 +49,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ token, onClose, onSuccess 
   };
 
   const handleQuickDemoLogin = async () => {
-    setAuthEmail('demo@mediaintel.local');
+    setAuthEmail('demo@brisky.local');
     setAuthPassword('demopassword123');
     setAuthError(null);
     setAuthLoading(true);
@@ -57,7 +57,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ token, onClose, onSuccess 
       const res = await fetch('/api/v1/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'demo@mediaintel.local', password: 'demopassword123' }),
+        body: JSON.stringify({ email: 'demo@brisky.local', password: 'demopassword123' }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -88,7 +88,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ token, onClose, onSuccess 
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center gap-2 text-indigo-400 font-semibold text-sm">
             <KeyRound className="w-5 h-5" />
-            <span>MediaIntel Access</span>
+            <span>Brisky Access</span>
           </div>
           <h3 className="text-xl font-bold text-white tracking-tight">
             {authMode === 'login' ? 'Sign in to your library' : 'Create a new account'}

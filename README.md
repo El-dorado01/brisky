@@ -1,4 +1,4 @@
-# AI Media Intelligence Platform
+# Brisky — AI Media Intelligence Platform
 
 > **Connect your media once. We continuously understand it, so you can find any moment by simply describing what you remember.**
 
@@ -22,7 +22,7 @@ Unlike traditional media tools that duplicate and hoard massive camera master fi
 This is a **pnpm monorepo**. Please use `pnpm`, not `npm` or `yarn`.
 
 ```text
-media-intel/
+brisky/
 ├── apps/
 │   ├── api/                 # NestJS 11 + Fastify API & BullMQ worker (/api/v1)
 │   └── web/                 # React 18 + Vite + Tailwind CSS dashboard
@@ -64,7 +64,7 @@ Ensure your system has the following installed before starting:
 
 ```bash
 git clone <repo-url>
-cd media-intel
+cd brisky
 
 # Install all monorepo dependencies
 pnpm install
@@ -87,7 +87,7 @@ GEMINI_MODEL=gemini-2.5-flash
 GEMINI_EMBEDDING_MODEL=gemini-embedding-001
 
 # Database & Redis (defaults match docker-compose.yml)
-DATABASE_URL=postgresql://postgres:postgrespassword@localhost:5432/media_intel
+DATABASE_URL=postgresql://postgres:postgrespassword@localhost:5432/brisky
 REDIS_HOST=localhost
 REDIS_PORT=6379
 ```
@@ -99,7 +99,7 @@ pnpm infra:up
 ```
 
 *This spins up:*
-- **PostgreSQL 16 with pgvector** on `localhost:5432` (database: `media_intel`).
+- **PostgreSQL 16 with pgvector** on `localhost:5432` (database: `brisky`).
 - **Redis 7** on `localhost:6379` (BullMQ async queue).
 
 ### 4. Run the Development Servers
@@ -135,7 +135,7 @@ When opening [http://localhost:5173](http://localhost:5173), an authentication d
 Click the **"Quick Demo: Sign In as Demo Creator"** button at the bottom of the login modal.
 
 ### Option B: Pre-seeded Credentials
-- **Email:** `demo@mediaintel.local`
+- **Email:** `demo@brisky.local`
 - **Password:** `demopassword123`
 
 ### Option C: Register a New Account

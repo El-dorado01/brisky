@@ -8,6 +8,7 @@ import * as path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { SceneBoundary, VideoMetadata } from './pipeline.types';
+import { computeAdaptiveProxyTarget } from './proxy-scaling';
 import { framesPerWindow, computeFrameTimestamps } from './scene-sampling';
 
 const execAsync = promisify(exec);
@@ -34,7 +35,9 @@ export class FfmpegPipelineService {
 
       const timer = setTimeout(() => {
         timedOut = true;
-        this.logger.error(`FFmpeg timed out after ${timeoutMs}ms: ${description}`);
+        this.logger.error(
+          `FFmpeg timed out after ${timeoutMs}ms: ${description}`,
+        );
         try {
           cmd.kill('SIGKILL');
         } catch {
@@ -48,7 +51,11 @@ export class FfmpegPipelineService {
           settled = true;
           clearTimeout(timer);
           if (timedOut) {
-            return reject(new Error(`FFmpeg timed out after ${timeoutMs}ms: ${description}`));
+            return reject(
+              new Error(
+                `FFmpeg timed out after ${timeoutMs}ms: ${description}`,
+              ),
+            );
           }
           try {
             resolve(await onSuccess());
@@ -61,7 +68,11 @@ export class FfmpegPipelineService {
           settled = true;
           clearTimeout(timer);
           if (timedOut) {
-            return reject(new Error(`FFmpeg timed out after ${timeoutMs}ms: ${description}`));
+            return reject(
+              new Error(
+                `FFmpeg timed out after ${timeoutMs}ms: ${description}`,
+              ),
+            );
           }
           if (onError) {
             try {
@@ -79,8 +90,12 @@ export class FfmpegPipelineService {
     });
   }
 
-  async probeMetadata(videoPath: string, timeoutMs = 15000): Promise<VideoMetadata> {
-    const probePath = this.ffmpegService.getFfprobePath() || ffprobeInstaller.path;
+  async probeMetadata(
+    videoPath: string,
+    timeoutMs = 15000,
+  ): Promise<VideoMetadata> {
+    const probePath =
+      this.ffmpegService.getFfprobePath() || ffprobeInstaller.path;
     if (probePath) {
       ffmpeg.setFfprobePath(probePath);
     }
@@ -89,8 +104,14 @@ export class FfmpegPipelineService {
       const timer = setTimeout(() => {
         if (!isSettled) {
           isSettled = true;
-          this.logger.error(`ffprobe timed out after ${timeoutMs}ms on ${videoPath}`);
-          reject(new Error(`ffprobe metadata probe timed out after ${timeoutMs}ms on ${videoPath}`));
+          this.logger.error(
+            `ffprobe timed out after ${timeoutMs}ms on ${videoPath}`,
+          );
+          reject(
+            new Error(
+              `ffprobe metadata probe timed out after ${timeoutMs}ms on ${videoPath}`,
+            ),
+          );
         }
       }, timeoutMs);
 
@@ -104,8 +125,12 @@ export class FfmpegPipelineService {
           return reject(err);
         }
 
-        const videoStream = metadata.streams.find((s) => s.codec_type === 'video');
-        const audioStream = metadata.streams.find((s) => s.codec_type === 'audio');
+        const videoStream = metadata.streams.find(
+          (s) => s.codec_type === 'video',
+        );
+        const audioStream = metadata.streams.find(
+          (s) => s.codec_type === 'audio',
+        );
 
         let fps = 30;
         if (videoStream?.r_frame_rate) {
@@ -156,7 +181,9 @@ export class FfmpegPipelineService {
         if (timedOut) {
           throw new Error(`Audio extraction timed out after ${timeoutMs}ms`);
         }
-        this.logger.warn(`Audio extraction failed or file has no audio: ${err.message}`);
+        this.logger.warn(
+          `Audio extraction failed or file has no audio: ${err.message}`,
+        );
         return false;
       },
     );
@@ -172,20 +199,25 @@ export class FfmpegPipelineService {
 
     let sourceCodec = '';
     let duration = 60;
+    let targetHeight = 720;
     try {
       const probe = await this.probeMetadata(videoPath, 15000);
       sourceCodec = (probe.codec || '').toLowerCase();
       if (probe.duration > 0) duration = probe.duration;
+      targetHeight = computeAdaptiveProxyTarget(probe.height);
     } catch {
       // probe fallback
     }
 
     // Dynamic duration-scaled timeout: min 2 minutes, max 15 minutes, ~2.5s per video second
-    const timeoutMs = Math.max(120_000, Math.min(900_000, Math.ceil(duration * 2500)));
+    const timeoutMs = Math.max(
+      120_000,
+      Math.min(900_000, Math.ceil(duration * 2500)),
+    );
 
     const cmd = ffmpeg(videoPath)
       .videoCodec('libx264')
-      .size('?x720')
+      .size(`?x${targetHeight}`)
       .outputOptions(['-preset veryfast', '-crf 26', '-movflags +faststart'])
       .audioCodec('aac')
       .output(outputProxyPath);
@@ -201,14 +233,29 @@ export class FfmpegPipelineService {
     return this.executeFfmpegWithTimeout<string>(
       cmd,
       timeoutMs,
-      `generateProxy -> ${outputProxyPath} (${duration.toFixed(0)}s video)`,
+      `generateProxy -> ${outputProxyPath} (${duration.toFixed(0)}s video, ${targetHeight}p)`,
       () => {
-        this.logger.log(`Proxy generated: ${outputProxyPath}`);
+        // Section 3 of 03-media-storage-brief.md: If proxy is larger than original and original is web-playable H.264 MP4, use original
+        try {
+          const proxyStat = fs.statSync(outputProxyPath);
+          const origStat = fs.statSync(videoPath);
+          const isWebCodec = sourceCodec === 'h264' || sourceCodec === 'avc1';
+          const ext = path.extname(videoPath).toLowerCase();
+          if (isWebCodec && (ext === '.mp4' || ext === '.m4v') && proxyStat.size >= origStat.size) {
+            fs.copyFileSync(videoPath, outputProxyPath);
+            this.logger.log(`Original was smaller than generated proxy; retained original bytes (${origStat.size} < ${proxyStat.size})`);
+          }
+        } catch {
+          // ignore stat/copy check if files were moved
+        }
+        this.logger.log(`Adaptive proxy (${targetHeight}p) generated: ${outputProxyPath}`);
         return outputProxyPath;
       },
       (err, timedOut) => {
         if (timedOut) {
-          throw new Error(`Web proxy generation timed out after ${timeoutMs}ms for ${videoPath}`);
+          throw new Error(
+            `Web proxy generation timed out after ${timeoutMs}ms for ${videoPath}`,
+          );
         }
         this.logger.error(`Proxy generation failed: ${err.message}`);
         // Safe fallback check: only copy if the original video codec is web-compatible H.264/AVC in an MP4/M4V container
@@ -240,7 +287,13 @@ export class FfmpegPipelineService {
     outputThumbnailPath: string,
     timestamp: number = 1.0,
   ): Promise<string> {
-    await this.extractFrame(videoPath, outputThumbnailPath, timestamp, '640x?', 20000);
+    await this.extractFrame(
+      videoPath,
+      outputThumbnailPath,
+      timestamp,
+      '640x?',
+      20000,
+    );
     return outputThumbnailPath;
   }
 
@@ -255,13 +308,22 @@ export class FfmpegPipelineService {
     }
 
     const threshold = Number(this.configService.get('SCENE_THRESHOLD', 0.3));
-    const minSceneSec = Number(this.configService.get('SCENE_MIN_SECONDS', 0.5));
+    const minSceneSec = Number(
+      this.configService.get('SCENE_MIN_SECONDS', 0.5),
+    );
     const maxScenes = this.calculateMaxScenes(duration);
 
     const cuts = await this.detectSceneCuts(videoPath, duration, threshold);
-    const windows = this.buildSceneWindows(cuts, duration, maxScenes, minSceneSec);
+    const windows = this.buildSceneWindows(
+      cuts,
+      duration,
+      maxScenes,
+      minSceneSec,
+    );
 
-    const maxFramesPerScene = Number(this.configService.get('MAX_FRAMES_PER_SCENE', 3));
+    const maxFramesPerScene = Number(
+      this.configService.get('MAX_FRAMES_PER_SCENE', 3),
+    );
 
     const scenes: SceneBoundary[] = [];
     for (let i = 0; i < windows.length; i++) {
@@ -269,24 +331,46 @@ export class FfmpegPipelineService {
         onProgress(i + 1, windows.length);
       }
       const { startTime, endTime } = windows[i];
-      const representativeTimestamp = Number(((startTime + endTime) / 2).toFixed(2));
+      const representativeTimestamp = Number(
+        ((startTime + endTime) / 2).toFixed(2),
+      );
 
       const windowLength = endTime - startTime;
       const frameCount = framesPerWindow(windowLength, maxFramesPerScene);
       const frameTimestamps =
-        frameCount === 1 ? [representativeTimestamp] : computeFrameTimestamps(startTime, endTime, frameCount);
+        frameCount === 1
+          ? [representativeTimestamp]
+          : computeFrameTimestamps(startTime, endTime, frameCount);
+
+      // MICRO-KEYFRAMES: Extract additional frames at 2-second intervals for fleeting action detection
+      const microKeyframeInterval = 2; // Extract a frame every 2 seconds
+      const microFrameTimestamps: number[] = [];
+      for (let t = startTime; t <= endTime; t += microKeyframeInterval) {
+        const ts = Number(t.toFixed(2));
+        if (!frameTimestamps.includes(ts)) {
+          microFrameTimestamps.push(ts);
+        }
+      }
+      const allTimestamps = [...frameTimestamps, ...microFrameTimestamps].sort(
+        (a, b) => a - b,
+      );
 
       const keyframes: { timestamp: number; path: string }[] = [];
-      for (let f = 0; f < frameTimestamps.length; f++) {
-        const ts = frameTimestamps[f];
-        const keyframeFile = `scene_${String(i + 1).padStart(3, '0')}_f${String(f + 1).padStart(2, '0')}.jpg`;
+      for (let f = 0; f < allTimestamps.length; f++) {
+        const ts = allTimestamps[f];
+        const isMicroFrame = !frameTimestamps.includes(ts);
+        const keyframeFile = `scene_${String(i + 1).padStart(3, '0')}_f${String(f + 1).padStart(2, '0')}${
+          isMicroFrame ? '_micro' : ''
+        }.jpg`;
         const keyframePath = path.join(framesOutputDir, keyframeFile);
         try {
           await this.extractFrame(videoPath, keyframePath, ts, '640x?');
           keyframes.push({ timestamp: ts, path: keyframePath });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          this.logger.warn(`Failed extracting keyframe ${f + 1}/${frameTimestamps.length} for scene ${i + 1}: ${message}`);
+          this.logger.warn(
+            `Failed extracting keyframe ${f + 1}/${allTimestamps.length} for scene ${i + 1}: ${message}`,
+          );
         }
       }
 
@@ -307,17 +391,22 @@ export class FfmpegPipelineService {
   }
 
   calculateMaxScenes(duration: number): number {
-    const targetSeconds = Number(this.configService.get('SCENE_TARGET_SECONDS', 14));
+    const targetSeconds = Number(
+      this.configService.get('SCENE_TARGET_SECONDS', 7),
+    ); // Reduced from 14s to 7s for finer granularity
     const minScenes = Number(this.configService.get('SCENE_MIN_COUNT', 4));
     const maxCap = Number(this.configService.get('SCENE_MAX_COUNT', 250));
-    
+
     // Explicit override if set in environment (and not the old static default 12)
     const configuredMax = this.configService.get<string>('SCENE_MAX_FRAMES');
     if (configuredMax && Number(configuredMax) > 0 && configuredMax !== '12') {
       return Math.max(minScenes, Number(configuredMax));
     }
-    
-    return Math.max(minScenes, Math.min(maxCap, Math.ceil(duration / targetSeconds)));
+
+    return Math.max(
+      minScenes,
+      Math.min(maxCap, Math.ceil(duration / targetSeconds)),
+    );
   }
 
   private async detectSceneCuts(
@@ -327,7 +416,9 @@ export class FfmpegPipelineService {
   ): Promise<number[]> {
     const ffmpegBin = this.ffmpegService.getFfmpegPath();
     if (!ffmpegBin) {
-      this.logger.warn('FFmpeg binary missing; falling back to duration windows');
+      this.logger.warn(
+        'FFmpeg binary missing; falling back to duration windows',
+      );
       return this.fallbackCuts(duration);
     }
 
@@ -356,9 +447,15 @@ export class FfmpegPipelineService {
       });
       stderr = `${result.stdout || ''}\n${result.stderr || ''}`;
     } catch (err) {
-      const execErr = err as { stderr?: string; stdout?: string; message?: string };
+      const execErr = err as {
+        stderr?: string;
+        stdout?: string;
+        message?: string;
+      };
       stderr = `${execErr.stdout || ''}\n${execErr.stderr || ''}\n${execErr.message || ''}`;
-      this.logger.warn(`Scene-detect ffmpeg exited non-zero; parsing stderr anyway`);
+      this.logger.warn(
+        `Scene-detect ffmpeg exited non-zero; parsing stderr anyway`,
+      );
     }
 
     const times: number[] = [0];
@@ -374,7 +471,9 @@ export class FfmpegPipelineService {
 
     const unique = [...new Set(times)].sort((a, b) => a - b);
     if (unique.length <= 2) {
-      this.logger.log('No scene cuts detected; using duration-based fallback windows');
+      this.logger.log(
+        'No scene cuts detected; using duration-based fallback windows',
+      );
       return this.fallbackCuts(duration);
     }
     return unique;
@@ -417,7 +516,10 @@ export class FfmpegPipelineService {
         merged.push({ ...window });
       }
     }
-    windows = merged.length > 0 ? merged : [{ startTime: 0, endTime: Number(duration.toFixed(2)) }];
+    windows =
+      merged.length > 0
+        ? merged
+        : [{ startTime: 0, endTime: Number(duration.toFixed(2)) }];
 
     while (windows.length > maxScenes) {
       let shortestIdx = 0;
@@ -434,8 +536,10 @@ export class FfmpegPipelineService {
           ? 1
           : shortestIdx === windows.length - 1
             ? shortestIdx - 1
-            : windows[shortestIdx - 1].endTime - windows[shortestIdx - 1].startTime <=
-                windows[shortestIdx + 1].endTime - windows[shortestIdx + 1].startTime
+            : windows[shortestIdx - 1].endTime -
+                  windows[shortestIdx - 1].startTime <=
+                windows[shortestIdx + 1].endTime -
+                  windows[shortestIdx + 1].startTime
               ? shortestIdx - 1
               : shortestIdx + 1;
       const keep = Math.min(shortestIdx, neighbor);
@@ -481,7 +585,10 @@ export class FfmpegPipelineService {
   ): Promise<Array<{ path: string; offset: number }>> {
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
     const ffmpegBin = this.ffmpegService.getFfmpegPath();
-    if (!ffmpegBin) throw new Error('FFmpeg binary missing; cannot chunk audio for transcription');
+    if (!ffmpegBin)
+      throw new Error(
+        'FFmpeg binary missing; cannot chunk audio for transcription',
+      );
 
     const pattern = path.join(outputDir, 'chunk_%03d.mp3');
     const cmd = [
@@ -527,7 +634,9 @@ export class FfmpegPipelineService {
       return [{ path: audioPath, offset: 0 }];
     }
 
-    this.logger.log(`Split ${audioPath} into ${files.length} ~${chunkSeconds}s chunks`);
+    this.logger.log(
+      `Split ${audioPath} into ${files.length} ~${chunkSeconds}s chunks`,
+    );
     return files.map((file, i) => ({
       path: path.join(outputDir, file),
       offset: i * chunkSeconds,

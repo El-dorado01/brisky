@@ -124,7 +124,10 @@ export interface PublicAsset {
   assetId: string;
   originalFilename: string;
   checksum: string;
-  sourceType: 'upload';
+  sourceType: 'upload' | 'google_drive' | 'drive' | 'dropbox' | 'onedrive' | 's3' | string;
+  externalFileId?: string;
+  connectorAccountId?: string;
+  driveWebViewLink?: string;
   status: 'queued' | 'processing' | 'indexed' | 'failed';
   stage: string;
   progress: number;

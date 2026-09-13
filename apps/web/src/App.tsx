@@ -23,10 +23,12 @@ import { ArtifactsTab } from './components/ArtifactsTab';
 import { ObservabilityTab } from './components/ObservabilityTab';
 import { AuthModal } from './components/AuthModal';
 import { LineageModal } from './components/LineageModal';
+import { ConnectorsModal } from './components/ConnectorsModal';
 
 export default function App() {
   const [assets, setAssets] = useState<AssetSummary[]>([]);
   const [selectedAssetId, setSelectedAssetId] = useState<string>('');
+  const [showConnectorsModal, setShowConnectorsModal] = useState<boolean>(false);
   const [stats, setStats] = useState<IndexingStats>({
     discovered: 0,
     indexed: 0,
@@ -61,9 +63,9 @@ export default function App() {
   const [duration, setDuration] = useState<number>(0);
 
   // Authentication State
-  const [token, setToken] = useState<string | null>(() => localStorage.getItem('media_intel_token'));
+  const [token, setToken] = useState<string | null>(() => localStorage.getItem('brisky_token'));
   const [user, setUser] = useState<UserProfile | null>(() => {
-    const saved = localStorage.getItem('media_intel_user');
+    const saved = localStorage.getItem('brisky_user');
     if (saved) {
       try {
         return JSON.parse(saved);
@@ -73,12 +75,12 @@ export default function App() {
     }
     return null;
   });
-  const [showAuthModal, setShowAuthModal] = useState<boolean>(!localStorage.getItem('media_intel_token'));
+  const [showAuthModal, setShowAuthModal] = useState<boolean>(!localStorage.getItem('brisky_token'));
 
   const authFetch = useCallback(
     async (input: RequestInfo | URL, init: RequestInit = {}) => {
       const headers = new Headers(init.headers || {});
-      const currentToken = token || localStorage.getItem('media_intel_token');
+      const currentToken = token || localStorage.getItem('brisky_token');
       if (currentToken) {
         headers.set('Authorization', `Bearer ${currentToken}`);
       }
@@ -86,8 +88,8 @@ export default function App() {
       if (res.status === 401) {
         setToken(null);
         setUser(null);
-        localStorage.removeItem('media_intel_token');
-        localStorage.removeItem('media_intel_user');
+        localStorage.removeItem('brisky_token');
+        localStorage.removeItem('brisky_user');
         setShowAuthModal(true);
       }
       return res;
@@ -159,7 +161,7 @@ export default function App() {
       .then((data) => {
         if (data?.user) {
           setUser(data.user);
-          localStorage.setItem('media_intel_user', JSON.stringify(data.user));
+          localStorage.setItem('brisky_user', JSON.stringify(data.user));
         }
       })
       .catch(() => undefined);
@@ -169,6 +171,22 @@ export default function App() {
     fetchJobs();
     fetchEconomics();
   }, [token, authFetch, fetchAssets, fetchStats, fetchJobs, fetchEconomics]);
+
+  // Handle OAuth callback return redirects
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const connected = params.get('connected');
+    const err = params.get('error');
+
+    if (connected === 'google_drive') {
+      setShowConnectorsModal(true);
+      fetchAssets();
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } else if (err) {
+      alert(`Google Drive error: ${err}`);
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  }, [fetchAssets]);
 
   const selected = assets.find((a) => a.assetId === selectedAssetId);
   const isBusy = assets.some((a) => a.status === 'queued' || a.status === 'processing');
@@ -406,8 +424,8 @@ export default function App() {
   const handleLogout = () => {
     setToken(null);
     setUser(null);
-    localStorage.removeItem('media_intel_token');
-    localStorage.removeItem('media_intel_user');
+    localStorage.removeItem('brisky_token');
+    localStorage.removeItem('brisky_user');
     setAssets([]);
     setJobs([]);
     setSelectedAssetId('');
@@ -421,6 +439,7 @@ export default function App() {
         token={token}
         onOpenAuth={() => setShowAuthModal(true)}
         onLogout={handleLogout}
+        onOpenConnectors={() => setShowConnectorsModal(true)}
         onTriggerUpload={() => fileInputRef.current?.click()}
         fileInputRef={fileInputRef}
         onFileUpload={handleFileUpload}
@@ -555,8 +574,8 @@ export default function App() {
           onSuccess={(newToken, newUser) => {
             setToken(newToken);
             setUser(newUser);
-            localStorage.setItem('media_intel_token', newToken);
-            localStorage.setItem('media_intel_user', JSON.stringify(newUser));
+            localStorage.setItem('brisky_token', newToken);
+            localStorage.setItem('brisky_user', JSON.stringify(newUser));
             setShowAuthModal(false);
           }}
         />
@@ -568,6 +587,18 @@ export default function App() {
           token={token}
           onClose={() => setLineageModalAssetId(null)}
           onSelectAsset={(id) => setSelectedAssetId(id)}
+        />
+      )}
+
+      {showConnectorsModal && (
+        <ConnectorsModal
+          isOpen={showConnectorsModal}
+          token={token}
+          onClose={() => setShowConnectorsModal(false)}
+          onSyncTriggered={() => {
+            fetchAssets();
+            fetchJobs();
+          }}
         />
       )}
     </div>

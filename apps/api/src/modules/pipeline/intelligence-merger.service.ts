@@ -56,7 +56,8 @@ export class IntelligenceMergerService {
       metadata,
     } = input;
 
-    if (!fs.existsSync(scratchDir)) fs.mkdirSync(scratchDir, { recursive: true });
+    if (!fs.existsSync(scratchDir))
+      fs.mkdirSync(scratchDir, { recursive: true });
 
     const segments: UnifiedSegment[] = [];
     const embeddingUsages: ModelUsage[] = [];
@@ -89,7 +90,12 @@ export class IntelligenceMergerService {
       );
 
       const overlappingTranscript = transcript
-        .filter((cue) => cue.start_time < end && cue.end_time > start && (cue.text || '').trim())
+        .filter(
+          (cue) =>
+            cue.start_time < end &&
+            cue.end_time > start &&
+            (cue.text || '').trim(),
+        )
         .map((cue) => cue.text.trim())
         .join(' ');
 
@@ -97,10 +103,16 @@ export class IntelligenceMergerService {
         (seg) => seg.start_time < end && seg.end_time > start,
       );
 
-      const objects = unique([
+      // Add spatial hints to objects for better micro-detail detection
+      // Example: "watch:background", "hand:holding", "car:nearby"
+      const objectsWithHints = unique([
         ...aggregated.objects,
         ...overlappingGemini.flatMap((g) => g.visual_objects || []),
-      ]);
+      ]).map((obj) =>
+        this.addSpatialHints(obj, nearestFrame?.description || description),
+      );
+
+      const objects = objectsWithHints;
       const actions = unique([
         ...aggregated.activity,
         ...overlappingGemini.flatMap((g) => g.actions || []),
@@ -108,9 +120,7 @@ export class IntelligenceMergerService {
       const onScreenText = aggregated.onScreenText;
 
       const title =
-        overlappingGemini[0]?.title ||
-        nearestFrame?.scene ||
-        `Scene ${i + 1}`;
+        overlappingGemini[0]?.title || nearestFrame?.scene || `Scene ${i + 1}`;
       const description =
         [nearestFrame?.description, overlappingGemini[0]?.description]
           .filter(Boolean)
@@ -133,13 +143,22 @@ export class IntelligenceMergerService {
         .join('. ');
 
       this.logger.log(`Embedding segment ${i + 1} (${start}s-${end}s)`);
-      const preferredProvider = this.configService.get<string>('EMBEDDING_PROVIDER', 'gemini');
+      const preferredProvider = this.configService.get<string>(
+        'EMBEDDING_PROVIDER',
+        'gemini',
+      );
       let embedded: { values: number[]; usage: ModelUsage };
-      if (preferredProvider === 'local' && this.localEmbeddingService.isAvailable()) {
+      if (
+        preferredProvider === 'local' &&
+        this.localEmbeddingService.isAvailable()
+      ) {
         try {
-          embedded = await this.localEmbeddingService.generateEmbedding(embeddingText);
+          embedded =
+            await this.localEmbeddingService.generateEmbedding(embeddingText);
         } catch (localErr) {
-          this.logger.warn(`Local embedding failed, falling back to Gemini: ${localErr}`);
+          this.logger.warn(
+            `Local embedding failed, falling back to Gemini: ${localErr}`,
+          );
           embedded = await this.geminiService.generateEmbedding(embeddingText);
         }
       } else {
@@ -165,7 +184,10 @@ export class IntelligenceMergerService {
         sources,
         analysisVersion: ANALYSIS_VERSION,
         provider: embedded.usage.provider || 'local-onnx',
-        model: embedded.usage.model || (nearestFrame?.model || (overlappingGemini.length ? modelLabel : 'hybrid')),
+        model:
+          embedded.usage.model ||
+          nearestFrame?.model ||
+          (overlappingGemini.length ? modelLabel : 'hybrid'),
       });
     }
 
@@ -187,11 +209,26 @@ export class IntelligenceMergerService {
       costPerSourceMinuteUsd: Number((estimatedUsd / sourceMinutes).toFixed(6)),
     };
 
-    fs.writeFileSync(path.join(scratchDir, 'metadata.json'), JSON.stringify(metadata, null, 2));
-    fs.writeFileSync(path.join(scratchDir, 'scenes.json'), JSON.stringify(scenes, null, 2));
-    fs.writeFileSync(path.join(scratchDir, 'visual.json'), JSON.stringify(visual, null, 2));
-    fs.writeFileSync(path.join(scratchDir, 'transcript.json'), JSON.stringify(transcript, null, 2));
-    fs.writeFileSync(path.join(scratchDir, 'gemini.json'), JSON.stringify(gemini, null, 2));
+    fs.writeFileSync(
+      path.join(scratchDir, 'metadata.json'),
+      JSON.stringify(metadata, null, 2),
+    );
+    fs.writeFileSync(
+      path.join(scratchDir, 'scenes.json'),
+      JSON.stringify(scenes, null, 2),
+    );
+    fs.writeFileSync(
+      path.join(scratchDir, 'visual.json'),
+      JSON.stringify(visual, null, 2),
+    );
+    fs.writeFileSync(
+      path.join(scratchDir, 'transcript.json'),
+      JSON.stringify(transcript, null, 2),
+    );
+    fs.writeFileSync(
+      path.join(scratchDir, 'gemini.json'),
+      JSON.stringify(gemini, null, 2),
+    );
     fs.writeFileSync(
       path.join(scratchDir, 'segments.json'),
       JSON.stringify(
@@ -208,7 +245,10 @@ export class IntelligenceMergerService {
         2,
       ),
     );
-    fs.writeFileSync(path.join(scratchDir, 'cost.json'), JSON.stringify(cost, null, 2));
+    fs.writeFileSync(
+      path.join(scratchDir, 'cost.json'),
+      JSON.stringify(cost, null, 2),
+    );
 
     const artifacts: PipelineArtifacts = {
       assetId,
@@ -233,8 +273,58 @@ export class IntelligenceMergerService {
       analysisVersion: ANALYSIS_VERSION,
     };
 
-    fs.writeFileSync(path.join(scratchDir, 'pipeline_summary.json'), JSON.stringify(artifacts, null, 2));
-    this.logger.log(`Persisted hybrid intelligence for ${assetId} to ${scratchDir}`);
+    fs.writeFileSync(
+      path.join(scratchDir, 'pipeline_summary.json'),
+      JSON.stringify(artifacts, null, 2),
+    );
+    this.logger.log(
+      `Persisted hybrid intelligence for ${assetId} to ${scratchDir}`,
+    );
     return artifacts;
+  }
+
+  private addSpatialHints(object: string, contextDesc: string): string {
+    // Infer spatial context from description and object type
+    // Returns object with spatial hint: "watch:background", "hand:holding", etc.
+    const lowerObj = object.toLowerCase();
+    const lowerCtx = (contextDesc || '').toLowerCase();
+
+    // Background indicators
+    if (
+      lowerCtx.includes('background') ||
+      lowerCtx.includes('behind') ||
+      lowerCtx.includes('distant')
+    ) {
+      return `${object}:background`;
+    }
+
+    // Holding/hand-related
+    if (
+      (lowerObj.includes('hand') || lowerObj.includes('arm')) &&
+      (lowerCtx.includes('holding') || lowerCtx.includes('carry'))
+    ) {
+      return `${object}:holding`;
+    }
+
+    // Foreground/prominent
+    if (
+      lowerCtx.includes('front') ||
+      lowerCtx.includes('center') ||
+      lowerCtx.includes('main subject')
+    ) {
+      return `${object}:foreground`;
+    }
+
+    // Fleeting/brief
+    if (
+      lowerCtx.includes('fleeting') ||
+      lowerCtx.includes('brief') ||
+      lowerCtx.includes('moment')
+    ) {
+      return `${object}:fleeting`;
+    }
+
+    // Default: no hint
+    return object;
   }
 }

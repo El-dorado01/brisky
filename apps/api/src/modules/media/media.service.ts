@@ -14,9 +14,16 @@ import {
   resolveFromRepo,
   validateAssetId,
 } from '../../common/repo-paths';
-import { getBenchmarkQueries, getLibraryBenchmarkQueries, LibraryBenchmarkQuery } from './benchmark-queries';
+import {
+  getBenchmarkQueries,
+  getLibraryBenchmarkQueries,
+  LibraryBenchmarkQuery,
+} from './benchmark-queries';
 import { parseSearchQuery } from './query-parse';
-import { parseKeyframePaths, narrowResultWindow } from '../pipeline/scene-sampling';
+import {
+  parseKeyframePaths,
+  narrowResultWindow,
+} from '../pipeline/scene-sampling';
 import {
   PublicAsset,
   SearchResult,
@@ -30,7 +37,7 @@ import {
   FeedbackPayload,
   UnderstoodQuery,
 } from './media.types';
-export {
+export type {
   PublicAsset,
   SearchResult,
   BenchmarkResult,
@@ -51,6 +58,9 @@ export class MediaService {
   private proxyDir: string;
   private thumbnailDir: string;
   private scratchDir: string;
+  private embeddingCache: Map<string, { values: number[]; timestamp: number }> =
+    new Map();
+  private readonly EMBEDDING_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
   constructor(
     private readonly configService: ConfigService,
@@ -67,9 +77,91 @@ export class MediaService {
     this.thumbnailDir = path.join(this.storageRoot, 'thumbnails');
     this.scratchDir = path.join(this.storageRoot, 'scratch');
 
-    [this.storageRoot, this.proxyDir, this.thumbnailDir, this.scratchDir].forEach((dir) => {
+    [
+      this.storageRoot,
+      this.proxyDir,
+      this.thumbnailDir,
+      this.scratchDir,
+    ].forEach((dir) => {
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     });
+    this.startEmbeddingCacheCleanup();
+  }
+
+  private startEmbeddingCacheCleanup() {
+    // Clean up expired cache entries every hour
+    setInterval(
+      () => {
+        const now = Date.now();
+        let cleaned = 0;
+        for (const [key, entry] of this.embeddingCache.entries()) {
+          if (now - entry.timestamp > this.EMBEDDING_CACHE_TTL_MS) {
+            this.embeddingCache.delete(key);
+            cleaned += 1;
+          }
+        }
+        if (cleaned > 0) {
+          this.logger.debug(
+            `Cleaned ${cleaned} expired embedding cache entries`,
+          );
+        }
+      },
+      60 * 60 * 1000,
+    ); // Run every hour
+  }
+
+  private normalizeForCache(text: string): string {
+    // Normalize: lowercase, trim, collapse whitespace
+    return text.toLowerCase().trim().replace(/\s+/g, ' ');
+  }
+
+  private async getCachedOrGenerateEmbedding(text: string): Promise<number[]> {
+    const normalized = this.normalizeForCache(text);
+    const cacheKey = createHash('sha256').update(normalized).digest('hex');
+
+    // Check cache first
+    const cached = this.embeddingCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.EMBEDDING_CACHE_TTL_MS) {
+      this.logger.debug(`Embedding cache hit for: ${text.substring(0, 50)}`);
+      return cached.values;
+    }
+
+    // Generate new embedding
+    let values: number[] = [];
+    const preferredProvider = this.configService.get<string>(
+      'EMBEDDING_PROVIDER',
+      'gemini',
+    );
+
+    if (
+      preferredProvider === 'local' &&
+      this.localEmbeddingService.isAvailable()
+    ) {
+      try {
+        const res =
+          await this.localEmbeddingService.generateEmbedding(normalized);
+        values = res.values;
+      } catch (localErr) {
+        this.logger.warn(`Local embedding failed, trying Gemini: ${localErr}`);
+        if (this.geminiService.isConfigured()) {
+          const res = await this.geminiService.generateEmbedding(normalized);
+          values = res.values;
+        }
+      }
+    } else if (this.geminiService.isConfigured()) {
+      const res = await this.geminiService.generateEmbedding(normalized);
+      values = res.values;
+    }
+
+    // Cache the result
+    if (values.length > 0) {
+      this.embeddingCache.set(cacheKey, { values, timestamp: Date.now() });
+      this.logger.debug(
+        `Cached embedding for: ${text.substring(0, 50)} (${this.embeddingCache.size} total)`,
+      );
+    }
+
+    return values;
   }
 
   newAssetId(): string {
@@ -155,10 +247,17 @@ export class MediaService {
     };
   }
 
-
-  async startFromUploadStream(originalFilename: string, stream: NodeJS.ReadableStream, userId: string) {
+  async startFromUploadStream(
+    originalFilename: string,
+    stream: NodeJS.ReadableStream,
+    userId: string,
+  ) {
     const assetId = this.newAssetId();
-    const stored = await this.uploadConnector.ingestStream(assetId, originalFilename, stream);
+    const stored = await this.uploadConnector.ingestStream(
+      assetId,
+      originalFilename,
+      stream,
+    );
     const stat = fs.statSync(stored);
     const checksum = await this.hashFile(stored);
     const existing = await this.findByChecksum(checksum, userId);
@@ -213,7 +312,8 @@ export class MediaService {
       error: row.error,
       originalDeleted: row.original_deleted,
       duration: row.duration,
-      resolution: row.width && row.height ? `${row.width}x${row.height}` : 'unknown',
+      resolution:
+        row.width && row.height ? `${row.width}x${row.height}` : 'unknown',
       codec: row.codec,
       segmentCount,
       indexedAt: row.indexed_at,
@@ -229,6 +329,9 @@ export class MediaService {
       phash: row.phash,
       proxyStatus: row.proxy_status,
       availability: row.availability,
+      externalFileId: row.external_file_id,
+      connectorAccountId: row.connector_account_id,
+      driveWebViewLink: row.drive_web_view_link,
     };
   }
 
@@ -252,13 +355,17 @@ export class MediaService {
       originalFilename: row.original_filename,
       checksum: row.checksum,
       sourceType: row.source_type,
+      externalFileId: row.external_file_id,
+      connectorAccountId: row.connector_account_id,
+      driveWebViewLink: row.drive_web_view_link,
       status: row.status,
       stage: row.stage,
       progress: row.progress,
       error: row.error,
       originalDeleted: row.original_deleted,
       duration: row.duration,
-      resolution: row.width && row.height ? `${row.width}x${row.height}` : 'unknown',
+      resolution:
+        row.width && row.height ? `${row.width}x${row.height}` : 'unknown',
       codec: row.codec,
       segmentCount: row.segment_count || 0,
       indexedAt: row.indexed_at,
@@ -374,53 +481,50 @@ export class MediaService {
   async getStreamPath(assetId: string, userId?: string): Promise<string> {
     const validId = validateAssetId(assetId);
     if (userId) {
-      const check = await this.db.query('SELECT id FROM media_assets WHERE id = $1 AND user_id = $2', [
-        validId,
-        userId,
-      ]);
+      const check = await this.db.query(
+        'SELECT id FROM media_assets WHERE id = $1 AND user_id = $2',
+        [validId, userId],
+      );
       if (check.rows.length === 0) {
         throw new NotFoundException(`Asset ${validId} not found`);
       }
     }
 
-    const proxyPath = assertPathWithinRoot(path.join(this.proxyDir, `${validId}.mp4`), this.storageRoot);
+    const proxyPath = assertPathWithinRoot(
+      path.join(this.proxyDir, `${validId}.mp4`),
+      this.storageRoot,
+    );
     if (fs.existsSync(proxyPath)) return proxyPath;
 
-    // Check storage/uploads/${validId} folder for original file
-    const uploadDir = assertPathWithinRoot(path.join(this.storageRoot, 'uploads', validId), this.storageRoot);
-    if (fs.existsSync(uploadDir)) {
-      const files = fs.readdirSync(uploadDir);
-      if (files.length > 0) {
-        const originalPath = assertPathWithinRoot(path.join(uploadDir, files[0]), this.storageRoot);
-        if (fs.existsSync(originalPath)) return originalPath;
-      }
-    }
-
-    // Check scratch or direct upload file
-    const scratchOriginal = assertPathWithinRoot(path.join(this.storageRoot, 'uploads', `${validId}.mp4`), this.storageRoot);
-    if (fs.existsSync(scratchOriginal)) return scratchOriginal;
-
-    throw new NotFoundException(`Playable media proxy not found for asset ${validId}`);
+    throw new NotFoundException(
+      `Playable media proxy not found for asset ${validId}. In Phase 4, playback streams exclusively from the web-playable proxy.`,
+    );
   }
 
   async getThumbnailPath(assetId: string, userId?: string): Promise<string> {
     const validId = validateAssetId(assetId);
     if (userId) {
-      const check = await this.db.query('SELECT id FROM media_assets WHERE id = $1 AND user_id = $2', [
-        validId,
-        userId,
-      ]);
+      const check = await this.db.query(
+        'SELECT id FROM media_assets WHERE id = $1 AND user_id = $2',
+        [validId, userId],
+      );
       if (check.rows.length === 0) {
         throw new NotFoundException(`Thumbnail not found for asset ${validId}`);
       }
     }
 
-    const thumbPath = assertPathWithinRoot(path.join(this.thumbnailDir, `${validId}.jpg`), this.storageRoot);
+    const thumbPath = assertPathWithinRoot(
+      path.join(this.thumbnailDir, `${validId}.jpg`),
+      this.storageRoot,
+    );
     if (fs.existsSync(thumbPath)) return thumbPath;
     throw new NotFoundException(`Thumbnail not found for asset ${validId}`);
   }
 
-  async deleteOriginalSource(assetId: string, userId?: string): Promise<boolean> {
+  async deleteOriginalSource(
+    assetId: string,
+    userId?: string,
+  ): Promise<boolean> {
     const validId = validateAssetId(assetId);
     const userClause = userId ? 'AND user_id = $2' : '';
     const params = userId ? [validId, userId] : [validId];
@@ -429,13 +533,17 @@ export class MediaService {
       `SELECT original_path FROM media_assets WHERE id = $1 ${userClause}`,
       params,
     );
-    if (res.rows.length === 0) throw new NotFoundException(`Asset ${validId} not found`);
+    if (res.rows.length === 0)
+      throw new NotFoundException(`Asset ${validId} not found`);
 
     const originalPath = res.rows[0].original_path;
     await this.uploadConnector.deleteSource(validId);
     if (originalPath && fs.existsSync(originalPath)) {
       try {
-        const safeOriginal = assertPathWithinRoot(originalPath, this.storageRoot);
+        const safeOriginal = assertPathWithinRoot(
+          originalPath,
+          this.storageRoot,
+        );
         fs.unlinkSync(safeOriginal);
       } catch {
         /* folder already wiped or outside storage jail */
@@ -449,7 +557,9 @@ export class MediaService {
       [validId],
     );
 
-    this.logger.log(`Deleted master upload bytes for ${validId}; proxy + PostgreSQL intelligence retained`);
+    this.logger.log(
+      `Deleted master upload bytes for ${validId}; proxy + PostgreSQL intelligence retained`,
+    );
     return true;
   }
 
@@ -464,7 +574,9 @@ export class MediaService {
   }
 
   async getUnderstoodQuery(trimmed: string): Promise<UnderstoodQuery> {
-    const queryHash = createHash('sha256').update(trimmed.toLowerCase().trim()).digest('hex');
+    const queryHash = createHash('sha256')
+      .update(trimmed.toLowerCase().trim())
+      .digest('hex');
 
     // 1. Fast Cache Check
     try {
@@ -492,7 +604,16 @@ export class MediaService {
     // 2. Fast-Path Heuristic: If simple single alphanumeric word (not command words), bypass AI call (<1ms, $0.00 cost)
     const isSingleWord =
       /^[a-zA-Z0-9_-]{1,40}$/.test(trimmed) &&
-      !['find', 'clip', 'video', 'show', 'search', 'want', 'where', 'me'].includes(trimmed.toLowerCase());
+      ![
+        'find',
+        'clip',
+        'video',
+        'show',
+        'search',
+        'want',
+        'where',
+        'me',
+      ].includes(trimmed.toLowerCase());
 
     if (isSingleWord) {
       const fast: UnderstoodQuery = {
@@ -513,14 +634,23 @@ export class MediaService {
     if (this.geminiService.isConfigured()) {
       try {
         const understoodPromise = this.geminiService.understandQuery(trimmed);
-        const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 3500));
-        const understood = await Promise.race([understoodPromise, timeoutPromise]);
+        const timeoutPromise = new Promise<null>((resolve) =>
+          setTimeout(() => resolve(null), 3500),
+        );
+        const understood = await Promise.race([
+          understoodPromise,
+          timeoutPromise,
+        ]);
         if (understood) {
-          this.cacheUnderstoodQuery(queryHash, understood).catch(() => undefined);
+          this.cacheUnderstoodQuery(queryHash, understood).catch(
+            () => undefined,
+          );
           return understood;
         }
       } catch (err) {
-        this.logger.warn(`AI query understanding failed, using fast-path parse: ${err}`);
+        this.logger.warn(
+          `AI query understanding failed, using fast-path parse: ${err}`,
+        );
       }
     }
 
@@ -534,11 +664,19 @@ export class MediaService {
       aspect: undefined,
       aliases: [],
       isCompound: false,
-      subQueries: [{ topic: parsed.cleaned || trimmed, searchPhrase: parsed.cleaned || trimmed }],
+      subQueries: [
+        {
+          topic: parsed.cleaned || trimmed,
+          searchPhrase: parsed.cleaned || trimmed,
+        },
+      ],
     };
   }
 
-  private async cacheUnderstoodQuery(queryHash: string, u: UnderstoodQuery): Promise<void> {
+  private async cacheUnderstoodQuery(
+    queryHash: string,
+    u: UnderstoodQuery,
+  ): Promise<void> {
     await this.db.query(
       `INSERT INTO query_understanding_cache (query_hash, raw_query, clean_search_phrase, core_subject, target_entity, aspect, aliases, is_compound, sub_queries)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -614,7 +752,11 @@ export class MediaService {
     let missingTerms: string[] | undefined;
     let explanation: string | undefined;
 
-    if (!hasExactMatch && parsed.primaryModifier && parsed.contentTerms.length >= 2) {
+    if (
+      !hasExactMatch &&
+      parsed.primaryModifier &&
+      parsed.contentTerms.length >= 2
+    ) {
       missingTerms = [parsed.primaryModifier];
       explanation = `No direct clips for "${parsed.primaryModifier}" found in your library. Showing related topics below:`;
     }
@@ -642,7 +784,13 @@ export class MediaService {
 
     // Parallel execution: run direct phrase matching and hybrid segment search concurrently
     const [phraseHits, segmentHits] = await Promise.all([
-      this.searchTranscriptPhrases(parsed, assetIdFilter, userId, limit, aliases),
+      this.searchTranscriptPhrases(
+        parsed,
+        assetIdFilter,
+        userId,
+        limit,
+        aliases,
+      ),
       this.searchSegments(parsed, assetIdFilter, userId, limit + 10, aliases),
     ]);
 
@@ -689,13 +837,52 @@ export class MediaService {
     let merged = [...directHits, ...relatedHits].slice(0, limit);
 
     // Stage-2 Deep Verification on candidates if needed
+    // SMART VERIFICATION GATING: Only verify when uncertain
     if (this.geminiService.isConfigured() && merged.length > 0) {
+      const topScore = merged[0]?.score || 0;
+      const secondScore = merged[1]?.score || 0;
+      const confidenceGap = topScore - secondScore;
+      const hasDetailModifier =
+        /\b(wearing|holding|carrying|background|small|tiny|brief|fleeting|sitting|standing|running|walking|red|blue|green|black|white|silver|gold|micro|detail)\b/i.test(
+          parsed.cleaned,
+        );
+
+      // Optimization: Skip verification for high-confidence or low-confidence results
+      const skipVerification =
+        topScore > 0.85 || // High confidence in top result, no need to verify
+        (merged.length > 0 && merged.every((r) => r.score < 0.6)); // All results too low, verification won't help
+
+      // Only verify if score is in "uncertain zone" (0.60-0.85) or detail modifier detected
       const needsVerification =
-        parsed.intent === 'visual' ||
-        (merged.length > 0 && merged.every((r) => r.score < 0.85));
+        !skipVerification &&
+        (parsed.intent === 'visual' ||
+          (merged.length > 0 &&
+            merged.some((r) => 0.6 < r.score && r.score < 0.85)) ||
+          hasDetailModifier ||
+          (confidenceGap > 0 && confidenceGap < 0.2));
 
       if (needsVerification) {
-        merged = await this.applyStage2Verification(merged, parsed, userId);
+        if (hasDetailModifier) {
+          // LAZY DETAIL VERIFICATION: Only trigger if standard results don't have high-confidence match
+          const hasHighConfidenceResult = merged.some((r) => r.score > 0.75);
+          if (!hasHighConfidenceResult) {
+            merged = await this.applyDetailedVerification(
+              merged,
+              parsed,
+              userId,
+            );
+          } else {
+            this.logger.debug(
+              `Skipping detail verification: high-confidence result found (${topScore})`,
+            );
+          }
+        } else {
+          merged = await this.applyStage2Verification(merged, parsed, userId);
+        }
+      } else {
+        this.logger.debug(
+          `Skipped verification: topScore=${topScore.toFixed(2)}, gap=${confidenceGap.toFixed(2)}, skipFlag=${skipVerification}`,
+        );
       }
     }
 
@@ -708,7 +895,8 @@ export class MediaService {
     userId?: string,
   ): Promise<SearchResult[]> {
     const queryHash = createHash('sha256').update(parsed.cleaned).digest('hex');
-    const candidatesToVerify = results.slice(0, 3);
+    // Verify more candidates (up to 5) for broader coverage
+    const candidatesToVerify = results.slice(0, Math.min(5, results.length));
 
     const verifiedHits = await Promise.all(
       candidatesToVerify.map(async (candidate) => {
@@ -726,7 +914,13 @@ export class MediaService {
 
           if (cached.rows.length > 0) {
             const row = cached.rows[0];
-            return this.enrichVerifiedHit(candidate, row.is_verified, row.confidence, row.explanation, undefined);
+            return this.enrichVerifiedHit(
+              candidate,
+              row.is_verified,
+              row.confidence,
+              row.explanation,
+              undefined,
+            );
           }
 
           // 2. Locate this candidate's own keyframes (not the whole asset's frame directory)
@@ -737,10 +931,15 @@ export class MediaService {
             [candidate.segmentId],
           );
           if (segRow.rows.length > 0) {
-            frames = parseKeyframePaths(segRow.rows[0].keyframe_paths).filter((f) => f.path && fs.existsSync(f.path));
+            frames = parseKeyframePaths(segRow.rows[0].keyframe_paths).filter(
+              (f) => f.path && fs.existsSync(f.path),
+            );
           }
           if (frames.length === 0) {
-            const thumb = path.join(this.thumbnailDir, `${candidate.assetId}.jpg`);
+            const thumb = path.join(
+              this.thumbnailDir,
+              `${candidate.assetId}.jpg`,
+            );
             if (fs.existsSync(thumb)) {
               frames = [{ timestamp: candidate.startTime, path: thumb }];
               usedThumbnailFallback = true;
@@ -749,11 +948,12 @@ export class MediaService {
 
           if (frames.length === 0) return candidate;
 
-          // 3. Call Gemini VLM verification
+          // 3. Call Gemini VLM verification with standard prompt
           const ver = await this.geminiService.verifyCandidate(
             frames,
             parsed.cleaned,
             candidate.transcriptSnippet,
+            false, // not detail mode
           );
 
           // Save to cache
@@ -762,7 +962,14 @@ export class MediaService {
              VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (query_hash, segment_id) DO UPDATE
              SET is_verified = EXCLUDED.is_verified, confidence = EXCLUDED.confidence, explanation = EXCLUDED.explanation`,
-            [queryHash, candidate.assetId, candidate.segmentId, ver.matched, ver.confidence, ver.explanation],
+            [
+              queryHash,
+              candidate.assetId,
+              candidate.segmentId,
+              ver.matched,
+              ver.confidence,
+              ver.explanation,
+            ],
           );
 
           return this.enrichVerifiedHit(
@@ -773,14 +980,20 @@ export class MediaService {
             usedThumbnailFallback ? undefined : ver.matchedTimestamp,
           );
         } catch (err) {
-          this.logger.warn(`Stage-2 verification error for ${candidate.segmentId}: ${err}`);
+          this.logger.warn(
+            `Stage-2 verification error for ${candidate.segmentId}: ${err}`,
+          );
           return candidate;
         }
       }),
     );
 
-    const verifiedKeys = new Set(candidatesToVerify.map((c) => `${c.assetId}:${c.startTime.toFixed(1)}`));
-    const remaining = results.filter((r) => !verifiedKeys.has(`${r.assetId}:${r.startTime.toFixed(1)}`));
+    const verifiedKeys = new Set(
+      candidatesToVerify.map((c) => `${c.assetId}:${c.startTime.toFixed(1)}`),
+    );
+    const remaining = results.filter(
+      (r) => !verifiedKeys.has(`${r.assetId}:${r.startTime.toFixed(1)}`),
+    );
     const all = [...verifiedHits, ...remaining];
 
     all.sort((a, b) => {
@@ -792,6 +1005,171 @@ export class MediaService {
     return all;
   }
 
+  private async applyDetailedVerification(
+    results: SearchResult[],
+    parsed: ReturnType<typeof parseSearchQuery>,
+    userId?: string,
+  ): Promise<SearchResult[]> {
+    // Deep inspection for needle-in-haystack queries
+    // Verify more candidates (up to 8) and use detailed prompting for micro-details
+    const queryHash = createHash('sha256')
+      .update(`detail_${parsed.cleaned}`)
+      .digest('hex');
+    const candidatesToVerify = results.slice(0, Math.min(8, results.length));
+
+    const verifiedHits = await Promise.all(
+      candidatesToVerify.map(async (candidate) => {
+        try {
+          // Check detailed verification cache
+          const cached = await this.db.query<{
+            is_verified: boolean;
+            confidence: number;
+            explanation: string;
+          }>(
+            `SELECT is_verified, confidence, explanation FROM verified_queries
+             WHERE query_hash = $1 AND segment_id = $2`,
+            [queryHash, candidate.segmentId],
+          );
+
+          if (cached.rows.length > 0) {
+            const row = cached.rows[0];
+            return this.enrichDetailedVerifiedHit(
+              candidate,
+              row.is_verified,
+              row.confidence,
+              row.explanation,
+            );
+          }
+
+          // Locate keyframes
+          let frames: { timestamp: number; path: string }[] = [];
+          const segRow = await this.db.query<{ keyframe_paths: unknown }>(
+            `SELECT keyframe_paths FROM media_segments WHERE id = $1`,
+            [candidate.segmentId],
+          );
+          if (segRow.rows.length > 0) {
+            frames = parseKeyframePaths(segRow.rows[0].keyframe_paths).filter(
+              (f) => f.path && fs.existsSync(f.path),
+            );
+          }
+          if (frames.length === 0) {
+            const thumb = path.join(
+              this.thumbnailDir,
+              `${candidate.assetId}.jpg`,
+            );
+            if (fs.existsSync(thumb)) {
+              frames = [{ timestamp: candidate.startTime, path: thumb }];
+            }
+          }
+
+          if (frames.length === 0) return candidate;
+
+          // Call Gemini with DETAIL MODE for micro-objects and background elements
+          const ver = await this.geminiService.verifyCandidate(
+            frames,
+            parsed.cleaned,
+            candidate.transcriptSnippet,
+            true, // detail mode: look for micro-details, background objects, fleeting actions
+          );
+
+          // Cache with detail query hash
+          await this.db.query(
+            `INSERT INTO verified_queries (query_hash, asset_id, segment_id, is_verified, confidence, explanation)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (query_hash, segment_id) DO UPDATE
+             SET is_verified = EXCLUDED.is_verified, confidence = EXCLUDED.confidence, explanation = EXCLUDED.explanation`,
+            [
+              queryHash,
+              candidate.assetId,
+              candidate.segmentId,
+              ver.matched,
+              ver.confidence,
+              ver.explanation,
+            ],
+          );
+
+          return this.enrichDetailedVerifiedHit(
+            candidate,
+            ver.matched,
+            ver.confidence,
+            ver.explanation,
+          );
+        } catch (err) {
+          this.logger.warn(
+            `Detailed verification error for ${candidate.segmentId}: ${err}`,
+          );
+          return candidate;
+        }
+      }),
+    );
+
+    const verifiedKeys = new Set(
+      candidatesToVerify.map((c) => `${c.assetId}:${c.startTime.toFixed(1)}`),
+    );
+    const remaining = results.filter(
+      (r) => !verifiedKeys.has(`${r.assetId}:${r.startTime.toFixed(1)}`),
+    );
+    const all = [...verifiedHits, ...remaining];
+
+    // Sort: verified direct matches first, then by score
+    all.sort((a, b) => {
+      const aVerified = a.stage2Verified ? 0 : 1;
+      const bVerified = b.stage2Verified ? 0 : 1;
+      if (aVerified !== bVerified) return aVerified - bVerified;
+      if (a.matchQuality === 'direct' && b.matchQuality !== 'direct') return -1;
+      if (b.matchQuality === 'direct' && a.matchQuality !== 'direct') return 1;
+      return b.score - a.score;
+    });
+
+    return all;
+  }
+
+  private enrichDetailedVerifiedHit(
+    candidate: SearchResult,
+    isVerified: boolean,
+    confidence: number,
+    explanation: string,
+  ): SearchResult {
+    if (isVerified && confidence >= 0.5) {
+      return {
+        ...candidate,
+        score: Number(
+          Math.max(candidate.score, 0.9 + confidence * 0.08).toFixed(3),
+        ),
+        matchQuality: 'direct',
+        winningPath: 'visual',
+        stage2Verified: true,
+        verificationConfidence: confidence,
+        verificationExplanation: explanation,
+        whyPicked: 'Deep detail verification confirmed (micro-details found)',
+        queryRelation: explanation || candidate.queryRelation,
+      };
+    } else if (isVerified && confidence >= 0.3) {
+      // Partial match on details
+      return {
+        ...candidate,
+        score: Number(
+          Math.max(candidate.score, 0.7 + confidence * 0.15).toFixed(3),
+        ),
+        matchQuality: 'related',
+        stage2Verified: true,
+        verificationConfidence: confidence,
+        whyPicked: 'Partial detail match detected',
+        queryRelation: explanation || candidate.queryRelation,
+      };
+    } else if (!isVerified) {
+      return {
+        ...candidate,
+        score: Number(Math.min(candidate.score, 0.45).toFixed(3)),
+        matchQuality: 'related',
+        stage2Verified: true,
+        whyPicked: 'Detail inspection: micro-details not found',
+        queryRelation: explanation || candidate.queryRelation,
+      };
+    }
+    return candidate;
+  }
+
   private enrichVerifiedHit(
     candidate: SearchResult,
     isVerified: boolean,
@@ -800,12 +1178,18 @@ export class MediaService {
     matchedTimestamp?: number,
   ): SearchResult {
     if (isVerified && confidence >= 0.5) {
-      const narrowed = narrowResultWindow(candidate.startTime, candidate.endTime, matchedTimestamp);
+      const narrowed = narrowResultWindow(
+        candidate.startTime,
+        candidate.endTime,
+        matchedTimestamp,
+      );
       return {
         ...candidate,
         startTime: narrowed.startTime,
         endTime: narrowed.endTime,
-        score: Number(Math.max(candidate.score, 0.88 + confidence * 0.10).toFixed(3)),
+        score: Number(
+          Math.max(candidate.score, 0.88 + confidence * 0.1).toFixed(3),
+        ),
         matchQuality: 'direct',
         winningPath: 'visual',
         stage2Verified: true,
@@ -827,7 +1211,10 @@ export class MediaService {
     return candidate;
   }
 
-  async saveFeedback(payload: FeedbackPayload, userId?: string): Promise<boolean> {
+  async saveFeedback(
+    payload: FeedbackPayload,
+    userId?: string,
+  ): Promise<boolean> {
     const validAssetId = validateAssetId(payload.assetId);
     await this.db.query(
       `INSERT INTO search_feedback (user_id, query, asset_id, segment_id, timestamp_sec, feedback, notes)
@@ -842,7 +1229,9 @@ export class MediaService {
         payload.notes || null,
       ],
     );
-    this.logger.log(`Search feedback saved for query "${payload.query}" on asset ${validAssetId}: ${payload.feedback}`);
+    this.logger.log(
+      `Search feedback saved for query "${payload.query}" on asset ${validAssetId}: ${payload.feedback}`,
+    );
     return true;
   }
 
@@ -856,7 +1245,13 @@ export class MediaService {
     // 1. Run each sub-query in parallel
     const perTopicSearches = await Promise.all(
       subQueries.map((sq) =>
-        this.searchSingleTopic(sq.searchPhrase, assetIdFilter, limit, userId, sq.topic),
+        this.searchSingleTopic(
+          sq.searchPhrase,
+          assetIdFilter,
+          limit,
+          userId,
+          sq.topic,
+        ),
       ),
     );
 
@@ -896,7 +1291,10 @@ export class MediaService {
     }
 
     // 4. Interleaved Diversity RRF: Alternate fairly between sub-topics
-    const maxTopicItems = Math.max(...perTopicSearches.map((res) => res.length), 0);
+    const maxTopicItems = Math.max(
+      ...perTopicSearches.map((res) => res.length),
+      0,
+    );
     for (let i = 0; i < maxTopicItems; i++) {
       for (let t = 0; t < perTopicSearches.length; t++) {
         const item = perTopicSearches[t][i];
@@ -929,11 +1327,20 @@ export class MediaService {
     limit: number,
     aliases: string[] = [],
   ): Promise<SearchResult[]> {
-    if (parsed.phrases.length === 0 && parsed.contentTerms.length === 0 && aliases.length === 0) return [];
+    if (
+      parsed.phrases.length === 0 &&
+      parsed.contentTerms.length === 0 &&
+      aliases.length === 0
+    )
+      return [];
 
     const params: unknown[] = [];
     let p = 1;
-    const where: string[] = [`o.observation_type = 'transcript'`, `a.status = 'indexed'`];
+    const where: string[] = [
+      `o.observation_type = 'transcript'`,
+      `a.status = 'indexed'`,
+      `(a.availability IS NULL OR a.availability != 'offline')`,
+    ];
 
     if (userId) {
       where.push(`a.user_id = $${p}`);
@@ -980,7 +1387,9 @@ export class MediaService {
         // Build 2-term pair combinations so multi-word queries match cues containing multiple key terms
         // If a primary modifier / defining entity is set, only consider pairs that include the primary modifier
         const modifierIdx = parsed.primaryModifier
-          ? parsed.contentTerms.findIndex((t) => t.toLowerCase() === parsed.primaryModifier!.toLowerCase())
+          ? parsed.contentTerms.findIndex(
+              (t) => t.toLowerCase() === parsed.primaryModifier!.toLowerCase(),
+            )
           : -1;
 
         const pairClauses: string[] = [];
@@ -1005,8 +1414,10 @@ export class MediaService {
     where.push(`(${matchSql})`);
     params.push(limit);
 
-    const phraseRankSql = phraseClauses.length > 0 ? phraseClauses.join(' OR ') : 'FALSE';
-    const termsRankSql = termClauses.length > 0 ? termClauses.join(' AND ') : 'FALSE';
+    const phraseRankSql =
+      phraseClauses.length > 0 ? phraseClauses.join(' OR ') : 'FALSE';
+    const termsRankSql =
+      termClauses.length > 0 ? termClauses.join(' AND ') : 'FALSE';
 
     const sql = `
       SELECT o.asset_id, o.timestamp_start, o.timestamp_end,
@@ -1033,12 +1444,26 @@ export class MediaService {
       const res = await this.db.query(sql, params);
       return res.rows.map((row, i) => {
         const startTime = Number(Number(row.timestamp_start).toFixed(2));
-        const endTime = Number(Math.max(Number(row.timestamp_end), startTime + 2).toFixed(2));
+        const endTime = Number(
+          Math.max(Number(row.timestamp_end), startTime + 2).toFixed(2),
+        );
         const text = String(row.text || '').trim();
-        const queryText = (parsed.raw || parsed.cleaned || 'your search').trim();
+        const queryText = (
+          parsed.raw ||
+          parsed.cleaned ||
+          'your search'
+        ).trim();
         const snippet = text.length > 140 ? text.slice(0, 140) + '...' : text;
-        const matchesModifier = !parsed.primaryModifier || new RegExp(`\\b${escapeRegex(parsed.primaryModifier)}`, 'i').test(text);
-        const isDirect = ((row.match_tier === 'phrase' || (row.match_tier === 'all_terms' && parsed.contentTerms.length >= 2)) && matchesModifier);
+        const matchesModifier =
+          !parsed.primaryModifier ||
+          new RegExp(`\\b${escapeRegex(parsed.primaryModifier)}`, 'i').test(
+            text,
+          );
+        const isDirect =
+          (row.match_tier === 'phrase' ||
+            (row.match_tier === 'all_terms' &&
+              parsed.contentTerms.length >= 2)) &&
+          matchesModifier;
         const whyPicked = isDirect
           ? 'Direct spoken phrase match in audio track'
           : 'Partial term match in audio transcript';
@@ -1088,7 +1513,12 @@ export class MediaService {
 
     // Extract additional clean terms from aliases (e.g. 'boi')
     const aliasTerms = (aliases || [])
-      .flatMap((a) => a.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/))
+      .flatMap((a) =>
+        a
+          .toLowerCase()
+          .replace(/[^a-z0-9\s]/g, ' ')
+          .split(/\s+/),
+      )
       .filter((t) => t.length >= 2 && !parsed.contentTerms.includes(t));
 
     if (aliasTerms.length > 0) {
@@ -1099,20 +1529,8 @@ export class MediaService {
       }
     }
 
-    const preferredProvider = this.configService.get<string>('EMBEDDING_PROVIDER', 'gemini');
-    if (preferredProvider === 'local' && this.localEmbeddingService.isAvailable()) {
-      try {
-        const res = await this.localEmbeddingService.generateEmbedding(embedSource);
-        queryEmbedding = res.values;
-      } catch (localErr) {
-        this.logger.warn(`Local query embedding failed, trying Gemini: ${localErr}`);
-        if (this.geminiService.isConfigured()) {
-          queryEmbedding = (await this.geminiService.generateEmbedding(embedSource)).values;
-        }
-      }
-    } else if (this.geminiService.isConfigured()) {
-      queryEmbedding = (await this.geminiService.generateEmbedding(embedSource)).values;
-    }
+    // Use cached embedding to avoid regenerating for repeated queries
+    queryEmbedding = await this.getCachedOrGenerateEmbedding(embedSource);
 
     const hasEmbedding = queryEmbedding.length > 0;
     const queryDim = queryEmbedding.length;
@@ -1170,6 +1588,7 @@ export class MediaService {
         FROM media_segments s
         JOIN media_assets a ON a.id = s.asset_id
         WHERE a.status = 'indexed'
+          AND (a.availability IS NULL OR a.availability != 'offline')
           ${userSql}
           ${assetSql}
       ),
@@ -1185,7 +1604,7 @@ export class MediaService {
                  coalesce(ts_rank_cd(s.doc_vector, ${orSql}), 0.0)
                ) DESC) AS lex_rank
         FROM indexed_segments s
-        WHERE ${orQuery ? `s.doc_vector @@ ${orSql}` : (andQuery ? `s.doc_vector @@ ${andSql}` : 'FALSE')}
+        WHERE ${orQuery ? `s.doc_vector @@ ${orSql}` : andQuery ? `s.doc_vector @@ ${andSql}` : 'FALSE'}
         LIMIT 25
       ),
       semantic AS (
@@ -1250,29 +1669,44 @@ export class MediaService {
           .map((s) => s.toLowerCase().trim())
           .filter((s) => s.length >= 3);
         const onScreenExactMatch = allPhrasesToCheck.some((p) =>
-          onScreen.some((t: string) => t.toLowerCase().includes(p))
+          onScreen.some((t: string) => t.toLowerCase().includes(p)),
         );
 
         // Check if candidate scene has explicit evidence of primary modifier / target entity (e.g. 'levodopa')
         // Across observations: transcript, on-screen text, visual objects, actions, description, title, filename
-        const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const escapeRegex = (s: string) =>
+          s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const modifier = parsed.primaryModifier;
-        const hasPrimaryModifierFocus = !modifier || (
+        const hasPrimaryModifierFocus =
+          !modifier ||
           new RegExp(`\\b${escapeRegex(modifier)}`, 'i').test(transcript) ||
-          onScreen.some((t: string) => new RegExp(`\\b${escapeRegex(modifier)}`, 'i').test(t)) ||
-          objects.some((o: string) => new RegExp(`\\b${escapeRegex(modifier)}`, 'i').test(o)) ||
-          actions.some((a: string) => new RegExp(`\\b${escapeRegex(modifier)}`, 'i').test(a)) ||
-          (new RegExp(`\\b${escapeRegex(modifier)}`, 'i').test(description) && !description.toLowerCase().startsWith('scene from')) ||
-          new RegExp(`\\b${escapeRegex(modifier)}`, 'i').test(row.title || '') ||
-          new RegExp(`\\b${escapeRegex(modifier)}`, 'i').test(row.original_filename || '')
-        );
+          onScreen.some((t: string) =>
+            new RegExp(`\\b${escapeRegex(modifier)}`, 'i').test(t),
+          ) ||
+          objects.some((o: string) =>
+            new RegExp(`\\b${escapeRegex(modifier)}`, 'i').test(o),
+          ) ||
+          actions.some((a: string) =>
+            new RegExp(`\\b${escapeRegex(modifier)}`, 'i').test(a),
+          ) ||
+          (new RegExp(`\\b${escapeRegex(modifier)}`, 'i').test(description) &&
+            !description.toLowerCase().startsWith('scene from')) ||
+          new RegExp(`\\b${escapeRegex(modifier)}`, 'i').test(
+            row.title || '',
+          ) ||
+          new RegExp(`\\b${escapeRegex(modifier)}`, 'i').test(
+            row.original_filename || '',
+          );
 
         const hasAnyModifierMention = hasPrimaryModifierFocus;
 
         // Strict modifier gating: If a multi-word query has a primary modifier,
         // candidates without primary topic focus or zero modifier evidence cannot be direct matches.
         let matchQuality: 'direct' | 'related' =
-          (onScreenExactMatch || (hasPrimaryModifierFocus && (hasAllTerms || semScore >= minSemDirect))) ? 'direct' : 'related';
+          onScreenExactMatch ||
+          (hasPrimaryModifierFocus && (hasAllTerms || semScore >= minSemDirect))
+            ? 'direct'
+            : 'related';
 
         let matchType: SearchResult['matchType'] = 'fusion';
         if (hasLex && !hasSem) matchType = 'lexical';
@@ -1291,54 +1725,84 @@ export class MediaService {
           calibratedScore = 0.95;
         } else if (hasAllTerms && hasSem && hasPrimaryModifierFocus) {
           // Both exact terms match and strong semantic similarity with primary focus -> High confidence direct match [0.88 - 0.98]
-          calibratedScore = 0.88 + 0.10 * normRrf;
+          calibratedScore = 0.88 + 0.1 * normRrf;
         } else if (hasAllTerms && hasPrimaryModifierFocus) {
           // Exact lexical match on all search terms -> Direct match [0.78 - 0.88]
-          calibratedScore = 0.78 + 0.10 * Math.min(1.0, lexScore / 2.0);
-        } else if (hasSem && semScore >= minSemDirect && hasPrimaryModifierFocus) {
+          calibratedScore = 0.78 + 0.1 * Math.min(1.0, lexScore / 2.0);
+        } else if (
+          hasSem &&
+          semScore >= minSemDirect &&
+          hasPrimaryModifierFocus
+        ) {
           // Strong semantic concept match with primary topic focus -> Direct match [0.75 - 0.86]
-          const semProgress = Math.min(1.0, (semScore - minSemDirect) / Math.max(0.01, 1.0 - minSemDirect));
+          const semProgress = Math.min(
+            1.0,
+            (semScore - minSemDirect) / Math.max(0.01, 1.0 - minSemDirect),
+          );
           calibratedScore = 0.75 + 0.11 * semProgress;
         } else if (hasSem && hasAnyModifierMention) {
           // Candidate with secondary/passing mention -> Related match [0.48 - 0.54]
           calibratedScore = 0.48 + 0.06 * Math.min(1.0, semScore);
-        } else if (!hasAnyModifierMention && parsed.primaryModifier && parsed.contentTerms.length >= 2) {
+        } else if (
+          !hasAnyModifierMention &&
+          parsed.primaryModifier &&
+          parsed.contentTerms.length >= 2
+        ) {
           // Strict penalty for candidates that completely miss the defining search modifier
           matchQuality = 'related';
-          calibratedScore = 0.40 + 0.08 * Math.min(1.0, lexScore / 2.0);
+          calibratedScore = 0.4 + 0.08 * Math.min(1.0, lexScore / 2.0);
         } else {
           // Partial lexical hit without semantic reinforcement -> Related match [0.38 - 0.48]
-          calibratedScore = 0.38 + 0.10 * Math.min(1.0, lexScore / 2.0);
+          calibratedScore = 0.38 + 0.1 * Math.min(1.0, lexScore / 2.0);
         }
 
-        const score = Number(Math.min(0.99, Math.max(0.10, calibratedScore)).toFixed(3));
+        const score = Number(
+          Math.min(0.99, Math.max(0.1, calibratedScore)).toFixed(3),
+        );
 
         const terms = parsed.contentTerms || [];
         const hasDescTerms = Boolean(
-          description && terms.some((term: string) => new RegExp(`\\b${term}`, 'i').test(description))
+          description &&
+          terms.some((term: string) =>
+            new RegExp(`\\b${term}`, 'i').test(description),
+          ),
         );
         const matchingOnScreen = onScreen.filter((o: string) =>
-          terms.some((term: string) => new RegExp(`\\b${term}`, 'i').test(o))
+          terms.some((term: string) => new RegExp(`\\b${term}`, 'i').test(o)),
         );
         const matchingActions = actions.filter((a: string) =>
-          terms.some((term: string) => new RegExp(`\\b${term}`, 'i').test(a))
+          terms.some((term: string) => new RegExp(`\\b${term}`, 'i').test(a)),
         );
         const matchingObjects = objects.filter((obj: string) =>
-          terms.some((term: string) => new RegExp(`\\b${term}`, 'i').test(obj))
+          terms.some((term: string) => new RegExp(`\\b${term}`, 'i').test(obj)),
         );
 
-        const queryText = (parsed.raw || parsed.cleaned || 'your search').trim();
+        const queryText = (
+          parsed.raw ||
+          parsed.cleaned ||
+          'your search'
+        ).trim();
         let whyPicked = '';
         let queryRelation = '';
 
         if (onScreenExactMatch) {
-          const matchedText = onScreen.find((t: string) => allPhrasesToCheck.some((p) => t.toLowerCase().includes(p))) || onScreen[0];
+          const matchedText =
+            onScreen.find((t: string) =>
+              allPhrasesToCheck.some((p) => t.toLowerCase().includes(p)),
+            ) || onScreen[0];
           whyPicked = 'On-screen text exact match';
           queryRelation = `Displays "${matchedText}" on screen — directly matching your query for "${queryText}".`;
-        } else if (!hasPrimaryModifierFocus && parsed.primaryModifier && parsed.contentTerms.length >= 2) {
+        } else if (
+          !hasPrimaryModifierFocus &&
+          parsed.primaryModifier &&
+          parsed.contentTerms.length >= 2
+        ) {
           whyPicked = 'Broad domain context match';
           queryRelation = `Discusses ${parsed.headTerm || 'related domain'}, but does not contain direct evidence of "${parsed.primaryModifier}".`;
-        } else if (hasDescTerms && !description.toLowerCase().startsWith('scene from')) {
+        } else if (
+          hasDescTerms &&
+          !description.toLowerCase().startsWith('scene from')
+        ) {
           whyPicked = 'Scene description and topic match';
           queryRelation = `"${description}" — directly covers the concepts in "${queryText}".`;
         } else if (matchingOnScreen.length > 0) {
@@ -1353,26 +1817,41 @@ export class MediaService {
         } else if (hasLex && transcript) {
           const sentences: string[] = transcript.split(/(?<=[.?!])\s+/);
           const matchingSentence = sentences.find((s: string) =>
-            terms.some((term: string) => new RegExp(`\\b${term}`, 'i').test(s))
+            terms.some((term: string) => new RegExp(`\\b${term}`, 'i').test(s)),
           );
-          const quote = matchingSentence && matchingSentence.length >= 15
-            ? matchingSentence.trim()
-            : (transcript.length > 140 ? transcript.slice(0, 140) + '...' : transcript);
+          const quote =
+            matchingSentence && matchingSentence.length >= 15
+              ? matchingSentence.trim()
+              : transcript.length > 140
+                ? transcript.slice(0, 140) + '...'
+                : transcript;
           whyPicked = 'Direct spoken dialogue match in audio';
           queryRelation = `Audio explicitly states: "${quote}" — directly answering your search for "${queryText}".`;
-        } else if (description && !description.toLowerCase().startsWith('scene from')) {
-          whyPicked = hasSem ? `Semantic vector relevance (${(semScore * 100).toFixed(0)}% similarity)` : 'Scene content match';
+        } else if (
+          description &&
+          !description.toLowerCase().startsWith('scene from')
+        ) {
+          whyPicked = hasSem
+            ? `Semantic vector relevance (${(semScore * 100).toFixed(0)}% similarity)`
+            : 'Scene content match';
           queryRelation = `"${description}" — contextually relates to your query for "${queryText}".`;
         } else if (actions.length > 0 || objects.length > 0) {
           const visualSummary = [...actions, ...objects].slice(0, 3).join(', ');
-          whyPicked = hasSem ? `Semantic visual match (${(semScore * 100).toFixed(0)}% similarity)` : 'Visual scene recognition';
+          whyPicked = hasSem
+            ? `Semantic visual match (${(semScore * 100).toFixed(0)}% similarity)`
+            : 'Visual scene recognition';
           queryRelation = `Visually shows ${visualSummary}, contextually connected to "${queryText}".`;
         } else if (onScreen.length > 0) {
           whyPicked = 'On-screen visual presentation';
           queryRelation = `Shows "${onScreen.slice(0, 3).join(' · ')}" on screen, providing context for "${queryText}".`;
         } else if (transcript) {
-          const snippet = transcript.length > 140 ? transcript.slice(0, 140) + '...' : transcript;
-          whyPicked = hasSem ? `Semantic audio match (${(semScore * 100).toFixed(0)}% similarity)` : 'Spoken dialogue context';
+          const snippet =
+            transcript.length > 140
+              ? transcript.slice(0, 140) + '...'
+              : transcript;
+          whyPicked = hasSem
+            ? `Semantic audio match (${(semScore * 100).toFixed(0)}% similarity)`
+            : 'Spoken dialogue context';
           queryRelation = `Dialogue discusses: "${snippet}" — semantically related to "${queryText}".`;
         } else {
           whyPicked = `Deep semantic vector embedding (${(semScore * 100).toFixed(0)}% similarity)`;
@@ -1382,7 +1861,11 @@ export class MediaService {
         const matchReason = `${whyPicked}: ${queryRelation}`;
         const winningPath = onScreenExactMatch
           ? ('visual' as const)
-          : (hasLex ? (row.transcript_text ? 'transcript' as const : 'visual' as const) : 'semantic' as const);
+          : hasLex
+            ? row.transcript_text
+              ? ('transcript' as const)
+              : ('visual' as const)
+            : ('semantic' as const);
 
         return {
           assetId: row.asset_id,
@@ -1410,7 +1893,10 @@ export class MediaService {
     }
   }
 
-  async runBenchmarkSuite(assetId: string, userId?: string): Promise<BenchmarkResult[]> {
+  async runBenchmarkSuite(
+    assetId: string,
+    userId?: string,
+  ): Promise<BenchmarkResult[]> {
     const asset = await this.getPublicAsset(assetId, userId);
     const artifacts = await this.getPublicArtifacts(assetId, userId);
 
@@ -1441,8 +1927,11 @@ export class MediaService {
         winningPath = topHit.winningPath;
         score = topHit.score;
         const overlaps =
-          topHit.startTime <= bq.expectedEndTime && topHit.endTime >= bq.expectedStartTime;
-        timestampErrorSec = Number(Math.abs(topHit.startTime - bq.expectedStartTime).toFixed(1));
+          topHit.startTime <= bq.expectedEndTime &&
+          topHit.endTime >= bq.expectedStartTime;
+        timestampErrorSec = Number(
+          Math.abs(topHit.startTime - bq.expectedStartTime).toFixed(1),
+        );
         hit = overlaps || timestampErrorSec <= 3.0;
       }
 
@@ -1464,7 +1953,9 @@ export class MediaService {
     return results;
   }
 
-  async runLibraryBenchmarkSuite(userId?: string): Promise<LibraryBenchmarkSummary> {
+  async runLibraryBenchmarkSuite(
+    userId?: string,
+  ): Promise<LibraryBenchmarkSummary> {
     const queries = getLibraryBenchmarkQueries();
     const results: LibraryBenchmarkResult[] = [];
     const latencies: number[] = [];
@@ -1484,7 +1975,12 @@ export class MediaService {
 
     for (const bq of queries) {
       const t0 = Date.now();
-      const detailed = await this.searchDetailed(bq.query, undefined, 5, userId);
+      const detailed = await this.searchDetailed(
+        bq.query,
+        undefined,
+        5,
+        userId,
+      );
       const latencyMs = Date.now() - t0;
       latencies.push(latencyMs);
 
@@ -1514,11 +2010,16 @@ export class MediaService {
       if (bq.isNegativeControl) {
         negTotal++;
         // Negative control passes if there is NO exact direct match (either no results, or downgraded to related / score <= 0.55)
-        const passedNegative = !detailed.hasExactMatch || !topHit || topHit.matchQuality === 'related';
+        const passedNegative =
+          !detailed.hasExactMatch ||
+          !topHit ||
+          topHit.matchQuality === 'related';
         hit = passedNegative;
         if (passedNegative) {
           negPass++;
-          explanation = detailed.explanation || 'Correctly rejected direct match status; modifier missing from library.';
+          explanation =
+            detailed.explanation ||
+            'Correctly rejected direct match status; modifier missing from library.';
         } else {
           explanation = `Failed modifier gating: incorrectly returned direct match with score ${score}`;
         }
@@ -1549,7 +2050,11 @@ export class MediaService {
           if (bq.type === 'spoken') spokenPass++;
           else if (bq.type === 'visual') visualPass++;
           else if (bq.type === 'mixed') mixedPass++;
-        } else if (topHit && topHit.score >= 0.55 && topHit.matchQuality === 'direct') {
+        } else if (
+          topHit &&
+          topHit.score >= 0.55 &&
+          topHit.matchQuality === 'direct'
+        ) {
           hit = true;
           positiveHits++;
           errors.push(1.5);
@@ -1565,7 +2070,9 @@ export class MediaService {
         queryId: bq.id,
         type: bq.type,
         query: bq.query,
-        expectedWindow: bq.isNegativeControl ? 'None (Modifier Trap)' : (bq.expectedAssetSubstrings?.join(', ') || 'Any match'),
+        expectedWindow: bq.isNegativeControl
+          ? 'None (Modifier Trap)'
+          : bq.expectedAssetSubstrings?.join(', ') || 'Any match',
         resultWindow,
         hit,
         verdict: hit ? 'pass' : 'fail',
@@ -1587,8 +2094,12 @@ export class MediaService {
     const p95LatencyMs = latencies[Math.floor(latencies.length * 0.95)] || 0;
 
     errors.sort((a, b) => a - b);
-    const medianTimestampErrorSec = errors.length > 0 ? errors[Math.floor(errors.length / 2)] : 0;
-    const recallAt5 = positiveCount > 0 ? Number((positiveHits / positiveCount).toFixed(3)) : 1.0;
+    const medianTimestampErrorSec =
+      errors.length > 0 ? errors[Math.floor(errors.length / 2)] : 0;
+    const recallAt5 =
+      positiveCount > 0
+        ? Number((positiveHits / positiveCount).toFixed(3))
+        : 1.0;
 
     return {
       totalQueries: queries.length,
@@ -1597,10 +2108,14 @@ export class MediaService {
       p50LatencyMs,
       p95LatencyMs,
       modalityBreakdown: {
-        spokenPassRate: spokenTotal > 0 ? Number((spokenPass / spokenTotal).toFixed(3)) : 1.0,
-        visualPassRate: visualTotal > 0 ? Number((visualPass / visualTotal).toFixed(3)) : 1.0,
-        mixedPassRate: mixedTotal > 0 ? Number((mixedPass / mixedTotal).toFixed(3)) : 1.0,
-        negativeControlPassRate: negTotal > 0 ? Number((negPass / negTotal).toFixed(3)) : 1.0,
+        spokenPassRate:
+          spokenTotal > 0 ? Number((spokenPass / spokenTotal).toFixed(3)) : 1.0,
+        visualPassRate:
+          visualTotal > 0 ? Number((visualPass / visualTotal).toFixed(3)) : 1.0,
+        mixedPassRate:
+          mixedTotal > 0 ? Number((mixedPass / mixedTotal).toFixed(3)) : 1.0,
+        negativeControlPassRate:
+          negTotal > 0 ? Number((negPass / negTotal).toFixed(3)) : 1.0,
       },
       stage2VerificationCount,
       results,
@@ -1634,7 +2149,9 @@ export class MediaService {
     const totalFramesAnalyzed = Number(row?.total_frames || 0);
     const totalAssetsIndexed = Number(row?.asset_count || 0);
     const costPerSourceMinuteUsd =
-      totalSourceMinutes > 0 ? Number((totalCostUsd / totalSourceMinutes).toFixed(6)) : 0;
+      totalSourceMinutes > 0
+        ? Number((totalCostUsd / totalSourceMinutes).toFixed(6))
+        : 0;
 
     // Verified queries stats
     const vlmStats = await this.db.query<{ count: string }>(
@@ -1642,7 +2159,9 @@ export class MediaService {
     );
     const totalQueriesVerified = Number(vlmStats.rows[0]?.count || 0);
     const costPerQueryUsd = 0.00015;
-    const estimatedCostUsd = Number((totalQueriesVerified * costPerQueryUsd).toFixed(5));
+    const estimatedCostUsd = Number(
+      (totalQueriesVerified * costPerQueryUsd).toFixed(5),
+    );
 
     // Search feedback stats
     const fbStats = await this.db.query<{ feedback: string; count: string }>(
@@ -1659,7 +2178,8 @@ export class MediaService {
       if (fb.feedback === 'negative') negativeCount += Number(fb.count);
     }
     const totalFb = positiveCount + negativeCount;
-    const positiveRatio = totalFb > 0 ? Number((positiveCount / totalFb).toFixed(2)) : 1.0;
+    const positiveRatio =
+      totalFb > 0 ? Number((positiveCount / totalFb).toFixed(2)) : 1.0;
 
     return {
       stage1Ingestion: {
@@ -1683,4 +2203,3 @@ export class MediaService {
     };
   }
 }
-

@@ -32,7 +32,7 @@ async function bootstrap() {
   const host = process.env.HOST || '0.0.0.0';
 
   await app.listen(port, host);
-  logger.log(`Media Intel API is running on http://${host}:${port}/api/v1`);
+  logger.log(`Brisky API is running on http://${host}:${port}/api/v1`);
   logger.log(`Health endpoint: http://${host}:${port}/api/v1/health`);
 }
 
