@@ -282,6 +282,44 @@ export class FfmpegPipelineService {
     );
   }
 
+  async extractClip(
+    videoPath: string,
+    outputClipPath: string,
+    startS: number,
+    endS: number,
+  ): Promise<string> {
+    const dir = path.dirname(outputClipPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+    const duration = Math.max(0.1, endS - startS);
+    const timeoutMs = Math.max(60_000, Math.ceil(duration * 5000));
+
+    const cmd = ffmpeg(videoPath)
+      .setStartTime(startS)
+      .setDuration(duration)
+      .videoCodec('libx264')
+      .outputOptions(['-preset fast', '-crf 23', '-movflags +faststart', '-pix_fmt yuv420p'])
+      .audioCodec('aac')
+      .output(outputClipPath);
+
+    return this.executeFfmpegWithTimeout<string>(
+      cmd,
+      timeoutMs,
+      `extractClip -> ${outputClipPath} (${startS}s to ${endS}s)`,
+      () => {
+        this.logger.log(`Extracted subclip (${duration.toFixed(1)}s): ${outputClipPath}`);
+        return outputClipPath;
+      },
+      (err, timedOut) => {
+        if (timedOut) {
+          throw new Error(`Clip extraction timed out after ${timeoutMs}ms for ${videoPath}`);
+        }
+        this.logger.error(`Clip extraction failed: ${err.message}`);
+        throw err;
+      },
+    );
+  }
+
   async generateThumbnail(
     videoPath: string,
     outputThumbnailPath: string,

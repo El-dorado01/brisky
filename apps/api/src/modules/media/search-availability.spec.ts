@@ -1,5 +1,3 @@
-import { parseSearchQuery } from './query-parse';
-
 describe('Search Availability SQL filter seam', () => {
   it('ensures search conditions exclude offline assets', () => {
     // Verify that offline exclusion clause format is correct

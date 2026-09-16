@@ -6,6 +6,7 @@ import {
   MediaConnector,
   ConnectorAsset,
   ListAssetsOptions,
+  ConnectorCapabilities,
 } from './media-connector.interface';
 import {
   assertPathWithinRoot,
@@ -20,6 +21,15 @@ export class UploadConnector implements MediaConnector {
   private readonly logger = new Logger(UploadConnector.name);
   readonly provider = 'upload';
   readonly type = 'upload'; // backwards compatibility
+  readonly capabilities: ConnectorCapabilities = {
+    can_read: true,
+    can_write: false,
+    can_stream: true,
+    can_range_read: true,
+    supports_webhooks: false,
+    supports_signed_urls: false,
+    supports_large_files: true,
+  };
   private uploadDir: string;
 
   constructor(private readonly configService: ConfigService) {

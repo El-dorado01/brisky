@@ -7,6 +7,7 @@ import { TokenCryptoService } from './token-crypto.service';
 import { ConnectorsService } from './connectors.service';
 import { ConnectorsController } from './connectors.controller';
 import { ConnectorRegistry } from './connector.registry';
+import { ConnectorPollerService } from './connector-poller.service';
 
 @Module({
   imports: [DatabaseModule, forwardRef(() => QueueModule)],
@@ -17,6 +18,7 @@ import { ConnectorRegistry } from './connector.registry';
     GoogleDriveConnector,
     TokenCryptoService,
     ConnectorsService,
+    ConnectorPollerService,
   ],
   exports: [
     ConnectorRegistry,
@@ -24,6 +26,7 @@ import { ConnectorRegistry } from './connector.registry';
     GoogleDriveConnector,
     TokenCryptoService,
     ConnectorsService,
+    ConnectorPollerService,
   ],
 })
 export class ConnectorsModule implements OnModuleInit {

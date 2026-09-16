@@ -1,9 +1,11 @@
 import {
   BadRequestException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
   OnApplicationBootstrap,
+  Optional,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -12,19 +14,32 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { resolveFromRepo } from '../../common/repo-paths';
 import { DatabaseService } from '../database/database.service';
-import { IndexingJobData, IndexingStats } from './indexing.types';
+import { FactorySchedulerService } from './factory-scheduler.service';
+import {
+  FactoryJobEnvelope,
+  IndexingJobData,
+  IndexingStats,
+  normalizeJobEnvelope,
+  priorityToBullNumber,
+} from './indexing.types';
+import { MediaFactory, MEDIA_FACTORY } from './media-factory.interface';
+import { BullmqMediaFactory } from './bullmq-media-factory.service';
 
 @Injectable()
 export class IndexingService implements OnApplicationBootstrap {
   private readonly logger = new Logger(IndexingService.name);
   private readonly storageRoot: string;
   private readonly proxyDir: string;
+  private readonly mediaFactory: MediaFactory;
 
   constructor(
-    @InjectQueue('indexing-queue') private readonly queue: Queue<IndexingJobData>,
+    @InjectQueue('indexing-queue') private readonly queue: Queue<any>,
     private readonly db: DatabaseService,
     private readonly configService: ConfigService,
+    @Optional() private readonly scheduler?: FactorySchedulerService,
+    @Optional() @Inject(MEDIA_FACTORY) mediaFactory?: MediaFactory,
   ) {
+    this.mediaFactory = mediaFactory || new BullmqMediaFactory(this.queue, this.scheduler);
     this.storageRoot = resolveFromRepo(
       this.configService.get<string>('STORAGE_ROOT', './storage'),
     );
@@ -84,45 +99,102 @@ export class IndexingService implements OnApplicationBootstrap {
     return { reconciledJobs, reconciledAssets };
   }
 
-  async enqueueAsset(data: IndexingJobData): Promise<string> {
-    // Smaller files get lower priority numbers (BullMQ processes lower number first)
-    const priority = Math.min(1000, Math.max(1, Math.round(data.fileSize / (1024 * 1024))));
-
-    // Clean up any existing waiting/delayed jobs for this asset before re-queuing
-    try {
-      const existingJobs = await this.queue.getJobs(['waiting', 'delayed']);
-      for (const exJob of existingJobs) {
-        if (exJob.data?.assetId === data.assetId) {
-          this.logger.log(`Removing redundant waiting job ${exJob.id} for asset ${data.assetId}`);
-          await exJob.remove().catch(() => undefined);
-        }
-      }
-    } catch {
-      // ignore
-    }
-
-    const job = await this.queue.add('index-video', data, {
-      priority,
-      attempts: 3,
-      backoff: {
-        type: 'exponential',
-        delay: 4000,
-      },
-      removeOnComplete: false,
-      removeOnFail: false,
-    });
+  async enqueueAsset(data: IndexingJobData | FactoryJobEnvelope): Promise<string> {
+    const envelope = normalizeJobEnvelope(data);
+    const jobId = await this.mediaFactory.dispatch(envelope);
 
     const model = this.configService.get<string>('GEMINI_MODEL', 'gemini-2.5-flash');
 
-    // Record job in database with provider and model metadata
+    // Record job in database with provider, model, and F1 job metadata
     await this.db.query(
-      `INSERT INTO indexing_jobs (bull_job_id, asset_id, user_id, status, stage, progress, provider, model)
-       VALUES ($1, $2, $3, 'waiting', 'queued', 0, 'google', $4)`,
-      [job.id, data.assetId, data.userId, model],
+      `INSERT INTO indexing_jobs (
+         bull_job_id, asset_id, user_id, status, stage, progress,
+         provider, model, job_type, priority, segment_start, segment_end
+       )
+       VALUES ($1, $2, $3, 'waiting', 'queued', 0, $4, $5, $6, $7, $8, $9)`,
+      [
+        jobId,
+        envelope.asset_id,
+        envelope.user_id,
+        envelope.source.provider || 'google',
+        model,
+        envelope.job_type,
+        envelope.priority,
+        envelope.segment ? envelope.segment.start_s : null,
+        envelope.segment ? envelope.segment.end_s : null,
+      ],
     );
 
-    this.logger.log(`Enqueued asset ${data.assetId} (${data.originalFilename}, priority: ${priority})`);
-    return job.id || '';
+    this.logger.log(
+      `Enqueued asset ${envelope.asset_id} (${envelope.source.originalFilename || 'unnamed'}, type: ${envelope.job_type}, priority: ${envelope.priority})`,
+    );
+
+    const workers = await this.queue.getWorkers().catch(() => []);
+    if (workers.length === 0) {
+      this.logger.warn(
+        `[MediaFactory] Asset ${envelope.asset_id} enqueued, but NO active workers are connected to 'indexing-queue'. Run 'pnpm dev:worker' to process jobs.`,
+      );
+    }
+
+    return jobId;
+  }
+
+  async cancelJob(jobOrAssetId: string, userId: string): Promise<{ cancelled: boolean; state: string }> {
+    const res = await this.db.query<{
+      id: string;
+      bull_job_id: string;
+      asset_id: string;
+      status: string;
+    }>(
+      `SELECT id, bull_job_id, asset_id, status
+       FROM indexing_jobs
+       WHERE (id = $1 OR bull_job_id = $1 OR asset_id = $1)
+         AND user_id = $2
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [jobOrAssetId, userId],
+    );
+
+    if (res.rows.length === 0) {
+      return { cancelled: false, state: 'not_found' };
+    }
+
+    const jobRow = res.rows[0];
+
+    if (jobRow.status === 'waiting') {
+      if (jobRow.bull_job_id) {
+        await this.mediaFactory.cancel(jobRow.bull_job_id).catch(() => false);
+      }
+
+      await this.db.query(
+        `UPDATE indexing_jobs
+         SET status = 'cancelled', stage = 'cancelled', error = 'Cancelled by user', finished_at = NOW()
+         WHERE id = $1`,
+        [jobRow.id],
+      );
+
+      await this.db.query(
+        `UPDATE media_assets
+         SET status = 'cancelled', stage = 'cancelled', error = 'Cancelled by user', updated_at = NOW()
+         WHERE id = $1`,
+        [jobRow.asset_id],
+      );
+
+      return { cancelled: true, state: 'waiting_cancelled' };
+    }
+
+    if (jobRow.status === 'active') {
+      await this.db.query(
+        `UPDATE indexing_jobs
+         SET cancel_requested = true, updated_at = NOW()
+         WHERE id = $1`,
+        [jobRow.id],
+      );
+
+      return { cancelled: true, state: 'active_cancel_requested' };
+    }
+
+    return { cancelled: false, state: jobRow.status };
   }
 
   async getStats(userId?: string): Promise<IndexingStats> {
@@ -143,22 +215,23 @@ export class IndexingService implements OnApplicationBootstrap {
     let discovered = 0;
     let indexed = 0;
     let processing = 0;
-    let queued = 0;
     let failed = 0;
 
-    for (const row of res.rows) {
-      const c = Number(row.count);
+    for (const r of res.rows) {
+      const c = parseInt(r.count, 10);
       discovered += c;
-      if (row.status === 'indexed') indexed += c;
-      else if (row.status === 'processing') processing += c;
-      else if (row.status === 'queued') queued += c;
-      else if (row.status === 'failed') failed += c;
+      if (r.status === 'indexed') indexed += c;
+      else if (r.status === 'processing') processing += c;
+      else if (r.status === 'failed') failed += c;
     }
 
-    const remaining = queued;
+    const waitingRes = await this.queue.getWaitingCount();
+    const activeRes = await this.queue.getActiveCount();
+    const queued = waitingRes + activeRes;
+    const remaining = processing + queued;
 
     // Find current active asset if any
-    const activeRes = await this.db.query<{
+    const activeAssetRes = await this.db.query<{
       id: string;
       original_filename: string;
       stage: string;
@@ -167,11 +240,15 @@ export class IndexingService implements OnApplicationBootstrap {
       `SELECT id, original_filename, stage, progress
        FROM media_assets
        WHERE status = 'processing' ${userId ? 'AND user_id = $1' : ''}
-       ORDER BY updated_at DESC LIMIT 1`,
+       ORDER BY updated_at DESC
+       LIMIT 1`,
       params,
     );
 
-    const activeRow = activeRes.rows[0];
+    const activeRow = activeAssetRes.rows[0];
+    const capacity = await this.mediaFactory.getCapacity(userId).catch(() => undefined);
+    const fallbackWorkers = capacity ? capacity.activeWorkers : (await this.queue.getWorkers().catch(() => [])).length;
+
     return {
       discovered,
       indexed,
@@ -179,6 +256,12 @@ export class IndexingService implements OnApplicationBootstrap {
       queued,
       failed,
       remaining: Math.max(0, remaining),
+      activeWorkers: capacity?.activeWorkers ?? fallbackWorkers,
+      globalMaxSlots: capacity?.globalMaxSlots,
+      defaultUserSlots: capacity?.defaultUserSlots,
+      activeSlots: capacity?.activeSlots,
+      waitingForSlot: capacity?.waitingForSlot,
+      waitingReasons: capacity?.waitingReasons,
       activeAsset: activeRow
         ? {
             assetId: activeRow.id,

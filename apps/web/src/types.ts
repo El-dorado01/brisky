@@ -8,7 +8,7 @@ export interface UserProfile {
 export interface AssetSummary {
   assetId: string;
   originalFilename: string;
-  status: 'queued' | 'processing' | 'indexed' | 'failed';
+  status: 'queued' | 'processing' | 'indexed' | 'partially_indexed' | 'failed';
   stage: string;
   progress: number;
   error?: string;
@@ -30,7 +30,7 @@ export interface AssetSummary {
   connectorAccountId?: string;
   driveWebViewLink?: string;
   availability?: 'online' | 'archived' | 'missing' | 'pending';
-  proxyStatus?: 'pending' | 'processing' | 'ready' | 'failed';
+  proxyStatus?: 'none' | 'queued' | 'pending' | 'processing' | 'ready' | 'failed' | 'skipped';
 }
 
 export interface ConnectorAccount {
@@ -40,6 +40,7 @@ export interface ConnectorAccount {
   accountName: string;
   selectedFolders: Array<{ id: string; name: string }>;
   status: string;
+  lastError?: string;
   lastSyncedAt?: string;
   createdAt: string;
 }
@@ -64,11 +65,21 @@ export interface IndexingStats {
   queued?: number;
   failed: number;
   remaining: number;
+  activeWorkers?: number;
   activeAsset?: {
     assetId: string;
     filename: string;
     stage: string;
     progress: number;
+  };
+  // Phase F5: Factory Scheduler Telemetry
+  globalMaxSlots?: number;
+  defaultUserSlots?: number;
+  activeSlots?: number;
+  waitingForSlot?: number;
+  waitingReasons?: {
+    user_slot: number;
+    global_capacity: number;
   };
 }
 
@@ -172,6 +183,7 @@ export interface IndexingJobItem {
   file_size?: number | string;
   status: 'waiting' | 'active' | 'completed' | 'failed' | 'delayed' | string;
   stage: string;
+  waiting_reason?: 'user_slot' | 'global_capacity' | null;
   progress: number;
   error?: string;
   attempts: number;

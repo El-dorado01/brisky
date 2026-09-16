@@ -26,6 +26,12 @@ export class IndexingController {
     return { success, assetId };
   }
 
+  @Post('jobs/:id/cancel')
+  async cancel(@Param('id') id: string, @Req() req: any) {
+    const userId = req.user?.id;
+    return this.indexingService.cancelJob(id, userId);
+  }
+
   @Post('reindex-matching')
   async reindexMatching(@Body() body: { pattern?: string }, @Req() req: any) {
     const userId = req.user?.id;

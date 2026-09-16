@@ -95,7 +95,17 @@ export class ConnectorsController {
   async listAccounts(@Req() req: any) {
     const userId = req.user?.id;
     const accounts = await this.connectorsService.listAccounts(userId);
-    return { count: accounts.length, accounts };
+    const pollingEnabled =
+      process.env.IS_WORKER !== 'true' &&
+      this.configService.get<string>('ENABLE_CONNECTOR_POLLING', 'true') !== 'false';
+    const pollIntervalSec =
+      Number(this.configService.get('CONNECTOR_POLL_INTERVAL_SEC', 120)) || 120;
+    return {
+      count: accounts.length,
+      accounts,
+      pollingEnabled,
+      pollIntervalSec,
+    };
   }
 
   @Delete(':id')
@@ -155,6 +165,20 @@ export class ConnectorsController {
     } catch (err: any) {
       const msg = err?.message || 'Failed to sync connector account';
       this.logger.error(`Error syncing connector account ${id}: ${msg}`);
+      throw new BadRequestException(msg);
+    }
+  }
+
+  @Post(':id/sync-changes')
+  @UseGuards(AuthGuard)
+  async syncAccountChanges(@Param('id') id: string, @Req() req: any) {
+    const userId = req.user?.id;
+    try {
+      const summary = await this.connectorsService.syncAccountChanges(id, userId);
+      return { success: true, ...summary };
+    } catch (err: any) {
+      const msg = err?.message || 'Failed to incrementally sync connector account';
+      this.logger.error(`Error incrementally syncing connector account ${id}: ${msg}`);
       throw new BadRequestException(msg);
     }
   }

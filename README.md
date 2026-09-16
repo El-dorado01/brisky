@@ -11,9 +11,9 @@ An intelligence layer that continuously analyzes and indexes video archives, ena
 > **"We keep the intelligence, not the tape."**
 
 Unlike traditional media tools that duplicate and hoard massive camera master files:
-1. Uploaded master videos are treated as **ephemeral scratch input**.
-2. Fast 720p web proxies and cover thumbnails are generated for in-browser playback.
-3. Once indexed, **the original master videos can be purged** without losing search, timestamp jump-to-second playback, transcripts, or vector intelligence.
+1. Originals stay in the user's storage (Google Drive today). Brisky downloads them only into ephemeral scratch.
+2. Indexing produces intelligence + a thumbnail. **720p proxies are generated on demand**, not for every file.
+3. After a successful index, scratch (including the downloaded master) is deleted. Search, transcripts, and durable keyframes remain.
 
 ---
 
@@ -29,10 +29,12 @@ brisky/
 ├── infra/
 │   └── postgres/init.sql    # First-boot PostgreSQL initialization (pgvector)
 ├── storage/                 # Local filesystem storage roots (ephemeral & proxies)
-│   ├── uploads/             # Raw master uploads (can be deleted post-indexing)
-│   ├── proxies/             # Web-safe 720p H.264 preview proxies
-│   ├── thumbnails/          # Scene cover thumbnails
-│   └── scratch/             # Extracted audio, keyframes & JSON audit logs
+│   ├── uploads/             # Dev-only upload scaffold (disabled by default)
+│   ├── proxies/             # On-demand preview cache (LRU, not an archive)
+│   ├── thumbnails/          # Cover thumbnails
+│   ├── keyframes/           # Durable Stage-2 inspection frames
+│   ├── clips/               # Extracted moment cache
+│   └── scratch/             # Ephemeral per-job workspace (purged after each job)
 ├── docker-compose.yml       # PostgreSQL 16 (pgvector) + Redis 7
 ├── project-brief.md         # Product thesis & architectural principles
 ├── phase-plan.md            # Phased execution plan (Phase 0 -> Phase 8)
@@ -104,25 +106,24 @@ pnpm infra:up
 
 ### 4. Run the Development Servers
 
-You can start both the API and Web frontend with a single command:
+Brisky implements an **independent Media Factory architecture**: the API and Web applications run independently from heavy video/AI compute workers.
 
 ```bash
+# Terminal 1: Web Dashboard & Backend API
 pnpm dev
+
+# Terminal 2: Standalone Indexing Worker (consumes the queue)
+pnpm dev:worker
 ```
 
 - **Web Dashboard:** [http://localhost:5173](http://localhost:5173)
 - **API Health Check:** [http://localhost:3000/api/v1/health](http://localhost:3000/api/v1/health)
 
-*(Optional) Running services separately:*
+*(Optional) Running services individually:*
 ```bash
-# Terminal 1: Backend API
-pnpm dev:api
-
-# Terminal 2: Web Frontend
-pnpm dev:web
-
-# Terminal 3: Standalone Worker (Decoupled execution)
-pnpm dev:worker
+pnpm dev:api     # API server only
+pnpm dev:web     # Web dashboard only
+pnpm dev:worker  # Worker process only
 ```
 
 ---
@@ -147,19 +148,23 @@ You can register new isolated user accounts directly in the modal. All assets, s
 
 Once logged into the dashboard, follow this end-to-end walkthrough:
 
-### 1. Upload Test Videos
-- Drag and drop one or multiple video files (`.mp4`, `.mov`, `.webm`, `.mkv`) into the upload zone.
-- *Sample clips:* You can use short 10-60 second clips of presentations, sports, conversations, or vlogs.
+### 1. Connect Cloud Media (Google Drive)
+- Click the **"Connect Media"** button in the top navigation bar.
+- Authorize your Google Drive account.
+- Select the folder(s) containing video footage you wish to monitor.
+- Click **"Sync Now"**: Brisky discovers video assets directly without transferring permanent master storage onto Brisky servers.
+*(Note: Drag-and-drop direct upload is a development-only scaffold disabled by default via `ENABLE_DEV_UPLOAD=false`).*
 
 ### 2. Observe the Asynchronous Indexing Pipeline
+- Ensure your worker is running (`pnpm dev:worker`).
 - Click over to the **Job Observability** tab.
 - Watch real-time, stage-by-stage progress:
-  1. **Metadata Probe & Scene Cut Detection:** Dynamic shot boundary detection via FFmpeg.
+  1. **Connector Fetch & Metadata Probe:** Ephemeral download/stream and shot boundary detection via FFmpeg.
   2. **Speech Extraction & Transcription:** Whisper speech-to-text with word-level timestamps.
   3. **Visual Frame Analysis:** Representative keyframe selection & object/action detection.
   4. **Gemini Contextual Video Reasoning:** Macro-narrative and temporal event understanding.
   5. **Intelligence Merge & Vector Embeddings:** Consolidated `media_segments` with pgvector embeddings.
-  6. **Web Proxy Transcoding:** Generates a lightweight 720p H.264 preview file for instant browser playback.
+  6. **Ephemeral Scratch Purge:** Downloaded master video bytes are discarded; durable keyframes & vector intelligence persist.
 
 ### 3. Natural Language Moment Search
 Navigate to the **Search** tab and try different query classes:
@@ -171,25 +176,21 @@ Navigate to the **Search** tab and try different query classes:
 **Search Features:**
 - Sub-50ms local execution via PostgreSQL Full-Text (BM25) + pgvector (HNSW) Reciprocal Rank Fusion.
 - Modality badges clearly indicate how the match was found (`Speech`, `Visual`, `Semantic`, or `Fusion`).
-- **Click any result card** $\to$ The integrated video player immediately seeks and plays that exact second.
+- **Click any result card** $\to$ The player seeks to that second. If no preview exists yet, generate one on demand (or extract the moment as a clip).
 
 ### 4. Inspect Asset Lineage & Deduplication
-- Try uploading the **exact same video file twice**.
-- The pipeline detects the matching checksum and performs **instant zero-cost deduplication**:
-  - Re-uses existing transcripts, keyframes, and vector embeddings.
-  - Generates a parent-child lineage record in `asset_relationships`.
-- Click the **"Lineage"** button on an asset card in the Media Library to view its relationship graph.
+- Sync the same Drive file twice (or enable the hidden upload scaffold).
+- Matching checksums reuse existing transcripts, keyframes, and embeddings.
+- Click **"Lineage"** on an asset card to view the relationship graph.
 
 ### 5. Run the Automated Benchmark Suite
 - Open the **Benchmark** tab and click **"Run 8-Query Benchmark"**.
 - Evaluates 3 visual, 3 spoken, and 2 mixed multimodal queries against your indexed assets, verifying timestamp accuracy, retrieval speed, and match calibration.
 
 ### 6. Verify "Kept the Intelligence, Not the Tape"
-- Navigate to your project root `storage/uploads/`.
-- **Delete the original master video files from disk.**
-- Refresh your browser dashboard:
-  - Run a search query $\to$ **Finds the exact moments instantly.**
-  - Click to play $\to$ **Streams smoothly from the 720p preview proxy (`storage/proxies/`).**
+- After a Drive index finishes, `storage/scratch/` for that job should be gone.
+- Search still finds the moments. Thumbnails and durable keyframes remain.
+- Playback: if no proxy is cached, the player shows **Generate 720p Preview** (on-demand job). It does not require the original master on Brisky's disk.
 
 ---
 

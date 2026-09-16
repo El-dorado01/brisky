@@ -34,6 +34,34 @@ services:
       timeout: 5s
       retries: 5
 
+  # Optional factory worker. Local default remains `pnpm dev:worker`.
+  # Start with: docker compose --profile factory up --build
+  worker:
+    profiles: ["factory"]
+    image: brisky/media-worker:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: brisky-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      IS_WORKER: "true"
+      RUN_WORKER_IN_API: "false"
+      DB_HOST: postgres
+      REDIS_HOST: redis
+      DATABASE_URL: postgresql://postgres:postgrespassword@postgres:5432/brisky
+    # Zero-Shared-Disk: worker uses isolated scratch space; communicates via Postgres + Redis.
+    volumes:
+      - factory-scratch:/app/storage/scratch
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   pgdata:
   redisdata:
+  factory-scratch:

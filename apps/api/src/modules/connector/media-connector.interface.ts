@@ -30,6 +30,16 @@ export interface ListAssetsOptions {
   pageSize?: number;
 }
 
+export interface ConnectorCapabilities {
+  can_read: boolean;
+  can_write: boolean;
+  can_stream: boolean;
+  can_range_read: boolean;
+  supports_webhooks: boolean;
+  supports_signed_urls: boolean;
+  supports_large_files: boolean;
+}
+
 /**
  * Standard MediaConnector interface as defined in 03-media-storage-brief.md Section 7.
  * Application logic and the intelligence pipeline interact ONLY with this abstraction,
@@ -37,6 +47,7 @@ export interface ListAssetsOptions {
  */
 export interface MediaConnector<TAuth = any> {
   readonly provider: string;
+  readonly capabilities?: ConnectorCapabilities;
 
   authenticate?(credentials: any): Promise<TAuth>;
 
@@ -77,6 +88,8 @@ export interface MediaConnector<TAuth = any> {
   ): Promise<NodeJS.ReadableStream>;
 
   watchChanges?(auth: TAuth, callbackUrl: string): Promise<{ channelId: string; resourceId: string }>;
+
+  getStartCursor?(auth: TAuth): Promise<string>;
 
   getChanges?(auth: TAuth, cursor: string): Promise<ConnectorChanges>;
 }

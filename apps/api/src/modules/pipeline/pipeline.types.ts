@@ -65,6 +65,10 @@ export interface ModelUsage {
 export interface StageTiming {
   stage: string;
   durationMs: number;
+  bytesRead?: number;
+  isFullDownload?: boolean;
+  mbPerSec?: number;
+  peakScratchBytes?: number;
 }
 
 export interface PipelineCost {
@@ -76,6 +80,8 @@ export interface PipelineCost {
   indexDurationMs: number;
   estimatedUsd: number;
   costPerSourceMinuteUsd: number;
+  bytesDownloaded?: number;
+  isRemoteMaster?: boolean;
 }
 
 export interface UnifiedSegment {

@@ -28,6 +28,7 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({
   // Sync state
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [syncResult, setSyncResult] = useState<{ accountId: string; result: SyncResult } | null>(null);
+  const [pollingEnabled, setPollingEnabled] = useState(true);
 
   const effectiveToken = token || (typeof window !== 'undefined' ? localStorage.getItem('brisky_token') : null);
 
@@ -50,6 +51,7 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setAccounts(data.accounts || []);
+      setPollingEnabled(data.pollingEnabled !== false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -166,6 +168,38 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({
       }
       const data = await res.json();
       setSyncResult({ accountId, result: data });
+      await fetchAccounts();
+      if (onSyncTriggered) onSyncTriggered();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSyncingId(null);
+    }
+  };
+
+  const handleSyncChanges = async (accountId: string) => {
+    setSyncingId(accountId);
+    setError(null);
+    try {
+      const res = await fetch(`/api/v1/connectors/${accountId}/sync-changes`, {
+        method: 'POST',
+        headers: jsonAuthHeaders,
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.message || 'Incremental sync failed');
+      }
+      const data = await res.json();
+      setSyncResult({
+        accountId,
+        result: {
+          discovered: (data.addedCount || 0) + (data.modifiedCount || 0) + (data.renamedCount || 0),
+          queued: (data.addedCount || 0) + (data.modifiedCount || 0),
+          existing: data.renamedCount || 0,
+          archived: data.deletedCount || 0,
+        },
+      });
       await fetchAccounts();
       if (onSyncTriggered) onSyncTriggered();
     } catch (err) {
@@ -321,67 +355,101 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({
                         <div>
                           <div className="flex items-center space-x-2">
                             <span className="text-sm font-medium text-white">{acc.email}</span>
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                              Connected
-                            </span>
+                            {acc.status === 'error' ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase bg-rose-500/15 text-rose-400 border border-rose-500/30 flex items-center gap-1.5">
+                                <span className="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
+                                Token Revoked / Error
+                              </span>
+                            ) : (
+                              <>
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                  Connected
+                                </span>
+                                {pollingEnabled && (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20 flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse"></span>
+                                    Live Sync Active
+                                  </span>
+                                )}
+                              </>
+                            )}
                           </div>
-                          <p className="text-xs text-zinc-500">
+                          <p className="text-xs text-zinc-500 mt-0.5">
                             {acc.selectedFolders.length === 0
-                              ? 'Scanning entire Drive (all folders)'
+                              ? '⚠️ No folders selected. Pick at least one folder before syncing.'
                               : `Monitoring ${acc.selectedFolders.length} folder(s): ${acc.selectedFolders.map((f) => f.name).join(', ')}`}
                           </p>
+                          {acc.lastSyncedAt && (
+                            <p className="text-[10px] text-zinc-400 mt-1 flex items-center gap-1.5">
+                              <span className="w-1 h-1 rounded-full bg-emerald-400"></span>
+                              Last synced: {new Date(acc.lastSyncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}, {new Date(acc.lastSyncedAt).toLocaleDateString()}
+                              {pollingEnabled && (
+                                <>
+                                  <span className="text-zinc-600">•</span>
+                                  <span className="text-zinc-500">Living poller running</span>
+                                </>
+                              )}
+                            </p>
+                          )}
+                          {acc.lastError && (
+                            <div className="mt-2 p-2.5 rounded-lg bg-rose-950/40 border border-rose-800/40 text-[11px] text-rose-300 space-y-1">
+                              <div className="flex items-center gap-1.5 font-semibold text-rose-200">
+                                <span>⚠️</span>
+                                <span>Authentication Issue</span>
+                              </div>
+                              <p className="text-rose-300/80">{acc.lastError}</p>
+                              {acc.lastError.includes('invalid_grant') && (
+                                <p className="text-rose-300 font-medium pt-0.5">
+                                  Google Drive authorization expired or was revoked. Click "Connect Google Drive" above to re-authorize.
+                                </p>
+                              )}
+                            </div>
+                          )}
                         </div>
                       </div>
 
                       <div className="flex items-center space-x-2">
                         <button
-                          onClick={() => handleSyncAccount(acc.id)}
-                          disabled={syncingId === acc.id}
-                          className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium transition flex items-center space-x-1.5 disabled:opacity-50"
+                          onClick={() => handleSyncChanges(acc.id)}
+                          disabled={syncingId === acc.id || acc.selectedFolders.length === 0}
+                          title={acc.selectedFolders.length === 0 ? 'Select at least one folder before syncing' : 'Quickly sync incremental changes'}
+                          className="px-3 py-1.5 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 text-xs font-medium transition flex items-center space-x-1.5 disabled:opacity-40"
                         >
                           {syncingId === acc.id ? (
                             <>
-                              <svg
-                                className="w-3.5 h-3.5 animate-spin text-zinc-400"
-                                fill="none"
-                                viewBox="0 0 24 24"
-                              >
-                                <circle
-                                  className="opacity-25"
-                                  cx="12"
-                                  cy="12"
-                                  r="10"
-                                  stroke="currentColor"
-                                  strokeWidth="4"
-                                />
-                                <path
-                                  className="opacity-75"
-                                  fill="currentColor"
-                                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                                />
+                              <svg className="w-3.5 h-3.5 animate-spin text-blue-400" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                               </svg>
                               <span>Scanning...</span>
                             </>
                           ) : (
                             <>
-                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth="2"
-                                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-                                />
+                              <svg className="w-3.5 h-3.5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
                               </svg>
-                              <span>Sync Now</span>
+                              <span>Sync Changes</span>
                             </>
                           )}
+                        </button>
+
+                        <button
+                          onClick={() => handleSyncAccount(acc.id)}
+                          disabled={syncingId === acc.id || acc.selectedFolders.length === 0}
+                          title={acc.selectedFolders.length === 0 ? 'Select at least one folder before syncing' : 'Full sync of selected folders'}
+                          className="px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition flex items-center space-x-1.5 disabled:opacity-40"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                          </svg>
+                          <span>Full Sync</span>
                         </button>
 
                         <button
                           onClick={() => handleOpenFolders(acc)}
                           className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium transition"
                         >
-                          Select Folders
+                          Folders
                         </button>
 
                         <button

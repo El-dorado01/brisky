@@ -1,25 +1,22 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'crypto';
 
 @Injectable()
 export class TokenCryptoService {
-  private readonly logger = new Logger(TokenCryptoService.name);
   private readonly key: Buffer;
 
   constructor(private readonly configService: ConfigService) {
     const rawKey = this.configService.get<string>('CONNECTOR_ENCRYPTION_KEY', '');
     if (!rawKey) {
-      this.logger.warn(
-        'CONNECTOR_ENCRYPTION_KEY is not set. Generating ephemeral 32-byte in-memory key (restart will invalidate stored tokens).',
+      throw new Error(
+        'CONNECTOR_ENCRYPTION_KEY is required to initialize TokenCryptoService. Refusing to use ephemeral key which invalidates stored OAuth tokens.',
       );
-      this.key = randomBytes(32);
     } else if (rawKey.length === 64 && /^[0-9a-fA-F]+$/.test(rawKey)) {
       this.key = Buffer.from(rawKey, 'hex');
     } else {
       // If it's a plain string, hash or pad to 32 bytes
-      const crypto = require('crypto');
-      this.key = crypto.createHash('sha256').update(rawKey).digest();
+      this.key = createHash('sha256').update(rawKey).digest();
     }
   }
 

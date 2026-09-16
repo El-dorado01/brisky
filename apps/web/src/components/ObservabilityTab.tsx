@@ -116,6 +116,16 @@ export const ObservabilityTab: React.FC<ObservabilityTabProps> = ({
         </div>
       )}
 
+      {/* Worker Waiting Notice */}
+      {jobs.some((j) => j.status === 'waiting') && (
+        <div className="p-3 bg-amber-950/40 border border-amber-800/60 rounded-xl text-amber-300 text-xs flex items-center justify-between">
+          <span>
+            ⚡ <strong>Decoupled Worker Notice:</strong> Jobs are currently waiting in queue. In accordance with the Media Factory architecture, ensure your worker is running via{' '}
+            <code className="bg-amber-900/60 px-1.5 py-0.5 rounded text-amber-200 font-mono">pnpm dev:worker</code>.
+          </span>
+        </div>
+      )}
+
       {/* Job Queue Header & List */}
       <div className="text-xs font-semibold text-slate-300 flex items-center gap-1.5 px-1">
         <Layers className="w-3.5 h-3.5 text-indigo-400" />
@@ -124,7 +134,7 @@ export const ObservabilityTab: React.FC<ObservabilityTabProps> = ({
 
       {jobs.length === 0 ? (
         <div className="p-8 text-center border border-dashed border-slate-800 rounded-xl text-slate-500 text-sm">
-          No indexing jobs recorded yet. Upload a video to observe pipeline telemetry.
+          No indexing jobs recorded yet. Connect Google Drive or sync video files to observe pipeline telemetry.
         </div>
       ) : (
         <div className="flex flex-col gap-3 max-h-[460px] overflow-y-auto pr-1">
@@ -140,7 +150,8 @@ export const ObservabilityTab: React.FC<ObservabilityTabProps> = ({
               indexDurationMs?: number;
             }>(job.cost, {});
 
-            const isRunning = job.status === 'active' || job.status === 'waiting';
+            const isActive = job.status === 'active';
+            const isWaiting = job.status === 'waiting';
             const isCompleted = job.status === 'completed';
             const isFailed = job.status === 'failed';
 
@@ -180,10 +191,28 @@ export const ObservabilityTab: React.FC<ObservabilityTabProps> = ({
                         Completed
                       </span>
                     )}
-                    {isRunning && (
+                    {isActive && (
                       <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-amber-950 text-amber-400 border border-amber-800/60 flex items-center gap-1 animate-pulse">
                         <RefreshCw className="w-2.5 h-2.5 animate-spin" />
-                        {job.status}
+                        Active
+                      </span>
+                    )}
+                    {isWaiting && job.waiting_reason === 'user_slot' && (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-amber-950/70 text-amber-300 border border-amber-800/60 flex items-center gap-1" title="Waiting for user processing slot">
+                        <Clock className="w-3 h-3 text-amber-400" />
+                        User Slot Wait
+                      </span>
+                    )}
+                    {isWaiting && job.waiting_reason === 'global_capacity' && (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-indigo-950/70 text-indigo-300 border border-indigo-800/60 flex items-center gap-1" title="Waiting for factory capacity">
+                        <Clock className="w-3 h-3 text-indigo-400" />
+                        Capacity Wait
+                      </span>
+                    )}
+                    {isWaiting && !job.waiting_reason && (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-1">
+                        <Clock className="w-3 h-3" />
+                        Waiting
                       </span>
                     )}
                     {isFailed && (
@@ -198,13 +227,19 @@ export const ObservabilityTab: React.FC<ObservabilityTabProps> = ({
                 {/* Progress Bar & Stage */}
                 <div>
                   <div className="flex items-center justify-between text-[11px] mb-1">
-                    <span className="text-slate-300 font-medium">{job.stage || 'queued'}</span>
+                    <span className="text-slate-300 font-medium">
+                      {job.waiting_reason === 'user_slot'
+                        ? 'Waiting for free user slot'
+                        : job.waiting_reason === 'global_capacity'
+                        ? 'Waiting for factory capacity'
+                        : job.stage || 'queued'}
+                    </span>
                     <span className="font-mono text-indigo-400 font-semibold">{job.progress}%</span>
                   </div>
                   <div className="w-full bg-slate-800/80 rounded-full h-1.5 overflow-hidden">
                     <div
                       className={`h-full transition-all duration-500 ${
-                        isFailed ? 'bg-rose-500' : isCompleted ? 'bg-emerald-500' : 'bg-indigo-500'
+                        isFailed ? 'bg-rose-500' : isCompleted ? 'bg-emerald-500' : isWaiting ? 'bg-amber-600/80' : 'bg-indigo-500'
                       }`}
                       style={{ width: `${Math.max(job.progress, 4)}%` }}
                     />

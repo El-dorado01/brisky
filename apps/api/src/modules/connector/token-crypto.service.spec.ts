@@ -49,4 +49,13 @@ describe('TokenCryptoService', () => {
     const tamperedTag = parts[0] + ':' + '00'.repeat(16) + ':' + parts[2];
     expect(() => service.decrypt(tamperedTag)).toThrow();
   });
+
+  it('refuses to start and throws if CONNECTOR_ENCRYPTION_KEY is missing', () => {
+    const emptyConfig = {
+      get: (key: string, def?: string) => def || '',
+    };
+    expect(() => new TokenCryptoService(emptyConfig as any)).toThrow(
+      'CONNECTOR_ENCRYPTION_KEY is required',
+    );
+  });
 });

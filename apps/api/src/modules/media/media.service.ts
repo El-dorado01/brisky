@@ -1,23 +1,25 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash, randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { DatabaseService } from '../database/database.service';
 import { IndexingService } from '../queue/indexing.service';
+import { FactoryJobEnvelope } from '../queue/indexing.types';
 import { GeminiIntelligenceService } from '../pipeline/gemini-intelligence.service';
 import { LocalEmbeddingService } from '../pipeline/local-embedding.service';
+import { ProxyCacheService } from '../pipeline/proxy-cache.service';
 import { UploadConnector } from '../connector/upload.connector';
+import { ConnectorsService } from '../connector/connectors.service';
+import { ConnectorRegistry } from '../connector/connector.registry';
 import {
   assertPathWithinRoot,
-  findRepoRoot,
   resolveFromRepo,
   validateAssetId,
 } from '../../common/repo-paths';
 import {
   getBenchmarkQueries,
   getLibraryBenchmarkQueries,
-  LibraryBenchmarkQuery,
 } from './benchmark-queries';
 import { parseSearchQuery } from './query-parse';
 import {
@@ -69,6 +71,9 @@ export class MediaService {
     private readonly geminiService: GeminiIntelligenceService,
     private readonly localEmbeddingService: LocalEmbeddingService,
     private readonly uploadConnector: UploadConnector,
+    @Optional() private readonly proxyCacheService?: ProxyCacheService,
+    @Optional() private readonly connectorsService?: ConnectorsService,
+    @Optional() private readonly connectorRegistry?: ConnectorRegistry,
   ) {
     this.storageRoot = resolveFromRepo(
       this.configService.get<string>('STORAGE_ROOT', './storage'),
@@ -478,38 +483,232 @@ export class MediaService {
     };
   }
 
-  async getStreamPath(assetId: string, userId?: string): Promise<string> {
+  async getStreamInfo(
+    assetId: string,
+    userId?: string,
+  ): Promise<
+    | { status: 'ready'; filePath: string }
+    | { status: 'preparing'; proxyStatus: string; message: string }
+  > {
     const validId = validateAssetId(assetId);
-    if (userId) {
-      const check = await this.db.query(
-        'SELECT id FROM media_assets WHERE id = $1 AND user_id = $2',
-        [validId, userId],
-      );
-      if (check.rows.length === 0) {
-        throw new NotFoundException(`Asset ${validId} not found`);
-      }
+    const userClause = userId ? 'AND user_id = $2' : '';
+    const params = userId ? [validId, userId] : [validId];
+
+    const res = await this.db.query(
+      `SELECT m.id, m.user_id, m.status, m.proxy_status, m.proxy_path, m.original_path, m.original_filename,
+              COALESCE(m.source_type, p.source_type) AS source_type,
+              m.external_file_id,
+              COALESCE(m.connector_account_id, p.connector_account_id) AS connector_account_id,
+              m.checksum, m.file_size, m.proxy_remote_id, m.parent_asset_id
+       FROM media_assets m
+       LEFT JOIN media_assets p ON m.parent_asset_id = p.id
+       WHERE m.id = $1 ${userClause ? 'AND m.user_id = $2' : ''}`,
+      params,
+    );
+    const asset = res.rows[0];
+    if (!asset) {
+      throw new NotFoundException(`Asset ${validId} not found`);
     }
 
-    const proxyPath = assertPathWithinRoot(
+    // Record access for LRU tracking
+    if (this.proxyCacheService) {
+      this.proxyCacheService.recordAccess(validId);
+    }
+
+    // 1. If asset explicitly points to an existing file (such as an extracted clip in storage/clips/ or proxy_path)
+    if (asset.proxy_path && fs.existsSync(asset.proxy_path) && fs.statSync(asset.proxy_path).size > 0) {
+      const validPath = assertPathWithinRoot(asset.proxy_path, this.storageRoot);
+      return { status: 'ready', filePath: validPath };
+    }
+
+    // 2. If standard local 720p proxy exists in storage/proxies and is non-empty, return it
+    const defaultProxyPath = assertPathWithinRoot(
       path.join(this.proxyDir, `${validId}.mp4`),
       this.storageRoot,
     );
-    if (fs.existsSync(proxyPath)) return proxyPath;
+    if (fs.existsSync(defaultProxyPath) && fs.statSync(defaultProxyPath).size > 0) {
+      if (asset.proxy_status !== 'ready') {
+        await this.db.query(
+          `UPDATE media_assets SET proxy_status = 'ready', proxy_path = $1, updated_at = NOW() WHERE id = $2`,
+          [defaultProxyPath, validId],
+        );
+      }
+      return { status: 'ready', filePath: defaultProxyPath };
+    }
 
-    throw new NotFoundException(
-      `Playable media proxy not found for asset ${validId}. In Phase 4, playback streams exclusively from the web-playable proxy.`,
+    // 2b. Zero-shared-disk: pull a worker-generated proxy or clip from the user's connector into local cache
+    if (asset.proxy_remote_id && asset.connector_account_id) {
+      const targetPath = asset.proxy_path
+        ? assertPathWithinRoot(asset.proxy_path, this.storageRoot)
+        : defaultProxyPath;
+      const hydrated = await this.hydrateRemoteDerivedFile(
+        asset,
+        targetPath,
+        asset.proxy_remote_id,
+      );
+      if (hydrated) {
+        await this.db.query(
+          `UPDATE media_assets SET proxy_status = 'ready', proxy_path = $1, updated_at = NOW() WHERE id = $2`,
+          [targetPath, validId],
+        );
+        return { status: 'ready', filePath: targetPath };
+      }
+    }
+
+    // 3. If proxy was skipped (source is already web-safe MP4) or source is ready, and local file exists, stream source
+    if (
+      (asset.proxy_status === 'skipped' || asset.proxy_status === 'ready') &&
+      asset.original_path &&
+      fs.existsSync(asset.original_path)
+    ) {
+      const validPath = assertPathWithinRoot(asset.original_path, this.storageRoot);
+      return { status: 'ready', filePath: validPath };
+    }
+
+    // 3. If preview is already queued or processing, return preparing status
+    if (asset.proxy_status === 'processing' || asset.proxy_status === 'queued') {
+      return {
+        status: 'preparing',
+        proxyStatus: asset.proxy_status,
+        message: 'Preview is being prepared. Please retry shortly.',
+      };
+    }
+
+    // 4. On-demand trigger: enqueue generate_proxy job with interactive priority
+    const envelope: FactoryJobEnvelope = {
+      job_id: `proxy_${validId}_${Date.now()}`,
+      job_type: 'generate_proxy',
+      asset_id: validId,
+      user_id: asset.user_id,
+      source: {
+        provider: asset.source_type || 'upload',
+        sourcePath: asset.original_path || '',
+        remoteId: asset.external_file_id || undefined,
+        connectorAccountId: asset.connector_account_id || undefined,
+        originalFilename: asset.original_filename || '',
+        checksum: asset.checksum || '',
+        fileSize: asset.file_size || 0,
+      },
+      priority: 'interactive',
+    };
+
+    await this.indexingService.enqueueAsset(envelope);
+    await this.db.query(
+      `UPDATE media_assets SET proxy_status = 'queued', updated_at = NOW() WHERE id = $1`,
+      [validId],
     );
+
+    return {
+      status: 'preparing',
+      proxyStatus: 'queued',
+      message: 'Preview generation requested. Please retry shortly.',
+    };
+  }
+
+  private async hydrateRemoteDerivedFile(
+    asset: {
+      user_id: string;
+      source_type?: string;
+      connector_account_id?: string;
+    },
+    destPath: string,
+    remoteId: string,
+  ): Promise<boolean> {
+    if (!this.connectorsService || !this.connectorRegistry || !asset.connector_account_id) {
+      return false;
+    }
+    try {
+      const provider =
+        asset.source_type === 'drive' ? 'google_drive' : asset.source_type || 'google_drive';
+      const connector = this.connectorRegistry.get(provider);
+      const auth = await this.connectorsService.getAuthContext(
+        asset.connector_account_id,
+        asset.user_id,
+      );
+      const dir = path.dirname(destPath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      await connector.downloadAsset(auth, remoteId, destPath);
+      return fs.existsSync(destPath) && fs.statSync(destPath).size > 0;
+    } catch (err) {
+      this.logger.warn(`Failed to hydrate derived media ${remoteId} from connector: ${err}`);
+      return false;
+    }
+  }
+
+  async getStreamPath(assetId: string, userId?: string): Promise<string> {
+    const info = await this.getStreamInfo(assetId, userId);
+    if (info.status === 'ready') return info.filePath;
+    throw new NotFoundException(
+      `Playable media preview not ready for asset ${assetId} (status: ${info.proxyStatus}).`,
+    );
+  }
+
+  async enqueueClipExtraction(
+    assetId: string,
+    params: { start_s: number; end_s: number; title?: string },
+    userId?: string,
+  ): Promise<{ job_id: string; status: string; message: string }> {
+    const validId = validateAssetId(assetId);
+    const userClause = userId ? 'AND user_id = $2' : '';
+    const res = await this.db.query(
+      `SELECT id, user_id, original_path, original_filename, source_type,
+              external_file_id, connector_account_id, checksum, file_size
+       FROM media_assets WHERE id = $1 ${userClause}`,
+      userId ? [validId, userId] : [validId],
+    );
+    const asset = res.rows[0];
+    if (!asset) {
+      throw new NotFoundException(`Asset ${validId} not found`);
+    }
+
+    const envelope: FactoryJobEnvelope = {
+      job_id: `clip_${validId}_${Date.now()}`,
+      job_type: 'extract_clip',
+      asset_id: validId,
+      user_id: asset.user_id,
+      source: {
+        provider: asset.source_type || 'upload',
+        sourcePath: asset.original_path || '',
+        remoteId: asset.external_file_id || undefined,
+        connectorAccountId: asset.connector_account_id || undefined,
+        originalFilename: asset.original_filename || '',
+        checksum: asset.checksum || '',
+        fileSize: asset.file_size || 0,
+      },
+      segment: {
+        start_s: Number(params.start_s) || 0,
+        end_s: Number(params.end_s) || (Number(params.start_s) + 10),
+      },
+      priority: 'interactive',
+    };
+
+    const jobId = await this.indexingService.enqueueAsset(envelope);
+    return {
+      job_id: jobId,
+      status: 'queued',
+      message: `Clip extraction queued for [${envelope.segment?.start_s}s - ${envelope.segment?.end_s}s]`,
+    };
   }
 
   async getThumbnailPath(assetId: string, userId?: string): Promise<string> {
     const validId = validateAssetId(assetId);
+    let parentAssetId: string | null = null;
     if (userId) {
       const check = await this.db.query(
-        'SELECT id FROM media_assets WHERE id = $1 AND user_id = $2',
+        'SELECT id, parent_asset_id FROM media_assets WHERE id = $1 AND user_id = $2',
         [validId, userId],
       );
       if (check.rows.length === 0) {
         throw new NotFoundException(`Thumbnail not found for asset ${validId}`);
+      }
+      parentAssetId = check.rows[0].parent_asset_id;
+    } else {
+      const check = await this.db.query(
+        'SELECT parent_asset_id FROM media_assets WHERE id = $1',
+        [validId],
+      );
+      if (check.rows.length > 0) {
+        parentAssetId = check.rows[0].parent_asset_id;
       }
     }
 
@@ -518,6 +717,82 @@ export class MediaService {
       this.storageRoot,
     );
     if (fs.existsSync(thumbPath)) return thumbPath;
+
+    // Fallback to parent asset thumbnail if derived clip
+    if (parentAssetId) {
+      const parentThumbPath = assertPathWithinRoot(
+        path.join(this.thumbnailDir, `${parentAssetId}.jpg`),
+        this.storageRoot,
+      );
+      if (fs.existsSync(parentThumbPath)) return parentThumbPath;
+    }
+
+    throw new NotFoundException(`Thumbnail not found for asset ${validId}`);
+  }
+
+  async getThumbnail(
+    assetId: string,
+    userId?: string,
+  ): Promise<{ buffer?: Buffer; filePath?: string; mimeType: string }> {
+    const validId = validateAssetId(assetId);
+    let parentAssetId: string | null = null;
+    let thumbnailData: string | null = null;
+
+    const userClause = userId ? 'AND user_id = $2' : '';
+    const params = userId ? [validId, userId] : [validId];
+
+    const check = await this.db.query(
+      `SELECT id, parent_asset_id, thumbnail_data FROM media_assets WHERE id = $1 ${userClause}`,
+      params,
+    );
+    if (check.rows.length === 0) {
+      throw new NotFoundException(`Thumbnail not found for asset ${validId}`);
+    }
+
+    thumbnailData = check.rows[0].thumbnail_data;
+    parentAssetId = check.rows[0].parent_asset_id;
+
+    // 1. If thumbnail_data is stored in DB (Zero-Shared-Disk contract), decode and serve directly
+    if (thumbnailData) {
+      const base64Data = thumbnailData.includes(',') ? thumbnailData.split(',')[1] : thumbnailData;
+      return {
+        buffer: Buffer.from(base64Data, 'base64'),
+        mimeType: 'image/jpeg',
+      };
+    }
+
+    // 2. Local disk check
+    const thumbPath = assertPathWithinRoot(
+      path.join(this.thumbnailDir, `${validId}.jpg`),
+      this.storageRoot,
+    );
+    if (fs.existsSync(thumbPath)) {
+      return { filePath: thumbPath, mimeType: 'image/jpeg' };
+    }
+
+    // 3. Fallback to parent asset if derived clip
+    if (parentAssetId) {
+      const parentCheck = await this.db.query(
+        'SELECT thumbnail_data FROM media_assets WHERE id = $1',
+        [parentAssetId],
+      );
+      if (parentCheck.rows[0]?.thumbnail_data) {
+        const pData = parentCheck.rows[0].thumbnail_data;
+        const base64Data = pData.includes(',') ? pData.split(',')[1] : pData;
+        return {
+          buffer: Buffer.from(base64Data, 'base64'),
+          mimeType: 'image/jpeg',
+        };
+      }
+      const parentThumbPath = assertPathWithinRoot(
+        path.join(this.thumbnailDir, `${parentAssetId}.jpg`),
+        this.storageRoot,
+      );
+      if (fs.existsSync(parentThumbPath)) {
+        return { filePath: parentThumbPath, mimeType: 'image/jpeg' };
+      }
+    }
+
     throw new NotFoundException(`Thumbnail not found for asset ${validId}`);
   }
 
@@ -1338,7 +1613,7 @@ export class MediaService {
     let p = 1;
     const where: string[] = [
       `o.observation_type = 'transcript'`,
-      `a.status = 'indexed'`,
+      `a.status IN ('indexed', 'partially_indexed')`,
       `(a.availability IS NULL OR a.availability != 'offline')`,
     ];
 
@@ -1587,7 +1862,7 @@ export class MediaService {
                ) AS doc_vector
         FROM media_segments s
         JOIN media_assets a ON a.id = s.asset_id
-        WHERE a.status = 'indexed'
+        WHERE a.status IN ('indexed', 'partially_indexed')
           AND (a.availability IS NULL OR a.availability != 'offline')
           ${userSql}
           ${assetSql}

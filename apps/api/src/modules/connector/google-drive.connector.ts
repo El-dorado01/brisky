@@ -9,6 +9,7 @@ import {
   ConnectorFolder,
   ListAssetsOptions,
   ConnectorChanges,
+  ConnectorCapabilities,
 } from './media-connector.interface';
 
 export type OAuth2Client = InstanceType<typeof google.auth.OAuth2>;
@@ -25,6 +26,15 @@ export interface GoogleDriveTokens {
 export class GoogleDriveConnector implements MediaConnector<OAuth2Client> {
   private readonly logger = new Logger(GoogleDriveConnector.name);
   readonly provider = 'google_drive';
+  readonly capabilities: ConnectorCapabilities = {
+    can_read: true,
+    can_write: true,
+    can_stream: true,
+    can_range_read: true,
+    supports_webhooks: true,
+    supports_signed_urls: false,
+    supports_large_files: true,
+  };
 
   private readonly clientId: string;
   private readonly clientSecret: string;
@@ -409,12 +419,18 @@ export class GoogleDriveConnector implements MediaConnector<OAuth2Client> {
     };
   }
 
+  async getStartCursor(authClient: OAuth2Client): Promise<string> {
+    const drive = google.drive({ version: 'v3', auth: authClient });
+    const res = await drive.changes.getStartPageToken();
+    return res.data.startPageToken || '';
+  }
+
   async getChanges(authClient: OAuth2Client, cursor: string): Promise<ConnectorChanges> {
     const drive = google.drive({ version: 'v3', auth: authClient });
     const res = await drive.changes.list({
       pageToken: cursor,
       fields:
-        'nextPageToken, newStartPageToken, changes(fileId, removed, file(id, name, mimeType, size, modifiedTime, webViewLink, md5Checksum, trashed))',
+        'nextPageToken, newStartPageToken, changes(fileId, removed, file(id, name, mimeType, size, modifiedTime, createdTime, webViewLink, md5Checksum, trashed, parents))',
     });
 
     const added: ConnectorAsset[] = [];
@@ -424,7 +440,13 @@ export class GoogleDriveConnector implements MediaConnector<OAuth2Client> {
     for (const change of res.data.changes || []) {
       if (change.removed || change.file?.trashed) {
         if (change.fileId) deleted.push(change.fileId);
-      } else if (change.file && change.file.mimeType?.startsWith('video/')) {
+      } else if (
+        change.file &&
+        change.file.name &&
+        change.file.mimeType?.startsWith('video/') &&
+        !change.file.name.endsWith('_proxy.mp4') &&
+        !change.file.name.endsWith('_thumb.jpg')
+      ) {
         const asset: ConnectorAsset = {
           remoteId: change.file.id!,
           name: change.file.name!,
@@ -433,8 +455,13 @@ export class GoogleDriveConnector implements MediaConnector<OAuth2Client> {
           modifiedTime: change.file.modifiedTime ? new Date(change.file.modifiedTime) : undefined,
           webViewLink: change.file.webViewLink || undefined,
           md5Checksum: change.file.md5Checksum || undefined,
+          path: change.file.parents?.[0] || undefined,
         };
-        modified.push(asset);
+        const created = change.file.createdTime ? new Date(change.file.createdTime).getTime() : 0;
+        const modifiedAt = asset.modifiedTime ? asset.modifiedTime.getTime() : 0;
+        const looksNew = created > 0 && modifiedAt > 0 && Math.abs(modifiedAt - created) < 5000;
+        if (looksNew) added.push(asset);
+        else modified.push(asset);
       }
     }
 

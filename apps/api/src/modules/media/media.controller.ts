@@ -6,7 +6,6 @@ import {
   Param,
   Req,
   Res,
-  NotFoundException,
   Logger,
   BadRequestException,
   ForbiddenException,
@@ -241,6 +240,16 @@ export class MediaController {
     return this.mediaService.getLineage(id, userId);
   }
 
+  @Post(":id/extract-clip")
+  async extractClip(
+    @Param("id") id: string,
+    @Body() body: { start_s: number; end_s: number; title?: string },
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id;
+    return this.mediaService.enqueueClipExtraction(id, body, userId);
+  }
+
   @Get(":id/stream")
   async streamMedia(
     @Param("id") id: string,
@@ -248,7 +257,19 @@ export class MediaController {
     @Res() res: FastifyReply,
   ) {
     const userId = req.user?.id;
-    const filePath = await this.mediaService.getStreamPath(id, userId);
+    const streamInfo = await this.mediaService.getStreamInfo(id, userId);
+
+    if (streamInfo.status === 'preparing') {
+      res.status(202);
+      res.header('Retry-After', '3');
+      return res.send({
+        status: 'preparing',
+        proxy_status: streamInfo.proxyStatus,
+        message: streamInfo.message,
+      });
+    }
+
+    const filePath = streamInfo.filePath;
     const stat = fs.statSync(filePath);
     const fileSize = stat.size;
     const range = req.headers.range;
@@ -284,10 +305,8 @@ export class MediaController {
     @Res() res: FastifyReply,
   ) {
     const userId = req.user?.id;
-    const thumbPath = await this.mediaService.getThumbnailPath(id, userId);
-    const stat = fs.statSync(thumbPath);
-    const stream = fs.createReadStream(thumbPath);
-    res.header("Content-Type", "image/jpeg");
+    const thumb = await this.mediaService.getThumbnail(id, userId);
+    res.header("Content-Type", thumb.mimeType);
 
     const hasVersion = Boolean(
       (req.query as Record<string, unknown> | undefined)?.v,
@@ -296,9 +315,14 @@ export class MediaController {
       res.header("Cache-Control", "public, max-age=31536000, immutable");
     } else {
       res.header("Cache-Control", "no-cache");
-      res.header("Last-Modified", stat.mtime.toUTCString());
     }
 
+    if (thumb.buffer) {
+      return res.send(thumb.buffer);
+    }
+    const stat = fs.statSync(thumb.filePath!);
+    res.header("Last-Modified", stat.mtime.toUTCString());
+    const stream = fs.createReadStream(thumb.filePath!);
     return res.send(stream);
   }
 

@@ -189,7 +189,13 @@ export default function App() {
   }, [fetchAssets]);
 
   const selected = assets.find((a) => a.assetId === selectedAssetId);
-  const isBusy = assets.some((a) => a.status === 'queued' || a.status === 'processing');
+  const isBusy = assets.some(
+    (a) =>
+      a.status === 'queued' ||
+      a.status === 'processing' ||
+      a.proxyStatus === 'queued' ||
+      a.proxyStatus === 'processing',
+  );
 
   // Adaptive, visibility-aware polling
   usePoller({
@@ -421,6 +427,35 @@ export default function App() {
     }
   };
 
+  const handleTriggerPreview = async (assetId: string) => {
+    try {
+      await authFetch(`/api/v1/media/${assetId}/stream`);
+      await fetchAssets();
+    } catch (err) {
+      console.error('Failed to trigger on-demand preview:', err);
+    }
+  };
+
+  const handleExtractClip = async (
+    assetId: string,
+    startS: number,
+    endS: number,
+    title?: string,
+  ) => {
+    try {
+      const res = await authFetch(`/api/v1/media/${assetId}/extract-clip`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ start_s: startS, end_s: endS, title }),
+      });
+      if (res.ok) {
+        await fetchAssets();
+      }
+    } catch (err) {
+      console.error('Failed to extract moment clip:', err);
+    }
+  };
+
   const handleLogout = () => {
     setToken(null);
     setUser(null);
@@ -459,6 +494,7 @@ export default function App() {
             setDuration={setDuration}
             pendingSeekTimeRef={pendingSeekTimeRef}
             onDeleteOriginal={handleDeleteOriginal}
+            onTriggerPreview={handleTriggerPreview}
           />
           <MediaLibrary
             assets={assets}
@@ -535,6 +571,7 @@ export default function App() {
               onSearch={handleSearch}
               onSelectMoment={handleSelectMoment}
               onFeedback={handleFeedback}
+              onExtractClip={handleExtractClip}
             />
           )}
 

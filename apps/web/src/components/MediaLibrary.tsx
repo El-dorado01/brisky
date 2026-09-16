@@ -37,7 +37,11 @@ const ElapsedTimer: React.FC<{
     );
   }
 
-  if (status === 'indexed' && typeof indexDurationMs === 'number' && indexDurationMs > 0) {
+  if (
+    (status === 'indexed' || status === 'partially_indexed') &&
+    typeof indexDurationMs === 'number' &&
+    indexDurationMs > 0
+  ) {
     return (
       <span className="text-[10px] text-slate-500 font-mono flex items-center gap-1 mt-0.5">
         <Clock className="w-2.5 h-2.5" />
@@ -99,7 +103,7 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
               }`}
             >
               <div className="relative aspect-video bg-slate-950 rounded-lg overflow-hidden border border-slate-800/60 flex items-center justify-center">
-                {asset.status === 'indexed' && asset.thumbnailUrl ? (
+                {(asset.status === 'indexed' || asset.status === 'partially_indexed') && asset.thumbnailUrl ? (
                   <>
                     <img
                       src={`${asset.thumbnailUrl}?token=${encodeURIComponent(token || '')}&v=${encodeURIComponent(asset.indexedAt || '')}`}
@@ -161,6 +165,14 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
                       Indexed
                     </span>
                   )}
+                  {asset.status === 'partially_indexed' && (
+                    <span
+                      className="bg-amber-950/80 border border-amber-500/40 text-amber-300 text-[10px] px-1.5 py-0.5 rounded font-medium"
+                      title="Partially indexed. Search is available on indexed segments."
+                    >
+                      Partial
+                    </span>
+                  )}
                   {asset.status === 'processing' && (
                     <span className="bg-amber-950/80 border border-amber-500/40 text-amber-300 text-[10px] px-1.5 py-0.5 rounded font-medium flex items-center gap-1">
                       <RefreshCw className="w-2.5 h-2.5 animate-spin" />
@@ -213,19 +225,23 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
                 </div>
               </div>
 
-              {asset.status === 'failed' && (
+              {(asset.status === 'failed' || asset.status === 'partially_indexed') && (
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     onRetry(asset.assetId);
                   }}
                   disabled={retryingId === asset.assetId}
-                  className="text-[11px] text-rose-300 bg-rose-950/60 border border-rose-800/60 rounded px-2 py-1 hover:bg-rose-900 transition flex items-center justify-center gap-1"
+                  className={`text-[11px] rounded px-2 py-1 transition flex items-center justify-center gap-1 ${
+                    asset.status === 'partially_indexed'
+                      ? 'text-amber-300 bg-amber-950/60 border border-amber-800/60 hover:bg-amber-900'
+                      : 'text-rose-300 bg-rose-950/60 border border-rose-800/60 hover:bg-rose-900'
+                  }`}
                 >
                   <RefreshCw
                     className={`w-3 h-3 ${retryingId === asset.assetId ? 'animate-spin' : ''}`}
                   />
-                  Retry File
+                  {asset.status === 'partially_indexed' ? 'Resume Indexing' : 'Retry File'}
                 </button>
               )}
               {asset.status === 'processing' && (

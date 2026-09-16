@@ -15,7 +15,8 @@ export class ConnectorRegistry {
   }
 
   get(provider: string): MediaConnector {
-    const connector = this.connectors.get(provider);
+    const key = provider === 'drive' ? 'google_drive' : provider;
+    const connector = this.connectors.get(key);
     if (!connector) {
       throw new Error(`No MediaConnector registered for provider '${provider}'. Registered: [${Array.from(this.connectors.keys()).join(', ')}]`);
     }

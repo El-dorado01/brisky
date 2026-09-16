@@ -4,6 +4,8 @@ import { GeminiIntelligenceService } from './gemini-intelligence.service';
 import { IntelligenceMergerService } from './intelligence-merger.service';
 import { WhisperTranscriptionService } from './whisper-transcription.service';
 import { LocalEmbeddingService } from './local-embedding.service';
+import { ProcessingUnitsService } from './processing-units.service';
+import { ProxyCacheService } from './proxy-cache.service';
 
 @Module({
   providers: [
@@ -12,6 +14,8 @@ import { LocalEmbeddingService } from './local-embedding.service';
     IntelligenceMergerService,
     WhisperTranscriptionService,
     LocalEmbeddingService,
+    ProcessingUnitsService,
+    ProxyCacheService,
   ],
   exports: [
     FfmpegPipelineService,
@@ -19,6 +23,8 @@ import { LocalEmbeddingService } from './local-embedding.service';
     IntelligenceMergerService,
     WhisperTranscriptionService,
     LocalEmbeddingService,
+    ProcessingUnitsService,
+    ProxyCacheService,
   ],
 })
 export class PipelineModule {}

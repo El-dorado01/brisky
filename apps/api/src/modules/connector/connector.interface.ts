@@ -23,8 +23,11 @@ export interface DriveFolderInfo {
   name: string;
 }
 
+import { ConnectorCapabilities } from './media-connector.interface';
+
 export interface Connector {
   readonly type: string;
+  readonly capabilities?: ConnectorCapabilities;
 
   discover(folderIds?: string[]): Promise<RemoteMediaFile[] | string[]>;
 

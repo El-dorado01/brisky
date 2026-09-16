@@ -6,8 +6,10 @@ import {
   Eye,
   Film,
   Layers,
+  Loader2,
   Mic,
   Play,
+  Scissors,
   Search,
   ShieldCheck,
   Sparkles,
@@ -35,6 +37,12 @@ interface MomentSearchProps {
     timestampSec: number,
     feedback: 'positive' | 'negative',
   ) => Promise<void>;
+  onExtractClip?: (
+    assetId: string,
+    startS: number,
+    endS: number,
+    title?: string,
+  ) => Promise<void>;
 }
 
 export const MomentSearch: React.FC<MomentSearchProps> = ({
@@ -51,9 +59,31 @@ export const MomentSearch: React.FC<MomentSearchProps> = ({
   onSearch,
   onSelectMoment,
   onFeedback,
+  onExtractClip,
 }) => {
   const [feedbackState, setFeedbackState] = useState<Record<string, 'positive' | 'negative'>>({});
   const [submittingId, setSubmittingId] = useState<string | null>(null);
+  const [extractingId, setExtractingId] = useState<string | null>(null);
+  const [extractedSuccess, setExtractedSuccess] = useState<Record<string, boolean>>({});
+
+  const handleExtractClipClick = async (hit: SearchHit, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!onExtractClip) return;
+    setExtractingId(hit.segmentId);
+    try {
+      await onExtractClip(hit.assetId, hit.startTime, hit.endTime, hit.title || hit.whyPicked);
+      setExtractedSuccess((prev) => ({ ...prev, [hit.segmentId]: true }));
+      setTimeout(() => {
+        setExtractedSuccess((prev) => {
+          const copy = { ...prev };
+          delete copy[hit.segmentId];
+          return copy;
+        });
+      }, 4000);
+    } finally {
+      setExtractingId(null);
+    }
+  };
 
   const handleFeedbackClick = async (
     hit: SearchHit,
@@ -284,18 +314,48 @@ export const MomentSearch: React.FC<MomentSearchProps> = ({
                   </div>
                 </div>
 
-                {/* Relevant Section timestamp */}
-                <div className="flex items-center gap-2 text-xs mt-2 font-mono">
-                  <span className="text-slate-400 font-sans text-[11px] font-medium flex items-center gap-1">
-                    <Clock className="w-3 h-3 text-slate-500" />
-                    Relevant section:
-                  </span>
-                  <span className="font-semibold text-indigo-300 bg-indigo-950/60 px-2 py-0.5 rounded border border-indigo-900/50 text-[11px]">
-                    {startFmt} – {endFmt}
-                  </span>
-                  <span className="text-[10px] text-slate-500">
-                    ({(hit.endTime - hit.startTime).toFixed(0)}s)
-                  </span>
+                {/* Relevant Section timestamp & Extract Moment action */}
+                <div className="flex items-center justify-between gap-2 text-xs mt-2">
+                  <div className="flex items-center gap-2 font-mono">
+                    <span className="text-slate-400 font-sans text-[11px] font-medium flex items-center gap-1">
+                      <Clock className="w-3 h-3 text-slate-500" />
+                      Relevant section:
+                    </span>
+                    <span className="font-semibold text-indigo-300 bg-indigo-950/60 px-2 py-0.5 rounded border border-indigo-900/50 text-[11px]">
+                      {startFmt} – {endFmt}
+                    </span>
+                    <span className="text-[10px] text-slate-500">
+                      ({(hit.endTime - hit.startTime).toFixed(0)}s)
+                    </span>
+                  </div>
+
+                  {onExtractClip && (
+                    <button
+                      onClick={(e) => handleExtractClipClick(hit, e)}
+                      disabled={extractingId === hit.segmentId || extractedSuccess[hit.segmentId]}
+                      className={`text-[11px] px-2 py-0.5 rounded-md border transition flex items-center gap-1.5 ${
+                        extractedSuccess[hit.segmentId]
+                          ? 'bg-indigo-950/80 border-indigo-600 text-indigo-300 font-semibold'
+                          : 'bg-slate-800/80 hover:bg-indigo-950/60 border-slate-700 hover:border-indigo-700/60 text-slate-300 hover:text-indigo-200'
+                      }`}
+                      title="Extract this moment into a standalone derived clip asset"
+                    >
+                      {extractingId === hit.segmentId ? (
+                        <Loader2 className="w-3 h-3 animate-spin text-indigo-400" />
+                      ) : extractedSuccess[hit.segmentId] ? (
+                        <CheckCircle2 className="w-3 h-3 text-indigo-400" />
+                      ) : (
+                        <Scissors className="w-3 h-3 text-indigo-400" />
+                      )}
+                      <span>
+                        {extractingId === hit.segmentId
+                          ? 'Extracting...'
+                          : extractedSuccess[hit.segmentId]
+                          ? 'Clip Queued!'
+                          : 'Extract Clip'}
+                      </span>
+                    </button>
+                  )}
                 </div>
 
                 {/* Why Picked & Relation to Query */}
