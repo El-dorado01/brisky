@@ -34,6 +34,9 @@ describe('Ranged Media Access & Fallback (Phase F4)', () => {
         if (sql.includes('FROM indexing_jobs WHERE')) {
           return { rows: [{ cancel_requested: false, status: 'active' }] };
         }
+        if (sql.includes('INSERT INTO asset_processing_locks')) {
+          return { rows: [{ asset_id: 'locked' }] };
+        }
         return { rows: [] };
       }),
     };

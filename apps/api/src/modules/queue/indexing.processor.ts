@@ -37,7 +37,6 @@ const workerConcurrency = Number(process.env.GLOBAL_MAX_ACTIVE_JOBS || 2);
 @Processor('indexing-queue', { concurrency: workerConcurrency })
 export class IndexingProcessor extends WorkerHost {
   private readonly logger = new Logger(IndexingProcessor.name);
-  private readonly activeAssets = new Set<string>();
   private storageRoot: string;
   private proxyDir: string;
   private thumbnailDir: string;
@@ -81,6 +80,38 @@ export class IndexingProcessor extends WorkerHost {
 
   private readonly scratchMaxBytes: number;
   private readonly fullDownloadMaxBytes: number;
+
+  /**
+   * Distributed per-asset processing lock (see asset_processing_locks in
+   * schema.sql). Unlike the FactorySchedulerService's advisory-lock-based
+   * slot claim, this must stay held across an entire job's duration — which
+   * can run well over an hour — so it's a row in a dedicated table rather
+   * than a Postgres advisory lock, which would otherwise require pinning one
+   * pooled DB connection per in-flight job for that whole time.
+   */
+  private async claimAssetLock(assetId: string, bullJobId: string): Promise<boolean> {
+    const res = await this.db.query<{ asset_id: string }>(
+      `INSERT INTO asset_processing_locks (asset_id, bull_job_id, locked_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (asset_id) DO UPDATE
+         SET bull_job_id = EXCLUDED.bull_job_id, locked_at = NOW()
+         WHERE asset_processing_locks.locked_at < NOW() - INTERVAL '3 hours'
+       RETURNING asset_id`,
+      [assetId, bullJobId],
+    );
+    return res.rows.length > 0;
+  }
+
+  private async releaseAssetLock(assetId: string, bullJobId: string): Promise<void> {
+    await this.db
+      .query(
+        `DELETE FROM asset_processing_locks WHERE asset_id = $1 AND bull_job_id = $2`,
+        [assetId, bullJobId],
+      )
+      .catch((err) =>
+        this.logger.warn(`Failed to release asset processing lock for ${assetId}: ${err}`),
+      );
+  }
 
   private getDirectorySize(dirPath: string): number {
     if (!fs.existsSync(dirPath)) return 0;
@@ -155,17 +186,20 @@ export class IndexingProcessor extends WorkerHost {
       }
     }
 
-    // Concurrency guard: Guarantee only one worker processes this asset at a time
-    if (this.activeAssets.has(assetId)) {
+    // Concurrency guard: Guarantee only one worker processes this asset at a
+    // time, across ALL worker processes (not just this one) — a DB row lock,
+    // not an in-memory Set, since multiple worker containers share nothing else.
+    const bullJobId = String(job.id || '');
+    const gotAssetLock = await this.claimAssetLock(assetId, bullJobId);
+    if (!gotAssetLock) {
       this.logger.warn(
         `Asset ${assetId} (${originalFilename}) is already actively being processed by another worker instance. Skipping duplicate job ${job.id}.`,
       );
       if (this.scheduler?.releaseSlot) {
-        await this.scheduler.releaseSlot(String(job.id || '')).catch(() => undefined);
+        await this.scheduler.releaseSlot(bullJobId).catch(() => undefined);
       }
       return;
     }
-    this.activeAssets.add(assetId);
 
     if (!this.scheduler?.claimSlot) {
       await this.db.query(
@@ -189,11 +223,11 @@ export class IndexingProcessor extends WorkerHost {
     } catch (err: any) {
       this.logger.error(`Unhandled error during worker job execution for ${assetId}: ${err?.message || err}`);
       if (this.scheduler?.releaseSlot) {
-        await this.scheduler.releaseSlot(String(job.id || ''), true, err?.message || String(err)).catch(() => undefined);
+        await this.scheduler.releaseSlot(bullJobId, true, err?.message || String(err)).catch(() => undefined);
       }
       throw err;
     } finally {
-      this.activeAssets.delete(assetId);
+      await this.releaseAssetLock(assetId, bullJobId);
     }
   }
 

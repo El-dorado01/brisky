@@ -31,7 +31,12 @@ describe('Scratch Isolation & Cooperative Cancellation Seam (Phase F1)', () => {
 
   beforeEach(() => {
     mockDb = {
-      query: jest.fn().mockResolvedValue({ rows: [] }),
+      query: jest.fn().mockImplementation(async (sql: string) => {
+        if (sql.includes('INSERT INTO asset_processing_locks')) {
+          return { rows: [{ asset_id: 'locked' }] };
+        }
+        return { rows: [] };
+      }),
     };
     mockFfmpeg = {
       probeMetadata: jest.fn().mockResolvedValue({
@@ -129,6 +134,9 @@ describe('Scratch Isolation & Cooperative Cancellation Seam (Phase F1)', () => {
       // Return cancel_requested = true on cancellation check
       if (sql.includes('cancel_requested')) {
         return { rows: [{ cancel_requested: true, status: 'active' }] };
+      }
+      if (sql.includes('INSERT INTO asset_processing_locks')) {
+        return { rows: [{ asset_id: 'locked' }] };
       }
       return { rows: [] };
     });

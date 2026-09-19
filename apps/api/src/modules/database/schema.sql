@@ -289,5 +289,12 @@ CREATE INDEX IF NOT EXISTS idx_assets_connector_acc ON media_assets(connector_ac
 ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS thumbnail_data TEXT;
 ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS index_version INT DEFAULT 1;
 
+-- Distributed per-asset processing lock: guarantees only one worker PROCESS
+CREATE TABLE IF NOT EXISTS asset_processing_locks (
+  asset_id VARCHAR(64) PRIMARY KEY,
+  bull_job_id VARCHAR(128) NOT NULL,
+  locked_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 
 

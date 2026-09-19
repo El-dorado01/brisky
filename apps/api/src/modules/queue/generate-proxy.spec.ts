@@ -22,6 +22,9 @@ describe('On-Demand Proxy Generation Seam (Phase F3)', () => {
         if (sql.includes('FROM indexing_jobs WHERE')) {
           return { rows: [{ cancel_requested: false, status: 'active' }] };
         }
+        if (sql.includes('INSERT INTO asset_processing_locks')) {
+          return { rows: [{ asset_id: 'locked' }] };
+        }
         return { rows: [] };
       }),
     };

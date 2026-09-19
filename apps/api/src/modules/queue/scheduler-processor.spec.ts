@@ -11,7 +11,12 @@ describe('IndexingProcessor Scheduler Admission (Phase F5 Seam 2)', () => {
 
   beforeEach(() => {
     mockDb = {
-      query: jest.fn().mockResolvedValue({ rows: [] }),
+      query: jest.fn().mockImplementation(async (sql: string) => {
+        if (sql.includes('INSERT INTO asset_processing_locks')) {
+          return { rows: [{ asset_id: 'locked' }] };
+        }
+        return { rows: [] };
+      }),
     };
 
     mockScheduler = {
