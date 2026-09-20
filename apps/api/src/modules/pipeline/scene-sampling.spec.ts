@@ -1,3 +1,6 @@
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import {
   framesPerWindow,
   computeFrameTimestamps,
@@ -5,6 +8,7 @@ import {
   unique,
   aggregateFrameObservations,
   parseKeyframePaths,
+  materializeKeyframeFiles,
   narrowResultWindow,
 } from './scene-sampling';
 
@@ -129,5 +133,31 @@ describe('scene-sampling', () => {
 
   it('narrowResultWindow: matchedTimestamp outside the window returns window unchanged', () => {
     expect(narrowResultWindow(5, 10, 20)).toEqual({ startTime: 5, endTime: 10 });
+  });
+
+  it('materializeKeyframeFiles: maps relative locators and inline data URIs onto local files', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'brisky-kf-mat-'));
+    const durable = path.join(root, 'keyframes', 'asset_1');
+    fs.mkdirSync(durable, { recursive: true });
+    const durableFile = path.join(durable, 'kf_0.jpg');
+    fs.writeFileSync(durableFile, 'jpeg-bytes');
+    const scratch = path.join(root, 'scratch');
+    const inline = Buffer.from('inline-jpeg').toString('base64');
+
+    const out = materializeKeyframeFiles(
+      [
+        { timestamp: 1, path: 'keyframes/asset_1/kf_0.jpg' },
+        { timestamp: 2, path: '/app/storage/keyframes/missing/x.jpg', data: `data:image/jpeg;base64,${inline}` },
+      ],
+      root,
+      scratch,
+    );
+
+    expect(out[0].path).toBe(path.resolve(durableFile));
+    expect(fs.readFileSync(out[0].path, 'utf8')).toBe('jpeg-bytes');
+    expect(out[1].path).toContain(scratch);
+    expect(fs.readFileSync(out[1].path).toString()).toBe('inline-jpeg');
+
+    fs.rmSync(root, { recursive: true, force: true });
   });
 });

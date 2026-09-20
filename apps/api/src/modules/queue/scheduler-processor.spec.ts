@@ -24,6 +24,7 @@ describe('IndexingProcessor Scheduler Admission (Phase F5 Seam 2)', () => {
       recordWaitingReason: jest.fn().mockResolvedValue(undefined),
       clearWaitingReason: jest.fn().mockResolvedValue(undefined),
       releaseSlot: jest.fn().mockResolvedValue(undefined),
+      heartbeat: jest.fn().mockResolvedValue(undefined),
     } as any;
 
     mockConfig = {

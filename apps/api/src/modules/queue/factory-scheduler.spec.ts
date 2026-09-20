@@ -119,8 +119,9 @@ describe('FactorySchedulerService (Phase F5)', () => {
     it('marks the job active inside an advisory lock when capacity is free', async () => {
       const client = {
         query: jest.fn(async (sql: string) => {
-          if (sql.includes('GROUP BY user_id')) return { rows: [] };
-          return { rows: [] };
+          if (sql.includes('GROUP BY user_id')) return { rows: [], rowCount: 0 };
+          if (sql.includes('RETURNING id')) return { rows: [{ id: 'job-row-1' }], rowCount: 1 };
+          return { rows: [], rowCount: 0 };
         }),
         release: jest.fn(),
       };
@@ -132,10 +133,10 @@ describe('FactorySchedulerService (Phase F5)', () => {
         expect.stringContaining("pg_advisory_xact_lock"),
       );
       const update = client.query.mock.calls.find(
-        (c: any[]) => typeof c[0] === 'string' && c[0].includes("UPDATE indexing_jobs"),
+        (c: any[]) => typeof c[0] === 'string' && c[0].includes('RETURNING id'),
       );
       expect(update).toBeDefined();
-      expect((update as any)?.[1]).toEqual(['bull_1', 'asset_1']);
+      expect((update as any)?.[1]).toEqual(['bull_1']);
       expect(client.release).toHaveBeenCalled();
     });
 
@@ -158,10 +159,28 @@ describe('FactorySchedulerService (Phase F5)', () => {
 
       const decision = await scheduler.claimSlot('bull_2', 'asset_2', 'user_1', 'normal');
       expect(decision).toEqual({ canRun: false, waitingReason: 'global_capacity' });
-      const update = client.query.mock.calls.find(
-        (c: any[]) => typeof c[0] === 'string' && c[0].includes("UPDATE indexing_jobs"),
+      const activeClaim = client.query.mock.calls.find(
+        (c: any[]) =>
+          typeof c[0] === 'string' &&
+          c[0].includes('RETURNING id') &&
+          c[0].includes("status = 'active'"),
       );
-      expect(update).toBeUndefined();
+      expect(activeClaim).toBeUndefined();
+    });
+
+    it('does not run the job when the waiting-row UPDATE matches 0 rows', async () => {
+      const client = {
+        query: jest.fn(async (sql: string) => {
+          if (sql.includes('GROUP BY user_id')) return { rows: [], rowCount: 0 };
+          if (sql.includes('RETURNING id')) return { rows: [], rowCount: 0 };
+          return { rows: [], rowCount: 0 };
+        }),
+        release: jest.fn(),
+      };
+      (mockDb as any).getClient = jest.fn().mockResolvedValue(client);
+
+      const decision = await scheduler.claimSlot('bull_missing', 'asset_x', 'user_1', 'normal');
+      expect(decision).toEqual({ canRun: false, waitingReason: 'global_capacity' });
     });
   });
 
@@ -193,8 +212,11 @@ describe('FactorySchedulerService (Phase F5)', () => {
 
       expect(mockDb.query).toHaveBeenCalledWith(
         expect.stringContaining('UPDATE indexing_jobs'),
-        expect.arrayContaining(['user_slot', 'waiting (user_slot)', 'bull_123', 'asset_456']),
+        ['user_slot', 'waiting (user_slot)', 'bull_123'],
       );
+      const sql = String(mockDb.query.mock.calls[0][0]);
+      expect(sql).not.toContain('asset_id');
+      expect(mockDb.query.mock.calls[0][1]).not.toContain('asset_456');
     });
   });
 

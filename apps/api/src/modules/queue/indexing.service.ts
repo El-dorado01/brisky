@@ -10,17 +10,19 @@ import {
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { ConfigService } from '@nestjs/config';
+import { randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { resolveFromRepo } from '../../common/repo-paths';
 import { DatabaseService } from '../database/database.service';
 import { FactorySchedulerService } from './factory-scheduler.service';
+import { ProcessingUnitsService } from '../pipeline/processing-units.service';
 import {
   FactoryJobEnvelope,
   IndexingJobData,
   IndexingStats,
   normalizeJobEnvelope,
-  priorityToBullNumber,
+  unitTypeToJobType,
 } from './indexing.types';
 import { MediaFactory, MEDIA_FACTORY } from './media-factory.interface';
 import { BullmqMediaFactory } from './bullmq-media-factory.service';
@@ -38,6 +40,7 @@ export class IndexingService implements OnApplicationBootstrap {
     private readonly configService: ConfigService,
     @Optional() private readonly scheduler?: FactorySchedulerService,
     @Optional() @Inject(MEDIA_FACTORY) mediaFactory?: MediaFactory,
+    @Optional() private readonly unitsService?: ProcessingUnitsService,
   ) {
     this.mediaFactory = mediaFactory || new BullmqMediaFactory(this.queue, this.scheduler);
     this.storageRoot = resolveFromRepo(
@@ -54,9 +57,12 @@ export class IndexingService implements OnApplicationBootstrap {
     let reconciledJobs = 0;
     let reconciledAssets = 0;
     try {
-      // 1. Reconcile indexing_jobs stuck in 'active' from prior runs
+      // Never fail a live worker job: skip if Bull still has it active OR the
+      // worker heartbeated recently (API restart must not steal factory slots).
       const activeJobs = await this.db.query<{ id: string; bull_job_id: string; asset_id: string }>(
-        `SELECT id, bull_job_id, asset_id FROM indexing_jobs WHERE status = 'active'`,
+        `SELECT id, bull_job_id, asset_id FROM indexing_jobs
+         WHERE status = 'active'
+           AND COALESCE(last_heartbeat_at, started_at, created_at) < NOW() - INTERVAL '15 minutes'`,
       );
 
       if (activeJobs.rows.length > 0) {
@@ -64,19 +70,18 @@ export class IndexingService implements OnApplicationBootstrap {
         for (const jobRow of activeJobs.rows) {
           const bullJob = jobRow.bull_job_id ? await this.queue.getJob(jobRow.bull_job_id) : null;
           const isActiveInBull = bullJob ? await bullJob.isActive() : false;
-          if (!isActiveInBull) {
-            await this.db.query(
-              `UPDATE indexing_jobs
-               SET status = 'failed', error = 'Interrupted by server restart. Click Retry to re-index.', finished_at = NOW()
-               WHERE id = $1`,
-              [jobRow.id],
-            );
-            reconciledJobs += 1;
-          }
+          if (isActiveInBull) continue;
+          await this.db.query(
+            `UPDATE indexing_jobs
+             SET status = 'failed', error = 'Interrupted by server restart. Click Retry to re-index.', finished_at = NOW()
+             WHERE id = $1 AND status = 'active'`,
+            [jobRow.id],
+          );
+          reconciledJobs += 1;
         }
       }
 
-      // 2. Reconcile media_assets stuck in 'processing'
+      // Only fail processing assets that have no live (fresh-heartbeat or waiting) job.
       const processingAssets = await this.db.query<{ id: string; original_filename: string }>(
         `SELECT id, original_filename FROM media_assets WHERE status = 'processing'`,
       );
@@ -84,13 +89,56 @@ export class IndexingService implements OnApplicationBootstrap {
       if (processingAssets.rows.length > 0) {
         this.logger.log(`Found ${processingAssets.rows.length} processing media assets from prior run; reconciling...`);
         for (const asset of processingAssets.rows) {
+          const live = await this.db.query(
+            `SELECT 1 FROM indexing_jobs
+             WHERE asset_id = $1
+               AND (
+                 status = 'waiting'
+                 OR (status = 'active'
+                     AND COALESCE(last_heartbeat_at, started_at, created_at) > NOW() - INTERVAL '15 minutes')
+               )
+             LIMIT 1`,
+            [asset.id],
+          );
+          if (live.rows.length > 0) continue;
           await this.db.query(
             `UPDATE media_assets
              SET status = 'failed', stage = 'failed', error = 'Indexing was interrupted by a server restart. Click Retry to re-index.', updated_at = NOW()
-             WHERE id = $1`,
+             WHERE id = $1 AND status = 'processing'`,
             [asset.id],
           );
           reconciledAssets += 1;
+        }
+      }
+
+      // 3. Reconcile orphaned BullMQ active jobs in Redis that have no running worker or are finished in DB
+      if (typeof this.queue?.getActive === 'function') {
+        const bullActiveJobs = await this.queue.getActive().catch(() => []);
+        for (const bullJob of bullActiveJobs) {
+          try {
+            const dbJob = await this.db.query<{ id: string; status: string }>(
+              `SELECT id, status FROM indexing_jobs WHERE bull_job_id = $1`,
+              [bullJob.id],
+            );
+            const row = dbJob?.rows?.[0];
+            if (!row || row.status === 'completed') {
+              if (typeof bullJob.moveToCompleted === 'function') {
+                await bullJob.moveToCompleted('Reconciled on startup', '0', false).catch(() => bullJob.remove().catch(() => {}));
+              } else if (typeof bullJob.remove === 'function') {
+                await bullJob.remove().catch(() => {});
+              }
+              reconciledJobs += 1;
+            } else if (row.status === 'failed') {
+              if (typeof bullJob.moveToFailed === 'function') {
+                await bullJob.moveToFailed(new Error('Interrupted by server restart'), '0', false).catch(() => bullJob.remove().catch(() => {}));
+              } else if (typeof bullJob.remove === 'function') {
+                await bullJob.remove().catch(() => {});
+              }
+              reconciledJobs += 1;
+            }
+          } catch (e) {
+            this.logger.warn(`Could not reconcile BullMQ job ${bullJob.id}: ${e}`);
+          }
         }
       }
     } catch (err) {
@@ -101,19 +149,21 @@ export class IndexingService implements OnApplicationBootstrap {
 
   async enqueueAsset(data: IndexingJobData | FactoryJobEnvelope): Promise<string> {
     const envelope = normalizeJobEnvelope(data);
-    const jobId = await this.mediaFactory.dispatch(envelope);
+    if (!envelope.job_id) {
+      envelope.job_id = `job_${envelope.asset_id}_${Date.now()}_${randomBytes(4).toString('hex')}`;
+    }
 
     const model = this.configService.get<string>('GEMINI_MODEL', 'gemini-2.5-flash');
 
-    // Record job in database with provider, model, and F1 job metadata
+    // Insert the waiting row BEFORE dispatch so claimSlot can match bull_job_id.
     await this.db.query(
       `INSERT INTO indexing_jobs (
          bull_job_id, asset_id, user_id, status, stage, progress,
-         provider, model, job_type, priority, segment_start, segment_end
+         provider, model, job_type, priority, segment_start, segment_end, unit_id
        )
-       VALUES ($1, $2, $3, 'waiting', 'queued', 0, $4, $5, $6, $7, $8, $9)`,
+       VALUES ($1, $2, $3, 'waiting', 'queued', 0, $4, $5, $6, $7, $8, $9, $10)`,
       [
-        jobId,
+        envelope.job_id,
         envelope.asset_id,
         envelope.user_id,
         envelope.source.provider || 'google',
@@ -122,8 +172,29 @@ export class IndexingService implements OnApplicationBootstrap {
         envelope.priority,
         envelope.segment ? envelope.segment.start_s : null,
         envelope.segment ? envelope.segment.end_s : null,
+        envelope.processing_config?.unitId || null,
       ],
     );
+
+    let jobId = envelope.job_id;
+    try {
+      const dispatchedId = await this.mediaFactory.dispatch(envelope);
+      if (dispatchedId && dispatchedId !== envelope.job_id) {
+        await this.db.query(
+          `UPDATE indexing_jobs SET bull_job_id = $1, updated_at = NOW() WHERE bull_job_id = $2 AND status = 'waiting'`,
+          [dispatchedId, envelope.job_id],
+        );
+        jobId = dispatchedId;
+      }
+    } catch (err) {
+      await this.db.query(
+        `UPDATE indexing_jobs
+         SET status = 'failed', stage = 'failed', error = $1, finished_at = NOW(), updated_at = NOW()
+         WHERE bull_job_id = $2 AND status = 'waiting'`,
+        [String(err), envelope.job_id],
+      );
+      throw err;
+    }
 
     this.logger.log(
       `Enqueued asset ${envelope.asset_id} (${envelope.source.originalFilename || 'unnamed'}, type: ${envelope.job_type}, priority: ${envelope.priority})`,
@@ -365,19 +436,62 @@ export class IndexingService implements OnApplicationBootstrap {
       [assetId],
     );
 
-    await this.enqueueAsset({
-      assetId: row.id,
-      userId,
+    const source = {
+      provider: row.source_type || 'upload',
       sourcePath,
+      remoteId: row.external_file_id || undefined,
+      connectorAccountId: row.connector_account_id || undefined,
       originalFilename: row.original_filename,
       checksum: row.checksum,
       fileSize: Number(row.file_size || 0),
-      sourceType: (row.source_type as any) || 'upload',
-      provider: row.source_type || 'upload',
-      remoteId: row.external_file_id,
-      externalFileId: row.external_file_id,
-      connectorAccountId: row.connector_account_id,
-      forceReindex: true,
+    };
+
+    const failedUnits = this.unitsService
+      ? await this.unitsService.getFailedUnits(assetId)
+      : [];
+
+    if (failedUnits.length > 0 && this.unitsService) {
+      await this.unitsService.resetFailedUnits(assetId);
+      for (const unit of failedUnits) {
+        await this.enqueueAsset({
+          job_type: unitTypeToJobType(unit.unit_type),
+          asset_id: assetId,
+          user_id: userId,
+          source,
+          segment:
+            unit.start_s != null
+              ? { start_s: Number(unit.start_s), end_s: Number(unit.end_s) }
+              : null,
+          priority: 'normal',
+          processing_config: { unitId: unit.unit_id },
+        });
+      }
+      await this.enqueueAsset({
+        job_type: 'finalize_asset',
+        asset_id: assetId,
+        user_id: userId,
+        source,
+        segment: null,
+        priority: 'normal',
+        processing_config: { unitId: 'finalize' },
+      });
+      this.logger.log(
+        `Retrying ${failedUnits.length} failed unit(s) for asset ${assetId}; completed units left in place`,
+      );
+      return true;
+    }
+
+    if (this.unitsService) {
+      await this.unitsService.resetAssetUnits(assetId);
+    }
+
+    await this.enqueueAsset({
+      job_type: 'plan_asset',
+      asset_id: row.id,
+      user_id: userId,
+      source,
+      priority: 'normal',
+      processing_config: { forceReindex: true },
     });
 
     return true;

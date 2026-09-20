@@ -20,6 +20,7 @@ export function usePoller({
 }: PollerOptions) {
   const failureCountRef = useRef<number>(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevBusyRef = useRef<boolean>(isBusy);
 
   const pollCycle = useCallback(async () => {
     // If the browser tab is hidden in background, pause polling
@@ -28,12 +29,11 @@ export function usePoller({
     }
 
     try {
-      // 1. Always poll assets for freshness
-      const tasks: Promise<void>[] = [fetchAssets()];
+      // 1. Always poll assets and status bar stats for factual live metrics
+      const tasks: Promise<void>[] = [fetchAssets(), fetchStats()];
 
-      // 2. Tab scoping: only poll stats & jobs if pipeline is active or on observability tab
+      // 2. Job history list is only needed if pipeline is active or on observability tab
       if (isBusy || activeTab === 'observability') {
-        tasks.push(fetchStats());
         tasks.push(fetchJobs());
       }
 
@@ -50,6 +50,12 @@ export function usePoller({
       if (timerRef.current) clearTimeout(timerRef.current);
       return;
     }
+
+    // If indexing just finished, immediately refresh so slots and queue clear without waiting for next idle timer
+    if (prevBusyRef.current && !isBusy) {
+      pollCycle();
+    }
+    prevBusyRef.current = isBusy;
 
     // Adaptive interval computation
     // Busy: 2.5s. Idle: 20s. On failure: exponential backoff up to 30s.

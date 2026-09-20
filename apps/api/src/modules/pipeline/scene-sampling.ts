@@ -1,3 +1,6 @@
+import * as fs from 'fs';
+import * as path from 'path';
+import { resolveStorageLocator } from '../../common/storage-paths';
 
 export function framesPerWindow(lengthSec: number, maxFrames: number): number {
   if (lengthSec <= 6) return 1;
@@ -68,6 +71,7 @@ export function aggregateFrameObservations(frameObs: AggregatableFrame[]): Aggre
 export interface RawKeyframeEntry {
   timestamp: number;
   path: string;
+  data?: string;
 }
 
 export function parseKeyframePaths(raw: unknown): RawKeyframeEntry[] {
@@ -78,12 +82,48 @@ export function parseKeyframePaths(raw: unknown): RawKeyframeEntry[] {
     return arr
       .filter(
         (f): f is RawKeyframeEntry =>
-          Boolean(f) && typeof f.path === 'string' && f.path.length > 0 && typeof f.timestamp === 'number',
+          Boolean(f) &&
+          typeof f.timestamp === 'number' &&
+          ((typeof f.path === 'string' && f.path.length > 0) || typeof f.data === 'string'),
       )
-      .map((f) => ({ timestamp: f.timestamp, path: f.path }));
+      .map((f) => ({
+        timestamp: f.timestamp,
+        path: typeof f.path === 'string' ? f.path : '',
+        data: typeof f.data === 'string' ? f.data : undefined,
+      }));
   } catch {
     return [];
   }
+}
+
+/** Resolve relative/foreign locators and materialize inline data URIs for Stage-2. */
+export function materializeKeyframeFiles(
+  entries: RawKeyframeEntry[],
+  storageRoot: string,
+  scratchDir: string,
+): { timestamp: number; path: string }[] {
+  const out: { timestamp: number; path: string }[] = [];
+  if (!fs.existsSync(scratchDir)) fs.mkdirSync(scratchDir, { recursive: true });
+
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    const resolved = resolveStorageLocator(entry.path, storageRoot);
+    if (resolved && fs.existsSync(resolved) && fs.statSync(resolved).size > 0) {
+      out.push({ timestamp: entry.timestamp, path: resolved });
+      continue;
+    }
+    if (entry.data && entry.data.includes(',')) {
+      const dest = path.join(scratchDir, `kf_${i}_${Math.round(entry.timestamp * 1000)}.jpg`);
+      try {
+        const buf = Buffer.from(entry.data.split(',')[1], 'base64');
+        fs.writeFileSync(dest, buf);
+        out.push({ timestamp: entry.timestamp, path: dest });
+      } catch {
+        /* skip */
+      }
+    }
+  }
+  return out;
 }
 
 export function narrowResultWindow(

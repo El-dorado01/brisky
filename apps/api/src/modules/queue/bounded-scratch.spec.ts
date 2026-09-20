@@ -91,7 +91,10 @@ describe('Bounded Scratch Management & Master Purge (Phase F4)', () => {
     };
     mockUnitsService = {
       planUnits: jest.fn().mockResolvedValue([]),
-      getCompletedUnits: jest.fn().mockResolvedValue([]),
+      getCompletedUnits: jest.fn().mockResolvedValue(new Map()),
+      getUnits: jest.fn().mockResolvedValue([]),
+      getUnit: jest.fn().mockResolvedValue({ status: 'waiting', unit_id: 'gemini_video' }),
+      resetAssetUnits: jest.fn().mockResolvedValue(undefined),
       hasFailedUnits: jest.fn().mockResolvedValue(false),
       markUnitCompleted: jest.fn().mockResolvedValue(undefined),
       markUnitFailed: jest.fn().mockResolvedValue(undefined),
@@ -239,7 +242,7 @@ describe('Bounded Scratch Management & Master Purge (Phase F4)', () => {
 
     const envelope: FactoryJobEnvelope = {
       job_id: 'job_master_purge',
-      job_type: 'index_asset',
+      job_type: 'gemini_video',
       priority: 'normal',
       asset_id: 'asset_f4_1',
       user_id: 'user_1',

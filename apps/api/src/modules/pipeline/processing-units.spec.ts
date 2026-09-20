@@ -20,11 +20,13 @@ describe('Processing Units Planning & Checkpointing Seam (Phase F2)', () => {
 
     const planned = await service.planUnits('asset_100', scenes, true);
 
-    expect(planned.length).toBe(5); // audio, scene_0, scene_1, gemini_video, finalize
+    expect(planned.length).toBe(7); // audio, scene_0, embed_0, scene_1, embed_1, gemini_video, finalize
     expect(planned.map((u: any) => u.unit_id)).toEqual([
       'audio_transcribe',
       'scene_0',
+      'embed_scene_0',
       'scene_1',
+      'embed_scene_1',
       'gemini_video',
       'finalize',
     ]);

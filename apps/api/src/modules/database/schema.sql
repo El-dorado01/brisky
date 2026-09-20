@@ -144,6 +144,9 @@ ALTER TABLE indexing_jobs ADD COLUMN IF NOT EXISTS bytes_read BIGINT;
 ALTER TABLE indexing_jobs ADD COLUMN IF NOT EXISTS access_mode VARCHAR(32) DEFAULT 'full_download';
 ALTER TABLE indexing_jobs ADD COLUMN IF NOT EXISTS cancel_requested BOOLEAN DEFAULT FALSE;
 ALTER TABLE indexing_jobs ADD COLUMN IF NOT EXISTS waiting_reason VARCHAR(32);
+ALTER TABLE indexing_jobs ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMPTZ;
+ALTER TABLE indexing_jobs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE indexing_jobs ADD COLUMN IF NOT EXISTS unit_id VARCHAR(128);
 
 -- Ephemeral Media Factory: Processing Units & Checkpoints (Phase F2)
 CREATE TABLE IF NOT EXISTS media_processing_units (
@@ -157,10 +160,13 @@ CREATE TABLE IF NOT EXISTS media_processing_units (
   attempts INT DEFAULT 0,
   error TEXT,
   metadata JSONB DEFAULT '{}',
+  index_version INT DEFAULT 1,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(asset_id, unit_id)
 );
+
+ALTER TABLE media_processing_units ADD COLUMN IF NOT EXISTS index_version INT DEFAULT 1;
 
 CREATE INDEX IF NOT EXISTS idx_units_asset_status ON media_processing_units(asset_id, status);
 

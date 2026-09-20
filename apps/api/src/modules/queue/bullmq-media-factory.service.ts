@@ -49,6 +49,7 @@ export class BullmqMediaFactory implements MediaFactory {
     }
 
     const job = await this.queue.add(envelope.job_type, envelope, {
+      jobId: envelope.job_id || undefined,
       priority: bullPriority,
       attempts: 3,
       backoff: {

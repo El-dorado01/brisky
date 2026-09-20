@@ -11,11 +11,14 @@ All jobs dispatched to BullMQ (`indexing-queue`) adhere to `FactoryJobEnvelope`.
 
 ```typescript
 export type JobType =
-  | 'index_asset'       // Complete asset indexing pipeline (stages 1-6)
+  | 'index_asset'       // Alias for plan_asset (legacy envelopes)
+  | 'plan_asset'        // Probe, scenes, durable keyframes, enqueue child units
   | 'extract_audio'     // Audio extraction only
-  | 'transcribe'        // Whisper / cloud speech-to-text
-  | 'analyze_frames'    // Multimodal keyframe visual perception
-  | 'embed'             // Text / multimodal vector embedding generation
+  | 'transcribe'        // Whisper / cloud speech-to-text (one per asset)
+  | 'analyze_frames'    // Keyframe visual perception for one scene window
+  | 'gemini_video'      // Coarse native-video understanding
+  | 'embed'             // Embedding for one scene/segment
+  | 'finalize_asset'    // Mark indexed / partially_indexed after units finish
   | 'generate_proxy'    // Web-safe 720p H.264 proxy creation
   | 'extract_clip';     // Ephemeral sub-clip rendering
 

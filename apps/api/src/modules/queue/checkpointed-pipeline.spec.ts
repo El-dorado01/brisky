@@ -12,6 +12,7 @@ describe('Checkpointed Pipeline Seam (Phase F2)', () => {
   let mockRegistry: any;
   let mockConnectors: any;
   let mockUnitsService: any;
+  let mockIndexingService: any;
 
   beforeEach(() => {
     mockDb = {
@@ -67,6 +68,7 @@ describe('Checkpointed Pipeline Seam (Phase F2)', () => {
           indexDurationMs: 150,
         },
       }),
+      generateEmbeddingForText: jest.fn().mockResolvedValue({ values: [0.1, 0.2], usage: {} }),
     };
     mockConfig = {
       get: jest.fn((key: string, fallback: any) => fallback),
@@ -79,11 +81,41 @@ describe('Checkpointed Pipeline Seam (Phase F2)', () => {
     };
     mockUnitsService = {
       planUnits: jest.fn().mockResolvedValue([]),
-      getCompletedUnitIds: jest.fn().mockResolvedValue(new Set(['scene_0'])), // scene_0 is already completed from prior run
+      getCompletedUnitIds: jest.fn().mockResolvedValue(new Set(['scene_0'])),
       getCompletedUnits: jest.fn().mockResolvedValue(new Map([['scene_0', {}]])),
+      getUnits: jest.fn().mockResolvedValue([
+        { unit_id: 'audio_transcribe', unit_type: 'transcribe', status: 'waiting', start_s: null, end_s: null },
+        { unit_id: 'scene_0', unit_type: 'analyze_frames', status: 'completed', start_s: 0, end_s: 10 },
+        { unit_id: 'embed_scene_0', unit_type: 'embed', status: 'waiting', start_s: 0, end_s: 10 },
+        { unit_id: 'scene_1', unit_type: 'analyze_frames', status: 'waiting', start_s: 10, end_s: 20 },
+        { unit_id: 'embed_scene_1', unit_type: 'embed', status: 'waiting', start_s: 10, end_s: 20 },
+        { unit_id: 'gemini_video', unit_type: 'gemini_video', status: 'waiting', start_s: null, end_s: null },
+        { unit_id: 'finalize', unit_type: 'finalize_asset', status: 'waiting', start_s: null, end_s: null },
+      ]),
+      getUnit: jest.fn().mockImplementation(async (_asset: string, unitId: string) => {
+        if (unitId === 'scene_0') {
+          return {
+            unit_id: 'scene_0',
+            status: 'completed',
+            metadata: { sceneId: 0, startTime: 0, endTime: 10, keyframes: [] },
+          };
+        }
+        if (unitId === 'scene_1') {
+          return {
+            unit_id: 'scene_1',
+            status: 'waiting',
+            metadata: { sceneId: 1, startTime: 10, endTime: 20, keyframes: [] },
+          };
+        }
+        return { unit_id: unitId, status: 'waiting', metadata: {} };
+      }),
       hasFailedUnits: jest.fn().mockResolvedValue(false),
       markUnitCompleted: jest.fn().mockResolvedValue(undefined),
       markUnitFailed: jest.fn().mockResolvedValue(undefined),
+      resetAssetUnits: jest.fn().mockResolvedValue(undefined),
+    };
+    mockIndexingService = {
+      enqueueAsset: jest.fn().mockResolvedValue('child_job'),
     };
 
     processor = new IndexingProcessor(
@@ -96,18 +128,21 @@ describe('Checkpointed Pipeline Seam (Phase F2)', () => {
       mockRegistry,
       mockConnectors,
       mockUnitsService,
+      undefined,
+      undefined,
+      mockIndexingService,
     );
   });
 
-  it('plans units and skips already-completed scenes during frame analysis', async () => {
+  it('plans units and enqueues child jobs except already-completed scenes', async () => {
     const jobEnvelope: FactoryJobEnvelope = {
       job_id: 'job_f2_test',
-      job_type: 'index_asset',
+      job_type: 'plan_asset',
       asset_id: 'asset_f2',
       user_id: 'user_1',
       source: {
         provider: 'upload',
-        sourcePath: __filename, // existing file
+        sourcePath: __filename,
         originalFilename: 'test.mp4',
         checksum: 'chk_f2',
         fileSize: 1000,
@@ -125,55 +160,36 @@ describe('Checkpointed Pipeline Seam (Phase F2)', () => {
 
     await processor.process(mockJob);
 
-    // 1. planUnits was called
     expect(mockUnitsService.planUnits).toHaveBeenCalled();
-
-    // 2. analyzeFrames was called ONLY with scene 1 (scene 0 was skipped because it was already completed)
-    expect(mockGemini.analyzeFrames).toHaveBeenCalledWith([
-      expect.objectContaining({ sceneId: 1 }),
-    ]);
-
-    // 3. Newly processed scene 1 was checkpointed as completed
-    expect(mockUnitsService.markUnitCompleted).toHaveBeenCalledWith(
-      'asset_f2',
-      'scene_1',
-      expect.anything(),
+    expect(mockGemini.analyzeFrames).not.toHaveBeenCalled();
+    expect(mockIndexingService.enqueueAsset).toHaveBeenCalledWith(
+      expect.objectContaining({ job_type: 'transcribe', processing_config: expect.objectContaining({ unitId: 'audio_transcribe' }) }),
+    );
+    expect(mockIndexingService.enqueueAsset).toHaveBeenCalledWith(
+      expect.objectContaining({ job_type: 'analyze_frames', processing_config: expect.objectContaining({ unitId: 'scene_1' }) }),
+    );
+    expect(mockIndexingService.enqueueAsset).not.toHaveBeenCalledWith(
+      expect.objectContaining({ processing_config: expect.objectContaining({ unitId: 'scene_0' }) }),
+    );
+    expect(mockIndexingService.enqueueAsset).toHaveBeenCalledWith(
+      expect.objectContaining({ job_type: 'finalize_asset' }),
     );
   });
 
-  it('recovers observations and transcript from completed unit checkpoints on restart', async () => {
-    // Both audio and scene_0 were completed in a previous attempt
-    mockUnitsService.getCompletedUnitIds.mockResolvedValue(new Set(['audio_transcribe', 'scene_0']));
-    mockUnitsService.getCompletedUnits = jest.fn().mockResolvedValue(
-      new Map([
-        [
-          'audio_transcribe',
-          { transcript: [{ text: 'preserved transcript cue', start_time: 1, end_time: 4 }] },
-        ],
-        [
-          'scene_0',
-          { observations: [{ timestamp: 2, description: 'Preserved Scene 0 observation' }] },
-        ],
-      ]),
-    );
-
+  it('does not re-run analyze_frames for a completed scene unit', async () => {
     const jobEnvelope: FactoryJobEnvelope = {
-      job_id: 'job_f2_resume',
-      job_type: 'index_asset',
+      job_id: 'job_f2_scene0',
+      job_type: 'analyze_frames',
       asset_id: 'asset_f2',
       user_id: 'user_1',
-      source: {
-        provider: 'upload',
-        sourcePath: __filename,
-        originalFilename: 'test.mp4',
-        checksum: 'chk_f2',
-        fileSize: 1000,
-      },
+      source: { provider: 'upload', sourcePath: __filename, originalFilename: 'test.mp4' },
+      segment: { start_s: 0, end_s: 10 },
       priority: 'normal',
+      processing_config: { unitId: 'scene_0' },
     };
 
     const mockJob: any = {
-      id: 'bull_f2_2',
+      id: 'bull_f2_scene0',
       data: jobEnvelope,
       attemptsMade: 0,
       opts: { attempts: 1 },
@@ -182,25 +198,36 @@ describe('Checkpointed Pipeline Seam (Phase F2)', () => {
 
     await processor.process(mockJob);
 
-    // Audio should not have been re-transcribed
-    expect(mockGemini.transcribeAudio).not.toHaveBeenCalled();
+    expect(mockGemini.analyzeFrames).not.toHaveBeenCalled();
+  });
 
-    // Scene 0 was not sent to Gemini analyzeFrames
-    expect(mockGemini.analyzeFrames).toHaveBeenCalledWith([
-      expect.objectContaining({ sceneId: 1 }),
-    ]);
+  it('runs analyze_frames for an incomplete scene and checkpoints it', async () => {
+    const jobEnvelope: FactoryJobEnvelope = {
+      job_id: 'job_f2_scene1',
+      job_type: 'analyze_frames',
+      asset_id: 'asset_f2',
+      user_id: 'user_1',
+      source: { provider: 'upload', sourcePath: __filename, originalFilename: 'test.mp4' },
+      segment: { start_s: 10, end_s: 20 },
+      priority: 'normal',
+      processing_config: { unitId: 'scene_1' },
+    };
 
-    // mergerService received both the recovered Scene 0 observation and new Scene 1 observation
-    expect(mockMerger.mergeAndPersist).toHaveBeenCalledWith(
-      expect.objectContaining({
-        visual: expect.arrayContaining([
-          expect.objectContaining({ description: 'Preserved Scene 0 observation' }),
-          expect.objectContaining({ description: 'Scene 1 observation' }),
-        ]),
-        transcript: expect.arrayContaining([
-          expect.objectContaining({ text: 'preserved transcript cue' }),
-        ]),
-      }),
+    const mockJob: any = {
+      id: 'bull_f2_scene1',
+      data: jobEnvelope,
+      attemptsMade: 0,
+      opts: { attempts: 1 },
+      updateProgress: jest.fn().mockResolvedValue(undefined),
+    };
+
+    await processor.process(mockJob);
+
+    expect(mockGemini.analyzeFrames).toHaveBeenCalled();
+    expect(mockUnitsService.markUnitCompleted).toHaveBeenCalledWith(
+      'asset_f2',
+      'scene_1',
+      expect.anything(),
     );
   });
 });

@@ -71,6 +71,8 @@ describe('Demand-Driven Proxy Seam (Phase F3)', () => {
       planUnits: jest.fn().mockResolvedValue([]),
       getCompletedUnitIds: jest.fn().mockResolvedValue(new Set()),
       getCompletedUnits: jest.fn().mockResolvedValue(new Map()),
+      getUnits: jest.fn().mockResolvedValue([]),
+      resetAssetUnits: jest.fn().mockResolvedValue(undefined),
       hasFailedUnits: jest.fn().mockResolvedValue(false),
       markUnitCompleted: jest.fn().mockResolvedValue(undefined),
       markUnitFailed: jest.fn().mockResolvedValue(undefined),
@@ -115,22 +117,14 @@ describe('Demand-Driven Proxy Seam (Phase F3)', () => {
 
     await processor.process(mockJob);
 
-    // 1. Fast thumbnail was generated (needed for search cards)
     expect(mockFfmpeg.generateThumbnail).toHaveBeenCalled();
-
-    // 2. Audio was extracted for transcription
-    expect(mockFfmpeg.extractAudio).toHaveBeenCalled();
-
-    // 3. 720p proxy was NOT eagerly encoded
+    expect(mockFfmpeg.extractAudio).not.toHaveBeenCalled();
     expect(mockFfmpeg.generateProxy).not.toHaveBeenCalled();
 
-    // 4. Final asset update set proxy_status = 'none' (not 'ready')
-    const assetUpdateCalls = mockDb.query.mock.calls.filter((c: any[]) =>
-      c[0]?.includes('UPDATE media_assets') && c[0]?.includes('status = $1'),
+    const proxyStatusUpdate = mockDb.query.mock.calls.find(
+      (c: any[]) => typeof c[0] === 'string' && c[0].includes('proxy_status = $1'),
     );
-    expect(assetUpdateCalls.length).toBeGreaterThan(0);
-    const finalUpdate = assetUpdateCalls[assetUpdateCalls.length - 1];
-    expect(finalUpdate[1]).toContain('none');
+    expect(proxyStatusUpdate?.[1]?.[0]).toBe('none');
   });
 
   it('marks proxy_status = skipped if source is an upload that is already web-safe MP4', async () => {
@@ -170,10 +164,9 @@ describe('Demand-Driven Proxy Seam (Phase F3)', () => {
 
     expect(mockFfmpeg.generateProxy).not.toHaveBeenCalled();
 
-    const assetUpdateCalls = mockDb.query.mock.calls.filter((c: any[]) =>
-      c[0]?.includes('UPDATE media_assets') && c[0]?.includes('status = $1'),
+    const proxyStatusUpdate = mockDb.query.mock.calls.find(
+      (c: any[]) => typeof c[0] === 'string' && c[0].includes('proxy_status = $1'),
     );
-    const finalUpdate = assetUpdateCalls[assetUpdateCalls.length - 1];
-    expect(finalUpdate[1]).toContain('skipped');
+    expect(proxyStatusUpdate?.[1]?.[0]).toBe('skipped');
   });
 });

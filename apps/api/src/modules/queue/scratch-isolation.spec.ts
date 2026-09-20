@@ -87,6 +87,9 @@ describe('Scratch Isolation & Cooperative Cancellation Seam (Phase F1)', () => {
     const mockUnitsService: any = {
       planUnits: jest.fn().mockResolvedValue([]),
       getCompletedUnitIds: jest.fn().mockResolvedValue(new Set()),
+      getCompletedUnits: jest.fn().mockResolvedValue(new Map()),
+      getUnits: jest.fn().mockResolvedValue([]),
+      resetAssetUnits: jest.fn().mockResolvedValue(undefined),
       markUnitCompleted: jest.fn().mockResolvedValue(undefined),
       markUnitFailed: jest.fn().mockResolvedValue(undefined),
     };

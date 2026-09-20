@@ -1,5 +1,23 @@
 import React, { useState, useEffect } from 'react';
+import {
+  Cloud,
+  Folder,
+  RefreshCw,
+  RotateCw,
+  Trash2,
+  AlertTriangle,
+  X,
+  Zap,
+} from 'lucide-react';
 import { ConnectorAccount, ConnectorFolder, SyncResult } from '../types';
+
+export const GoogleDriveIcon: React.FC<{ className?: string }> = ({ className = 'w-5 h-5' }) => (
+  <svg className={className} viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M29.5 21l-3.1708 5.5489A3.07 3.07 0 0 1 23.6459 28H8.3541a3.07 3.07 0 0 1-2.6833-1.4511L4.3687 24.27 9.7578 21Z" fill="#4285F4"/>
+    <path d="M12.3822 4.13a3.2262 3.2262 0 0 0-1.7067 1.4276L2.9591 18.76a3.07 3.07 0 0 0-.1012 3.0489l1.53 2.4658L9.7579 21 16 10.32Z" fill="#00AC47"/>
+    <path d="M19.6068 4.13a3.2256 3.2256 0 0 1 1.7066 1.4276L29.03 18.76a3.07 3.07 0 0 1 .1013 3.0489l-1.5295 2.4658L22.2311 21 15.9889 10.32Z" fill="#FFBA00"/>
+  </svg>
+);
 
 interface ConnectorsModalProps {
   isOpen: boolean;
@@ -236,14 +254,7 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({
         <div className="flex items-center justify-between px-6 py-5 border-b border-zinc-800 bg-zinc-950/40">
           <div className="flex items-center space-x-3">
             <div className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth="2"
-                  d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 00-9.78 2.096A4.001 4.001 0 003 15z"
-                />
-              </svg>
+              <Cloud className="w-5 h-5" />
             </div>
             <div>
               <h2 className="text-lg font-bold text-white tracking-tight">Connected Media Sources</h2>
@@ -256,9 +267,7 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({
             onClick={onClose}
             className="text-zinc-400 hover:text-white p-2 rounded-lg hover:bg-zinc-800 transition"
           >
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
+            <X className="w-5 h-5" />
           </button>
         </div>
 
@@ -302,11 +311,9 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({
               </h3>
               <button
                 onClick={handleConnectGoogleDrive}
-                className="inline-flex items-center px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition shadow-sm hover:shadow-blue-500/20 space-x-2"
+                className="inline-flex items-center px-3 py-1.5 rounded-lg bg-white hover:bg-zinc-100 text-zinc-900 text-xs font-semibold transition shadow-sm space-x-2 active:scale-95"
               >
-                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M12.24 10.285V14.4h6.806c-.275 1.765-2.056 5.174-6.806 5.174-4.095 0-7.439-3.389-7.439-7.574s3.345-7.574 7.439-7.574c2.33 0 3.891.989 4.785 1.849l3.254-3.138C18.189 1.186 15.479 0 12.24 0c-6.635 0-12 5.365-12 12s5.365 12 12 12c6.926 0 11.52-4.869 11.52-11.726 0-.788-.085-1.39-.189-1.989H12.24z" />
-                </svg>
+                <GoogleDriveIcon className="w-4 h-4" />
                 <span>Connect Google Drive</span>
               </button>
             </div>
@@ -318,14 +325,7 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({
             ) : accounts.length === 0 ? (
               <div className="text-center py-10 border border-dashed border-zinc-800 rounded-xl bg-zinc-950/20 p-6 space-y-3">
                 <div className="w-12 h-12 rounded-full bg-zinc-800/80 flex items-center justify-center mx-auto text-zinc-400">
-                  <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth="1.5"
-                      d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
-                    />
-                  </svg>
+                  <Cloud className="w-6 h-6" />
                 </div>
                 <h4 className="text-sm font-semibold text-zinc-300">No storage sources connected</h4>
                 <p className="text-xs text-zinc-500 max-w-sm mx-auto">
@@ -333,9 +333,10 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({
                 </p>
                 <button
                   onClick={handleConnectGoogleDrive}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold transition"
+                  className="inline-flex items-center px-4 py-2 bg-white hover:bg-zinc-100 text-zinc-900 rounded-lg text-xs font-semibold transition shadow-sm space-x-2 active:scale-95"
                 >
-                  Connect Google Drive Now
+                  <GoogleDriveIcon className="w-4 h-4" />
+                  <span>Connect Google Drive Now</span>
                 </button>
               </div>
             ) : (
@@ -345,20 +346,18 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({
                     key={acc.id}
                     className="p-4 rounded-xl bg-zinc-950/60 border border-zinc-800 hover:border-zinc-700 transition space-y-3"
                   >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-3">
-                        <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
-                          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M7.74 3.535L12 11.235l4.26-7.7H7.74zM1.94 13.935l4.26-7.7 4.26 7.7H1.94zm8.52 0l4.26-7.7 4.26 7.7H10.46z" />
-                          </svg>
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex items-start space-x-3">
+                        <div className="w-10 h-10 rounded-xl bg-zinc-900 border border-zinc-800 flex items-center justify-center shrink-0 shadow-sm p-2 mt-0.5">
+                          <GoogleDriveIcon className="w-6 h-6" />
                         </div>
                         <div>
-                          <div className="flex items-center space-x-2">
+                          <div className="flex items-center space-x-2 flex-wrap gap-y-1">
                             <span className="text-sm font-medium text-white">{acc.email}</span>
                             {acc.status === 'error' ? (
                               <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase bg-rose-500/15 text-rose-400 border border-rose-500/30 flex items-center gap-1.5">
-                                <span className="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
-                                Token Revoked / Error
+                                <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse"></span>
+                                Action Required
                               </span>
                             ) : (
                               <>
@@ -381,75 +380,69 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({
                           </p>
                           {acc.lastSyncedAt && (
                             <p className="text-[10px] text-zinc-400 mt-1 flex items-center gap-1.5">
-                              <span className="w-1 h-1 rounded-full bg-emerald-400"></span>
+                              <span className={`w-1.5 h-1.5 rounded-full ${acc.status === 'error' ? 'bg-rose-400' : 'bg-emerald-400'}`}></span>
                               Last synced: {new Date(acc.lastSyncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}, {new Date(acc.lastSyncedAt).toLocaleDateString()}
                               {pollingEnabled && (
                                 <>
                                   <span className="text-zinc-600">•</span>
-                                  <span className="text-zinc-500">Living poller running</span>
+                                  <span className={acc.status === 'error' ? 'text-rose-400 font-medium' : 'text-zinc-500'}>
+                                    {acc.status === 'error' ? 'Sync paused (reconnection required)' : 'Living poller running'}
+                                  </span>
                                 </>
                               )}
                             </p>
                           )}
-                          {acc.lastError && (
-                            <div className="mt-2 p-2.5 rounded-lg bg-rose-950/40 border border-rose-800/40 text-[11px] text-rose-300 space-y-1">
-                              <div className="flex items-center gap-1.5 font-semibold text-rose-200">
-                                <span>⚠️</span>
-                                <span>Authentication Issue</span>
-                              </div>
-                              <p className="text-rose-300/80">{acc.lastError}</p>
-                              {acc.lastError.includes('invalid_grant') && (
-                                <p className="text-rose-300 font-medium pt-0.5">
-                                  Google Drive authorization expired or was revoked. Click "Connect Google Drive" above to re-authorize.
-                                </p>
-                              )}
-                            </div>
-                          )}
                         </div>
                       </div>
 
-                      <div className="flex items-center space-x-2">
-                        <button
-                          onClick={() => handleSyncChanges(acc.id)}
-                          disabled={syncingId === acc.id || acc.selectedFolders.length === 0}
-                          title={acc.selectedFolders.length === 0 ? 'Select at least one folder before syncing' : 'Quickly sync incremental changes'}
-                          className="px-3 py-1.5 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 text-xs font-medium transition flex items-center space-x-1.5 disabled:opacity-40"
-                        >
-                          {syncingId === acc.id ? (
-                            <>
-                              <svg className="w-3.5 h-3.5 animate-spin text-blue-400" fill="none" viewBox="0 0 24 24">
-                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                              </svg>
-                              <span>Scanning...</span>
-                            </>
-                          ) : (
-                            <>
-                              <svg className="w-3.5 h-3.5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                              </svg>
-                              <span>Sync Changes</span>
-                            </>
-                          )}
-                        </button>
+                      <div className="flex items-center space-x-2 shrink-0">
+                        {acc.status === 'error' ? (
+                          <button
+                            onClick={handleConnectGoogleDrive}
+                            className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold transition flex items-center space-x-1.5 shadow-sm active:scale-95"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5" />
+                            <span>Reconnect</span>
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleSyncChanges(acc.id)}
+                            disabled={syncingId === acc.id || acc.selectedFolders.length === 0}
+                            title={acc.selectedFolders.length === 0 ? 'Select at least one folder before syncing' : 'Quickly sync incremental changes'}
+                            className="px-3 py-1.5 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 text-xs font-medium transition flex items-center space-x-1.5 disabled:opacity-40"
+                          >
+                            {syncingId === acc.id ? (
+                              <>
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-400" />
+                                <span>Scanning...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Zap className="w-3.5 h-3.5 text-blue-400" />
+                                <span>Sync Changes</span>
+                              </>
+                            )}
+                          </button>
+                        )}
 
                         <button
                           onClick={() => handleSyncAccount(acc.id)}
-                          disabled={syncingId === acc.id || acc.selectedFolders.length === 0}
-                          title={acc.selectedFolders.length === 0 ? 'Select at least one folder before syncing' : 'Full sync of selected folders'}
+                          disabled={syncingId === acc.id || acc.selectedFolders.length === 0 || acc.status === 'error'}
+                          title={acc.status === 'error' ? 'Reconnect account first to sync' : acc.selectedFolders.length === 0 ? 'Select at least one folder before syncing' : 'Full sync of selected folders'}
                           className="px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition flex items-center space-x-1.5 disabled:opacity-40"
                         >
-                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                          </svg>
+                          <RotateCw className="w-3.5 h-3.5" />
                           <span>Full Sync</span>
                         </button>
 
                         <button
                           onClick={() => handleOpenFolders(acc)}
-                          className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium transition"
+                          disabled={acc.status === 'error'}
+                          title={acc.status === 'error' ? 'Reconnect account first' : 'Select Folders'}
+                          className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium transition disabled:opacity-40 flex items-center gap-1.5"
                         >
-                          Folders
+                          <Folder className="w-3.5 h-3.5 text-zinc-400" />
+                          <span>Folders</span>
                         </button>
 
                         <button
@@ -457,17 +450,34 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({
                           className="p-1.5 text-zinc-500 hover:text-red-400 rounded-lg hover:bg-zinc-800/80 transition"
                           title="Disconnect Account"
                         >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth="2"
-                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                            />
-                          </svg>
+                          <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
                     </div>
+
+                    {/* Dedicated Actionable Reconnect Banner when error */}
+                    {acc.status === 'error' && (
+                      <div className="mt-3 p-3.5 rounded-xl bg-gradient-to-r from-rose-950/70 via-rose-900/30 to-zinc-950 border border-rose-500/40 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-inner">
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2 font-semibold text-rose-200 text-xs">
+                            <AlertTriangle className="w-4 h-4 text-rose-400" />
+                            <span>Google Drive Authorization Expired</span>
+                          </div>
+                          <p className="text-[11px] text-rose-300/80 leading-relaxed">
+                            {acc.lastError?.includes('invalid_grant')
+                              ? 'Your Google OAuth session expired or was revoked. Reconnect your Google Drive account to resume automatic syncing and file monitoring.'
+                              : acc.lastError || 'Authentication error occurred. Please re-authorize your Google Drive account.'}
+                          </p>
+                        </div>
+                        <button
+                          onClick={handleConnectGoogleDrive}
+                          className="shrink-0 px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-md shadow-rose-950/50 transition active:scale-95"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" />
+                          <span>Reconnect Google Drive</span>
+                        </button>
+                      </div>
+                    )}
 
                     {/* Active Folder Selector for this account */}
                     {activeAccountId === acc.id && (

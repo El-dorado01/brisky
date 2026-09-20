@@ -88,7 +88,10 @@ describe('Transcribe-Only Execution & Master Purge (Phase F4 §587)', () => {
     mockConnectors = {
       getAuthContext: jest.fn().mockResolvedValue({}),
     };
-    mockUnitsService = {};
+    mockUnitsService = {
+      getUnit: jest.fn().mockResolvedValue({ status: 'waiting' }),
+      markUnitCompleted: jest.fn().mockResolvedValue(undefined),
+    };
 
     processor = new IndexingProcessor(
       mockDb,

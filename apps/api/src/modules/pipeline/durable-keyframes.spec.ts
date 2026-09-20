@@ -36,22 +36,23 @@ describe('Durable Keyframes Seam (Phase F0)', () => {
     ];
 
     // 2. Persist keyframes to durable storage
-    const durableKeyframes = persistDurableKeyframes('test_asset', durableDir, inputKeyframes);
+    const durableKeyframes = persistDurableKeyframes('test_asset', tempRoot, inputKeyframes);
 
     expect(durableKeyframes.length).toBe(2);
     expect(durableKeyframes[0].timestamp).toBe(1.5);
-    expect(durableKeyframes[0].path).toContain(path.join('keyframes', 'test_asset'));
-    expect(fs.existsSync(durableKeyframes[0].path)).toBe(true);
-    expect(fs.readFileSync(durableKeyframes[0].path, 'utf8')).toBe('fake-jpeg-data-1');
+    expect(durableKeyframes[0].path.replace(/\\/g, '/')).toContain('keyframes/test_asset');
+    const abs0 = path.join(tempRoot, durableKeyframes[0].path);
+    const abs1 = path.join(tempRoot, durableKeyframes[1].path);
+    expect(fs.existsSync(abs0)).toBe(true);
+    expect(fs.readFileSync(abs0, 'utf8')).toBe('fake-jpeg-data-1');
+    expect(durableKeyframes[0].data).toMatch(/^data:image\/jpeg;base64,/);
 
-    // 3. Simulate scratch purge (Phase 4 core thesis)
     fs.rmSync(scratchDir, { recursive: true, force: true });
     expect(fs.existsSync(scratchDir)).toBe(false);
 
-    // 4. Verify durable keyframes STILL EXIST post-purge (Stage-2 search requirement)
-    expect(fs.existsSync(durableKeyframes[0].path)).toBe(true);
-    expect(fs.existsSync(durableKeyframes[1].path)).toBe(true);
-    expect(fs.readFileSync(durableKeyframes[0].path, 'utf8')).toBe('fake-jpeg-data-1');
+    expect(fs.existsSync(abs0)).toBe(true);
+    expect(fs.existsSync(abs1)).toBe(true);
+    expect(fs.readFileSync(abs0, 'utf8')).toBe('fake-jpeg-data-1');
   });
 
   it('handles empty or missing keyframes gracefully', () => {

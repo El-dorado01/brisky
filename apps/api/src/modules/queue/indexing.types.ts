@@ -1,9 +1,12 @@
 export type JobType =
   | 'index_asset'
+  | 'plan_asset'
   | 'extract_audio'
   | 'transcribe'
   | 'analyze_frames'
+  | 'gemini_video'
   | 'embed'
+  | 'finalize_asset'
   | 'generate_proxy'
   | 'extract_clip';
 
@@ -29,6 +32,8 @@ export interface JobProcessingConfig {
   model?: string;
   embeddingModel?: string;
   forceReindex?: boolean;
+  unitId?: string;
+  indexVersion?: number;
 }
 
 export interface FactoryJobEnvelope {
@@ -99,11 +104,43 @@ export function priorityToBullNumber(priority?: JobPriority, fileSizeMb?: number
   }
 }
 
+export const INDEX_UNIT_JOB_TYPES: JobType[] = [
+  'transcribe',
+  'extract_audio',
+  'analyze_frames',
+  'gemini_video',
+  'embed',
+  'finalize_asset',
+];
+
+export function isIndexUnitJob(jobType: JobType | string | undefined): boolean {
+  return INDEX_UNIT_JOB_TYPES.includes(jobType as JobType);
+}
+
+export function unitTypeToJobType(unitType: string): JobType {
+  switch (unitType) {
+    case 'transcribe':
+      return 'transcribe';
+    case 'analyze_frames':
+      return 'analyze_frames';
+    case 'gemini_video':
+      return 'gemini_video';
+    case 'embed':
+      return 'embed';
+    case 'finalize_asset':
+      return 'finalize_asset';
+    default:
+      return 'analyze_frames';
+  }
+}
+
 export function normalizeJobEnvelope(data: any): FactoryJobEnvelope {
   if (data?.job_type) {
+    const jobType: JobType =
+      data.job_type === 'index_asset' ? 'plan_asset' : data.job_type;
     return {
       job_id: data.job_id || data.jobId,
-      job_type: data.job_type,
+      job_type: jobType,
       asset_id: data.asset_id || data.assetId,
       user_id: data.user_id || data.userId,
       source: data.source || { provider: 'unknown' },
@@ -114,11 +151,11 @@ export function normalizeJobEnvelope(data: any): FactoryJobEnvelope {
     };
   }
 
-  // Legacy IndexingJobData fallback
+  // Legacy IndexingJobData fallback — library index is a plan_asset parent.
   const provider = data.provider || (data.sourceType === 'drive' ? 'google_drive' : 'upload');
   return {
     job_id: undefined,
-    job_type: 'index_asset',
+    job_type: 'plan_asset',
     asset_id: data.assetId,
     user_id: data.userId,
     source: {

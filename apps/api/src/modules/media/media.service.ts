@@ -17,6 +17,7 @@ import {
   resolveFromRepo,
   validateAssetId,
 } from '../../common/repo-paths';
+import { resolveStorageLocator, toStorageLocator } from '../../common/storage-paths';
 import {
   getBenchmarkQueries,
   getLibraryBenchmarkQueries,
@@ -24,6 +25,7 @@ import {
 import { parseSearchQuery } from './query-parse';
 import {
   parseKeyframePaths,
+  materializeKeyframeFiles,
   narrowResultWindow,
 } from '../pipeline/scene-sampling';
 import {
@@ -58,6 +60,7 @@ export class MediaService {
   private readonly logger = new Logger(MediaService.name);
   private storageRoot: string;
   private proxyDir: string;
+  private clipsDir: string;
   private thumbnailDir: string;
   private scratchDir: string;
   private embeddingCache: Map<string, { values: number[]; timestamp: number }> =
@@ -79,12 +82,14 @@ export class MediaService {
       this.configService.get<string>('STORAGE_ROOT', './storage'),
     );
     this.proxyDir = path.join(this.storageRoot, 'proxies');
+    this.clipsDir = path.join(this.storageRoot, 'clips');
     this.thumbnailDir = path.join(this.storageRoot, 'thumbnails');
     this.scratchDir = path.join(this.storageRoot, 'scratch');
 
     [
       this.storageRoot,
       this.proxyDir,
+      this.clipsDir,
       this.thumbnailDir,
       this.scratchDir,
     ].forEach((dir) => {
@@ -515,54 +520,47 @@ export class MediaService {
       this.proxyCacheService.recordAccess(validId);
     }
 
-    // 1. If asset explicitly points to an existing file (such as an extracted clip in storage/clips/ or proxy_path)
-    if (asset.proxy_path && fs.existsSync(asset.proxy_path) && fs.statSync(asset.proxy_path).size > 0) {
-      const validPath = assertPathWithinRoot(asset.proxy_path, this.storageRoot);
-      return { status: 'ready', filePath: validPath };
-    }
+    const defaultLocalPath = this.defaultPlayablePath(validId, asset.parent_asset_id);
+    const resolvedStored = this.safeLocalMediaPath(asset.proxy_path);
+    const existing =
+      this.existingPlayableFile(resolvedStored) || this.existingPlayableFile(defaultLocalPath);
 
-    // 2. If standard local 720p proxy exists in storage/proxies and is non-empty, return it
-    const defaultProxyPath = assertPathWithinRoot(
-      path.join(this.proxyDir, `${validId}.mp4`),
-      this.storageRoot,
-    );
-    if (fs.existsSync(defaultProxyPath) && fs.statSync(defaultProxyPath).size > 0) {
-      if (asset.proxy_status !== 'ready') {
+    if (existing) {
+      const loc = toStorageLocator(existing, this.storageRoot);
+      if (asset.proxy_path !== loc || asset.proxy_status !== 'ready') {
         await this.db.query(
           `UPDATE media_assets SET proxy_status = 'ready', proxy_path = $1, updated_at = NOW() WHERE id = $2`,
-          [defaultProxyPath, validId],
+          [loc, validId],
         );
       }
-      return { status: 'ready', filePath: defaultProxyPath };
+      return { status: 'ready', filePath: existing };
     }
 
-    // 2b. Zero-shared-disk: pull a worker-generated proxy or clip from the user's connector into local cache
+    // Zero-shared-disk: hydrate from connector into THIS host's storage root.
+    // Never pass a worker container path like /app/storage/proxies/... to the jail.
     if (asset.proxy_remote_id && asset.connector_account_id) {
-      const targetPath = asset.proxy_path
-        ? assertPathWithinRoot(asset.proxy_path, this.storageRoot)
-        : defaultProxyPath;
       const hydrated = await this.hydrateRemoteDerivedFile(
         asset,
-        targetPath,
+        defaultLocalPath,
         asset.proxy_remote_id,
       );
       if (hydrated) {
+        const loc = toStorageLocator(defaultLocalPath, this.storageRoot);
         await this.db.query(
           `UPDATE media_assets SET proxy_status = 'ready', proxy_path = $1, updated_at = NOW() WHERE id = $2`,
-          [targetPath, validId],
+          [loc, validId],
         );
-        return { status: 'ready', filePath: targetPath };
+        return { status: 'ready', filePath: defaultLocalPath };
       }
     }
 
-    // 3. If proxy was skipped (source is already web-safe MP4) or source is ready, and local file exists, stream source
-    if (
-      (asset.proxy_status === 'skipped' || asset.proxy_status === 'ready') &&
-      asset.original_path &&
-      fs.existsSync(asset.original_path)
-    ) {
-      const validPath = assertPathWithinRoot(asset.original_path, this.storageRoot);
-      return { status: 'ready', filePath: validPath };
+    if (asset.proxy_status === 'skipped' || asset.proxy_status === 'ready') {
+      const originalLocal =
+        this.existingPlayableFile(this.safeLocalMediaPath(asset.original_path)) ||
+        this.existingPlayableFile(asset.original_path);
+      if (originalLocal) {
+        return { status: 'ready', filePath: originalLocal };
+      }
     }
 
     // 3. If preview is already queued or processing, return preparing status
@@ -603,6 +601,34 @@ export class MediaService {
       proxyStatus: 'queued',
       message: 'Preview generation requested. Please retry shortly.',
     };
+  }
+
+  private defaultPlayablePath(assetId: string, parentAssetId?: string | null): string {
+    const isClip = Boolean(parentAssetId) || assetId.startsWith('clip_');
+    const dir = isClip ? this.clipsDir : this.proxyDir;
+    return assertPathWithinRoot(path.join(dir, `${assetId}.mp4`), this.storageRoot);
+  }
+
+  /** Map a stored locator or foreign absolute path onto this host's STORAGE_ROOT. */
+  private safeLocalMediaPath(stored: string | null | undefined): string | null {
+    const resolved = resolveStorageLocator(stored, this.storageRoot);
+    if (!resolved) return null;
+    try {
+      return assertPathWithinRoot(resolved, this.storageRoot);
+    } catch {
+      return null;
+    }
+  }
+
+  private existingPlayableFile(candidate: string | null | undefined): string | null {
+    if (!candidate) return null;
+    try {
+      const valid = assertPathWithinRoot(candidate, this.storageRoot);
+      if (fs.existsSync(valid) && fs.statSync(valid).size > 0) return valid;
+    } catch {
+      return null;
+    }
+    return null;
   }
 
   private async hydrateRemoteDerivedFile(
@@ -1206,8 +1232,11 @@ export class MediaService {
             [candidate.segmentId],
           );
           if (segRow.rows.length > 0) {
-            frames = parseKeyframePaths(segRow.rows[0].keyframe_paths).filter(
-              (f) => f.path && fs.existsSync(f.path),
+            const kfScratch = path.join(this.scratchDir, 'stage2', candidate.segmentId);
+            frames = materializeKeyframeFiles(
+              parseKeyframePaths(segRow.rows[0].keyframe_paths),
+              this.storageRoot,
+              kfScratch,
             );
           }
           if (frames.length === 0) {
@@ -1323,8 +1352,11 @@ export class MediaService {
             [candidate.segmentId],
           );
           if (segRow.rows.length > 0) {
-            frames = parseKeyframePaths(segRow.rows[0].keyframe_paths).filter(
-              (f) => f.path && fs.existsSync(f.path),
+            const kfScratch = path.join(this.scratchDir, 'stage2', candidate.segmentId);
+            frames = materializeKeyframeFiles(
+              parseKeyframePaths(segRow.rows[0].keyframe_paths),
+              this.storageRoot,
+              kfScratch,
             );
           }
           if (frames.length === 0) {

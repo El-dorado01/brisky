@@ -2,7 +2,7 @@ import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job, DelayedError } from 'bullmq';
 import { ConfigService } from '@nestjs/config';
-import { randomBytes } from 'crypto';
+import { randomBytes, createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { DatabaseService } from '../database/database.service';
@@ -13,8 +13,11 @@ import { WhisperTranscriptionService } from '../pipeline/whisper-transcription.s
 import {
   FactoryJobEnvelope,
   IndexingJobData,
+  isIndexUnitJob,
   normalizeJobEnvelope,
+  unitTypeToJobType,
 } from './indexing.types';
+import { IndexingService } from './indexing.service';
 import {
   ANALYSIS_VERSION,
   FrameObservation,
@@ -25,6 +28,8 @@ import {
   TranscriptCue,
 } from '../pipeline/pipeline.types';
 import { resolveFromRepo } from '../../common/repo-paths';
+import { resolveStorageLocator, toStorageLocator } from '../../common/storage-paths';
+import { materializeKeyframeFiles } from '../pipeline/scene-sampling';
 import { ConnectorRegistry } from '../connector/connector.registry';
 import { ConnectorsService } from '../connector/connectors.service';
 import { persistDurableKeyframes } from '../pipeline/durable-keyframes';
@@ -56,6 +61,7 @@ export class IndexingProcessor extends WorkerHost {
     private readonly unitsService: ProcessingUnitsService,
     private readonly proxyCacheService?: ProxyCacheService,
     private readonly scheduler?: FactorySchedulerService,
+    private readonly indexingService?: IndexingService,
   ) {
     super();
     this.storageRoot = resolveFromRepo(
@@ -76,6 +82,42 @@ export class IndexingProcessor extends WorkerHost {
     [this.storageRoot, this.proxyDir, this.thumbnailDir, this.scratchDir, this.keyframesDir, this.clipsDir].forEach((dir) => {
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     });
+    this.sweepStaleScratch();
+  }
+
+  private locator(absPath: string): string {
+    return toStorageLocator(absPath, this.storageRoot);
+  }
+
+  private cleanupJobScratch(scratch: string): void {
+    if (scratch && fs.existsSync(scratch)) {
+      try {
+        fs.rmSync(scratch, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  private sweepStaleScratch(): void {
+    if (!fs.existsSync(this.scratchDir)) return;
+    const maxAgeMs = 60 * 60 * 1000;
+    const now = Date.now();
+    try {
+      for (const name of fs.readdirSync(this.scratchDir)) {
+        const full = path.join(this.scratchDir, name);
+        try {
+          const st = fs.statSync(full);
+          if (now - st.mtimeMs > maxAgeMs) {
+            fs.rmSync(full, { recursive: true, force: true });
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch {
+      /* ignore */
+    }
   }
 
   private readonly scratchMaxBytes: number;
@@ -192,6 +234,18 @@ export class IndexingProcessor extends WorkerHost {
     const bullJobId = String(job.id || '');
     const gotAssetLock = await this.claimAssetLock(assetId, bullJobId);
     if (!gotAssetLock) {
+      if (isIndexUnitJob(envelope.job_type) || envelope.job_type === 'plan_asset') {
+        this.logger.log(
+          `[F2] Asset ${assetId} already has an active unit; delaying job ${job.id} (${envelope.job_type})`,
+        );
+        if (this.scheduler?.releaseSlot) {
+          await this.scheduler.releaseSlot(bullJobId).catch(() => undefined);
+        }
+        if (typeof job.moveToDelayed === 'function') {
+          await job.moveToDelayed(Date.now() + 4000, job.token);
+        }
+        throw new DelayedError();
+      }
       this.logger.warn(
         `Asset ${assetId} (${originalFilename}) is already actively being processed by another worker instance. Skipping duplicate job ${job.id}.`,
       );
@@ -201,10 +255,16 @@ export class IndexingProcessor extends WorkerHost {
       return;
     }
 
+    const heartbeat = this.scheduler?.heartbeat
+      ? setInterval(() => {
+          this.scheduler!.heartbeat(String(job.id || '')).catch(() => undefined);
+        }, 30_000)
+      : null;
+
     if (!this.scheduler?.claimSlot) {
       await this.db.query(
         `UPDATE indexing_jobs
-         SET status = 'active', stage = 'active', updated_at = NOW()
+         SET status = 'active', stage = 'active', last_heartbeat_at = NOW(), updated_at = NOW()
          WHERE bull_job_id = $1 AND status = 'waiting'`,
         [job.id],
       ).catch(() => undefined);
@@ -217,6 +277,14 @@ export class IndexingProcessor extends WorkerHost {
         await this.executeExtractClip(job, envelope);
       } else if (envelope.job_type === 'transcribe' || envelope.job_type === 'extract_audio') {
         await this.executeTranscribeOnly(job, envelope);
+      } else if (envelope.job_type === 'analyze_frames') {
+        await this.executeAnalyzeFrames(job, envelope);
+      } else if (envelope.job_type === 'gemini_video') {
+        await this.executeGeminiVideo(job, envelope);
+      } else if (envelope.job_type === 'embed') {
+        await this.executeEmbed(job, envelope);
+      } else if (envelope.job_type === 'finalize_asset') {
+        await this.executeFinalize(job, envelope);
       } else {
         await this.executeProcessing(job, envelope);
       }
@@ -227,6 +295,7 @@ export class IndexingProcessor extends WorkerHost {
       }
       throw err;
     } finally {
+      if (heartbeat) clearInterval(heartbeat);
       await this.releaseAssetLock(assetId, bullJobId);
     }
   }
@@ -251,7 +320,7 @@ export class IndexingProcessor extends WorkerHost {
     if (fs.existsSync(proxyPath) && fs.statSync(proxyPath).size > 0) {
       await this.db.query(
         `UPDATE media_assets SET proxy_status = 'ready', proxy_path = $1, updated_at = NOW() WHERE id = $2`,
-        [proxyPath, assetId],
+        [this.locator(proxyPath), assetId],
       );
       await this.db.query(
         `UPDATE indexing_jobs SET status = 'completed', stage = 'completed', progress = 100, finished_at = NOW() WHERE bull_job_id = $1`,
@@ -333,14 +402,15 @@ export class IndexingProcessor extends WorkerHost {
           }
         } catch (uploadErr) {
           this.logger.warn(
-            `Could not write proxy ${assetId} back to connector (local cache remains): ${uploadErr}`,
+            `Could not write proxy ${assetId} back to connector: ${uploadErr}`,
           );
+          throw uploadErr;
         }
       }
 
       await this.db.query(
         `UPDATE media_assets SET proxy_status = 'ready', proxy_path = $1, updated_at = NOW() WHERE id = $2`,
-        [proxyPath, assetId],
+        [this.locator(proxyPath), assetId],
       );
       await this.db.query(
         `UPDATE indexing_jobs SET status = 'completed', stage = 'completed', progress = 100, access_mode = $1, bytes_read = $2, finished_at = NOW() WHERE bull_job_id = $3`,
@@ -359,11 +429,7 @@ export class IndexingProcessor extends WorkerHost {
       );
       throw err;
     } finally {
-      if (fs.existsSync(scratch)) {
-        try {
-          fs.rmSync(scratch, { recursive: true, force: true });
-        } catch { /* ignore */ }
-      }
+      this.cleanupJobScratch(scratch);
     }
   }
 
@@ -383,6 +449,15 @@ export class IndexingProcessor extends WorkerHost {
     const scratch = path.join(this.scratchDir, String(jobId));
 
     fs.mkdirSync(scratch, { recursive: true });
+
+    const existingUnit = await this.unitsService.getUnit?.(assetId, 'audio_transcribe');
+    if (existingUnit?.status === 'completed') {
+      await this.db.query(
+        `UPDATE indexing_jobs SET status = 'completed', stage = 'completed', progress = 100, finished_at = NOW() WHERE bull_job_id = $1`,
+        [job.id],
+      );
+      return;
+    }
 
     let effectiveSourcePath = sourcePath;
     const isRemoteMaster = provider !== 'upload' && Boolean(remoteId);
@@ -438,6 +513,9 @@ export class IndexingProcessor extends WorkerHost {
       }
 
       await this.persistTranscriptObservations(assetId, userId, transcriptCues);
+      await this.unitsService.markUnitCompleted?.(assetId, 'audio_transcribe', {
+        transcript: transcriptCues,
+      });
 
       if (fs.existsSync(audioPath)) {
         try {
@@ -462,13 +540,7 @@ export class IndexingProcessor extends WorkerHost {
       );
       throw err;
     } finally {
-      if (fs.existsSync(scratch)) {
-        try {
-          fs.rmSync(scratch, { recursive: true, force: true });
-        } catch {
-          /* ignore */
-        }
-      }
+      this.cleanupJobScratch(scratch);
     }
   }
 
@@ -641,6 +713,12 @@ export class IndexingProcessor extends WorkerHost {
 
       const clipStat = fs.existsSync(clipPath) ? fs.statSync(clipPath) : null;
       const clipSize = clipStat ? clipStat.size : 0;
+      let clipChecksum: string;
+      if (fs.existsSync(clipPath) && clipSize > 0) {
+        clipChecksum = createHash('sha256').update(fs.readFileSync(clipPath)).digest('hex');
+      } else {
+        clipChecksum = createHash('sha256').update(`${clipAssetId}-${Date.now()}`).digest('hex');
+      }
 
       // Register derived asset in media_assets
       await this.db.query(
@@ -648,22 +726,23 @@ export class IndexingProcessor extends WorkerHost {
            id, user_id, original_filename, original_path, source_type,
            status, stage, progress, duration, proxy_status, proxy_path,
            parent_asset_id, relationship_type, file_size, availability,
-           thumbnail_path, thumbnail_data, connector_account_id, created_at, updated_at
+           thumbnail_path, thumbnail_data, connector_account_id, checksum, created_at, updated_at
          )
-         VALUES ($1, $2, $3, $4, $5, 'indexed', 'completed', 100, $6, 'ready', $7, $8, 'derived_from', $9, 'online', $10, $11, $12, NOW(), NOW())`,
+         VALUES ($1, $2, $3, $4, $5, 'indexed', 'completed', 100, $6, 'ready', $7, $8, 'derived_from', $9, 'online', $10, $11, $12, $13, NOW(), NOW())`,
         [
           clipAssetId,
           userId,
           clipFilename,
-          clipPath,
+          this.locator(clipPath),
           isRemoteMaster ? (provider === 'drive' ? 'google_drive' : provider) : 'upload',
           duration,
-          clipPath,
+          this.locator(clipPath),
           parentAssetId,
           clipSize,
-          clipThumbPath,
+          fs.existsSync(clipThumbPath) ? this.locator(clipThumbPath) : null,
           clipThumbData,
           connectorAccountId || null,
+          clipChecksum,
         ],
       );
 
@@ -711,8 +790,9 @@ export class IndexingProcessor extends WorkerHost {
           }
         } catch (uploadErr) {
           this.logger.warn(
-            `Could not write clip ${clipAssetId} back to connector (local cache remains): ${uploadErr}`,
+            `Could not write clip ${clipAssetId} back to connector: ${uploadErr}`,
           );
+          throw uploadErr;
         }
       }
 
@@ -725,11 +805,7 @@ export class IndexingProcessor extends WorkerHost {
       );
       throw err;
     } finally {
-      if (fs.existsSync(scratch)) {
-        try {
-          fs.rmSync(scratch, { recursive: true, force: true });
-        } catch { /* ignore */ }
-      }
+      this.cleanupJobScratch(scratch);
     }
   }
 
@@ -753,11 +829,7 @@ export class IndexingProcessor extends WorkerHost {
     if (isJobCancelled || isAssetGone) {
       const reason = isAssetGone ? 'Source deleted or marked offline' : 'Cancelled by user';
       this.logger.log(`Job ${jobId} for asset ${assetId} halted mid-job (${reason}); cleaning scratch.`);
-      if (fs.existsSync(scratchDir)) {
-        try {
-          fs.rmSync(scratchDir, { recursive: true, force: true });
-        } catch { /* ignore */ }
-      }
+      this.cleanupJobScratch(scratchDir);
       if (res.rows.length > 0) {
         await this.db.query(
           `UPDATE indexing_jobs SET status = 'cancelled', stage = 'cancelled', error = $1, finished_at = NOW() WHERE bull_job_id = $2`,
@@ -1031,7 +1103,7 @@ export class IndexingProcessor extends WorkerHost {
       // Persist durable keyframes into storage/keyframes/{assetId}/ so Stage-2 search can inspect them after scratch purge
       for (const scene of scenes) {
         if (scene.keyframes && scene.keyframes.length > 0) {
-          scene.keyframes = persistDurableKeyframes(assetId, this.keyframesDir, scene.keyframes);
+          scene.keyframes = persistDurableKeyframes(assetId, this.storageRoot, scene.keyframes);
           if (scene.keyframePath && scene.keyframes[0]) {
             scene.keyframePath = scene.keyframes[0].path;
           }
@@ -1039,15 +1111,20 @@ export class IndexingProcessor extends WorkerHost {
       }
 
       // Checkpoint Planning (Phase F2)
+      if (forceReindex) {
+        await this.unitsService.resetAssetUnits(assetId);
+      }
       await this.unitsService.planUnits(assetId, scenes, metadata.hasAudio);
-      const completedUnitsMap = await this.unitsService.getCompletedUnits(assetId);
-      const completedUnits = new Set(completedUnitsMap.keys());
+      const completedUnitsMap = (await this.unitsService.getCompletedUnits?.(assetId)) || new Map();
+      const completedUnits =
+        completedUnitsMap instanceof Map
+          ? new Set<string>(Array.from(completedUnitsMap.keys()).map(String))
+          : new Set<string>();
 
       // Check cooperative cancellation after keyframe extraction
       if (await this.checkCancelled(job.id || '', assetId, scratch)) return;
 
-      // Stage 3: Fast Thumbnail & Audio (Demand-driven derived media: proxy encoding is decoupled)
-      const audioPath = path.join(scratch, 'audio.mp3');
+      // Stage 3: Fast thumbnail (Demand-driven derived media: proxy encoding is decoupled)
       const proxyPath = path.join(this.proxyDir, `${assetId}.mp4`);
       const thumbnailPath = path.join(this.thumbnailDir, `${assetId}.jpg`);
 
@@ -1066,8 +1143,7 @@ export class IndexingProcessor extends WorkerHost {
 
       await this.db.query(`UPDATE media_assets SET proxy_status = $1 WHERE id = $2`, [proxyStatus, assetId]);
 
-      const [, audioOk] = await mark('ffmpeg_outputs', 28, async () => {
-        // 1. Fast thumbnail extraction first (~0.2s)
+      await mark('ffmpeg_outputs', 28, async () => {
         await this.ffmpegPipeline.generateThumbnail(
           effectiveSourcePath,
           thumbnailPath,
@@ -1078,22 +1154,14 @@ export class IndexingProcessor extends WorkerHost {
             const thumbBuffer = await fs.promises.readFile(thumbnailPath);
             const thumbnailData = `data:image/jpeg;base64,${thumbBuffer.toString('base64')}`;
             await this.db.query(
-              `UPDATE media_assets SET thumbnail_data = $1 WHERE id = $2`,
-              [thumbnailData, assetId],
+              `UPDATE media_assets SET thumbnail_data = $1, thumbnail_path = $2 WHERE id = $3`,
+              [thumbnailData, this.locator(thumbnailPath), assetId],
             );
           } catch (readThumbErr) {
             this.logger.warn(`Could not read thumbnail into database for asset ${assetId}: ${readThumbErr}`);
           }
         }
         await setStage('thumbnail_ready', 30, true);
-
-        // 2. Fast audio stream extraction (~1-2s)
-        const audioExtracted = metadata.hasAudio
-          ? await this.ffmpegPipeline.extractAudio(effectiveSourcePath, audioPath)
-          : false;
-        await setStage('audio_extracted', 33, true);
-
-        return [proxyPath, audioExtracted];
       });
 
       // Section 5 (03-media-storage-brief.md): Upload preview to user connector under Brisky/
@@ -1129,275 +1197,20 @@ export class IndexingProcessor extends WorkerHost {
         }
       }
 
-      // Check cooperative cancellation after fast thumbnail/audio extraction
+      // Check cooperative cancellation after thumbnail
       if (await this.checkCancelled(job.id || '', assetId, scratch)) return;
 
-      // Stage 4: AI Analysis. Gemini native video MUST run while the master file still
-      // exists. Transcription only needs audio.mp3; frame analysis only needs keyframes.
-      await setStage('ai_analysis', 62, true);
-      const emptyGemini: GeminiVideoAnalysis = { video_summary: '', key_themes: [], segments: [] };
-
-      const scenesToAnalyze = scenes.filter((s) => !completedUnits.has(`scene_${s.sceneId}`));
-      if (scenesToAnalyze.length < scenes.length) {
-        this.logger.log(
-          `[Checkpoint F2] Skipping ${scenes.length - scenesToAnalyze.length} already-completed scene units for ${assetId}`,
-        );
-      }
-
-      let cachedObservations: FrameObservation[] = [];
-      for (const s of scenes) {
-        if (completedUnits.has(`scene_${s.sceneId}`)) {
-          const unitMeta = completedUnitsMap.get(`scene_${s.sceneId}`);
-          if (unitMeta?.observations && Array.isArray(unitMeta.observations)) {
-            cachedObservations.push(...unitMeta.observations);
-          }
-        }
-      }
-
-      if (cachedObservations.length === 0 && scenesToAnalyze.length < scenes.length) {
-        const obsRes = await this.db.query<{ raw_data: any }>(
-          `SELECT raw_data FROM media_observations WHERE asset_id = $1 AND observation_type IN ('frame', 'frame_analysis')`,
-          [assetId],
-        );
-        if (obsRes.rows.length > 0) {
-          cachedObservations = obsRes.rows.flatMap((r) => (Array.isArray(r.raw_data) ? r.raw_data : [r.raw_data]));
-        }
-      }
-
-      const [transcriptResult, visualResult, geminiResult] = await Promise.all([
-        (async () => {
-          await setStage('transcribing_audio', 65, true);
-          let result: { transcript: TranscriptCue[]; usage: ModelUsage | null } = {
-            transcript: [],
-            usage: null,
-          };
-          if (completedUnits.has('audio_transcribe')) {
-            this.logger.log(`[Checkpoint F2] Audio already transcribed for ${assetId}; loading cached transcript`);
-            const cachedMeta = completedUnitsMap.get('audio_transcribe');
-            if (cachedMeta?.transcript && Array.isArray(cachedMeta.transcript)) {
-              result = { transcript: cachedMeta.transcript, usage: null };
-            } else {
-              const transObs = await this.db.query<{ raw_data: any }>(
-                `SELECT raw_data FROM media_observations WHERE asset_id = $1 AND observation_type = 'transcript'`,
-                [assetId],
-              );
-              if (transObs.rows[0]?.raw_data) {
-                result = {
-                  transcript: Array.isArray(transObs.rows[0].raw_data)
-                    ? transObs.rows[0].raw_data
-                    : [transObs.rows[0].raw_data],
-                  usage: null,
-                };
-              }
-            }
-          } else if (audioOk) {
-            const preferredProvider = this.configService.get<string>(
-              'TRANSCRIPTION_PROVIDER',
-              'whisper',
-            );
-            if (preferredProvider === 'whisper' && this.whisperService.isAvailable()) {
-              try {
-                result = await this.whisperService.transcribeAudio(audioPath);
-              } catch (whisperErr) {
-                const msg = whisperErr instanceof Error ? whisperErr.message : String(whisperErr);
-                this.logger.warn(
-                  `faster-whisper failed (${msg}); falling back to Gemini cloud transcription`,
-                );
-                result = await this.geminiService.transcribeAudio(audioPath);
-              }
-            } else {
-              result = await this.geminiService.transcribeAudio(audioPath);
-            }
-            await this.unitsService.markUnitCompleted(assetId, 'audio_transcribe', {
-              transcript: result.transcript,
-            });
-            await this.persistTranscriptObservations(assetId, userId, result.transcript);
-          }
-          if (metadata.hasAudio) {
-            const cues = result.transcript;
-            const chars = cues.reduce((n, cue) => n + (cue.text || '').trim().length, 0);
-            const minChars = Math.max(40, Math.round(metadata.duration * 2.5));
-            if (chars < minChars) {
-              this.logger.warn(
-                `Sparse or thin transcription (${chars} chars across ${cues.length} cues for ${metadata.duration.toFixed(0)}s audio; expected ~${minChars} for continuous speech). Continuing with visual/OCR indexing.`,
-              );
-            }
-          }
-          await setStage('audio_transcribed', 70, true);
-          return result;
-        })(),
-        (async () => {
-          await setStage('analyzing_visuals', 72, true);
-          if (scenesToAnalyze.length === 0) {
-            return { observations: cachedObservations, usage: null };
-          }
-          const newObservations: FrameObservation[] = [];
-          let lastUsage: ModelUsage | null = null;
-          for (const s of scenesToAnalyze) {
-            try {
-              const res = await this.geminiService.analyzeFrames([s]);
-              lastUsage = res.usage;
-              const sceneObs = (res.observations || []).filter(
-                (obs) =>
-                  obs.timestamp >= s.startTime - 0.05 && obs.timestamp <= s.endTime + 0.05,
-              );
-              const observations = sceneObs.length > 0 ? sceneObs : res.observations || [];
-              await this.unitsService.markUnitCompleted(assetId, `scene_${s.sceneId}`, {
-                observations,
-                observationsCount: observations.length,
-              });
-              await this.persistSceneCheckpoint(assetId, userId, s, observations);
-              newObservations.push(...observations);
-            } catch (err) {
-              this.logger.warn(
-                `Frame analysis failed for scene ${s.sceneId}: ${err instanceof Error ? err.message : err}`,
-              );
-              await this.unitsService.markUnitFailed(assetId, `scene_${s.sceneId}`, String(err));
-            }
-          }
-          return {
-            observations: [...cachedObservations, ...newObservations],
-            usage: lastUsage,
-          };
-        })(),
-        (async () => {
-          if (completedUnits.has('gemini_video')) {
-            const cachedGemini = completedUnitsMap.get('gemini_video')?.analysis;
-            return { analysis: cachedGemini || emptyGemini, usage: null };
-          }
-          const masterPresent = fs.existsSync(effectiveSourcePath);
-          if (!masterPresent) {
-            this.logger.warn(
-              `Gemini video skipped for ${assetId}: master file is not on disk (${effectiveSourcePath})`,
-            );
-            await this.unitsService.markUnitFailed(
-              assetId,
-              'gemini_video',
-              'Master file missing; cannot run native video analysis',
-            );
-            return { analysis: emptyGemini, usage: null };
-          }
-          try {
-            const res = await this.geminiService.analyzeVideo(effectiveSourcePath);
-            await this.unitsService.markUnitCompleted(assetId, 'gemini_video', {
-              analysis: res.analysis,
-            });
-            return res;
-          } catch (err) {
-            this.logger.warn(`Gemini video failed: ${err instanceof Error ? err.message : err}`);
-            await this.unitsService.markUnitFailed(assetId, 'gemini_video', String(err));
-            return { analysis: emptyGemini, usage: null };
-          }
-        })(),
-      ]);
-
-      // Master is only needed for Gemini native video. Drop it as soon as that step finishes.
-      if (isRemoteMaster && fs.existsSync(effectiveSourcePath)) {
-        try {
-          fs.unlinkSync(effectiveSourcePath);
-          this.logger.log(
-            `[Phase F4] Purged master video from scratch after Gemini video analysis: ${effectiveSourcePath}`,
-          );
-        } catch (unlinkErr) {
-          this.logger.warn(`Could not unlink master video from scratch: ${unlinkErr}`);
-        }
-      }
-
-      await setStage('visuals_analyzed', 82, true);
-
-      const usages: ModelUsage[] = [
-        visualResult.usage,
-        transcriptResult.usage,
-        geminiResult.usage,
-      ].filter((u): u is ModelUsage => Boolean(u));
-
-      // Stage 5: Intelligence Merge & Embeddings
-      await setStage('intelligence_merge', 85, true);
-      const artifacts = await this.mergerService.mergeAndPersist({
-        assetId,
-        originalFilename,
-        checksum,
-        originalPath: isRemoteMaster ? '' : effectiveSourcePath,
-        proxyPath,
-        thumbnailPath,
-        scratchDir: scratch,
-        metadata,
-        scenes,
-        visual: visualResult.observations,
-        transcript: transcriptResult.transcript,
-        gemini: 'analysis' in geminiResult ? geminiResult.analysis : emptyGemini,
-        usages,
-        timings,
-        indexStartedAt,
-      });
-      await setStage('embeddings_generated', 93, true);
-
-      // Stage 6: Persist Segments & Raw Observations into PostgreSQL
-      await setStage('database_persistence', 95, true);
-      await this.persistToDatabase({
-        assetId,
-        userId,
-        artifacts,
-        proxyPath,
-        thumbnailPath,
-        sourcePath: isRemoteMaster ? '' : effectiveSourcePath,
-        isRemoteMaster,
-      });
-      await setStage('database_persisted', 98, true);
-
-      // Enforce the Phase 4 Core Thesis: "We keep the intelligence, not the tape."
-      // Ephemeral scratch (downloaded master bytes, extracted frames, temp audio) is purged.
-      if (fs.existsSync(scratch)) {
-        try {
-          fs.rmSync(scratch, { recursive: true, force: true });
-          this.logger.log(`[MediaConnector: ${provider}] Purged ephemeral scratch directory: ${scratch}`);
-        } catch (purgeErr) {
-          this.logger.warn(`Could not unlink ephemeral scratch directory: ${purgeErr}`);
-        }
-      }
-
-      // Mark Complete or Partially Indexed depending on whether any units failed
-      const hasFailed = await this.unitsService.hasFailedUnits(assetId);
-      const finalStatus = hasFailed ? 'partially_indexed' : 'indexed';
-      const finalStage = hasFailed ? 'partially_indexed' : 'completed';
-
-      await this.unitsService.markUnitCompleted(assetId, 'finalize');
-      await setStage(finalStage, 100, true);
-      await this.db.query(
-        `UPDATE media_assets
-         SET status = $1, stage = $2, progress = 100,
-             cost_usd = $3, cost_per_source_minute_usd = $4,
-             frames_analyzed = $5, scene_count = $6,
-             index_duration_ms = $7, proxy_status = $8, availability = 'online',
-             indexed_at = NOW(), updated_at = NOW()
-         WHERE id = $9`,
-        [
-          finalStatus,
-          finalStage,
-          artifacts.cost.estimatedUsd,
-          artifacts.cost.costPerSourceMinuteUsd,
-          artifacts.cost.framesAnalyzed,
-          artifacts.cost.sceneCount,
-          artifacts.cost.indexDurationMs,
-          proxyStatus,
-          assetId,
-        ],
-      );
-
+      await this.dispatchChildUnitJobs(envelope, completedUnits);
+      await setStage('planned', 40, true);
       await this.db.query(
         `UPDATE indexing_jobs
-         SET status = 'completed', stage = 'completed', progress = 100,
-             timings = $1, cost = $2, provider = 'google', model = $3, finished_at = NOW()
-         WHERE bull_job_id = $4`,
-        [
-          JSON.stringify(timings),
-          JSON.stringify(artifacts.cost),
-          this.geminiService.getPrimaryModel(),
-          job.id,
-        ],
+         SET status = 'completed', stage = 'planned', progress = 100, finished_at = NOW()
+         WHERE bull_job_id = $1`,
+        [job.id],
       );
-
-      this.logger.log(`Finished indexing ${assetId} in ${artifacts.cost.indexDurationMs}ms`);
+      this.cleanupJobScratch(scratch);
+      this.logger.log(`[F2] Planned child unit jobs for asset ${assetId}`);
+      return;
     } catch (err: unknown) {
       let message = err instanceof Error ? err.message : String(err);
       if (
@@ -1457,14 +1270,7 @@ export class IndexingProcessor extends WorkerHost {
         );
       }
 
-      // Cleanup ephemeral scratch workspace completely on failure (never leave downloaded master or orphaned frames)
-      const scratchDir = path.join(this.scratchDir, String(jobId));
-      if (fs.existsSync(scratchDir)) {
-        try {
-          fs.rmSync(scratchDir, { recursive: true, force: true });
-          this.logger.log(`Cleaned up ephemeral scratch directory after failure: ${scratchDir}`);
-        } catch { /* ignore */ }
-      }
+      this.cleanupJobScratch(path.join(this.scratchDir, String(jobId)));
 
       // CRITICAL: Rethrow error so BullMQ registers the failure, triggers backoff retries,
       // and properly transitions the job to failed / dead-letter status.
@@ -1484,6 +1290,302 @@ export class IndexingProcessor extends WorkerHost {
     this.logger.error(
       `BullMQ job ${job.id} (asset: ${aid}) failed after ${job.attemptsMade} attempts: ${err.message}`,
     );
+  }
+
+  private async completeUnitJob(job: Job, extra: Record<string, unknown> = {}): Promise<void> {
+    await this.db.query(
+      `UPDATE indexing_jobs
+       SET status = 'completed', stage = 'completed', progress = 100, finished_at = NOW()
+       WHERE bull_job_id = $1`,
+      [job.id],
+    );
+    void extra;
+  }
+
+  private async failUnitJob(
+    job: Job,
+    envelope: FactoryJobEnvelope,
+    unitId: string,
+    err: unknown,
+  ): Promise<void> {
+    const message = err instanceof Error ? err.message : String(err);
+    await this.unitsService.markUnitFailed(envelope.asset_id, unitId, message);
+    await this.db.query(
+      `UPDATE indexing_jobs SET status = 'failed', stage = 'failed', error = $1, finished_at = NOW() WHERE bull_job_id = $2`,
+      [message, job.id],
+    );
+  }
+
+  private async delayJob(job: Job, ms = 4000): Promise<never> {
+    if (this.scheduler?.releaseSlot) {
+      await this.scheduler.releaseSlot(String(job.id || '')).catch(() => undefined);
+    }
+    if (typeof job.moveToDelayed === 'function') {
+      await job.moveToDelayed(Date.now() + ms, job.token);
+    }
+    throw new DelayedError();
+  }
+
+  private async dispatchChildUnitJobs(
+    envelope: FactoryJobEnvelope,
+    completedUnits: Set<string>,
+  ): Promise<void> {
+    if (!this.indexingService?.enqueueAsset) {
+      this.logger.warn(
+        `[F2] No IndexingService; planned units for ${envelope.asset_id} were not enqueued as child jobs`,
+      );
+      return;
+    }
+    const units = (await this.unitsService.getUnits?.(envelope.asset_id)) || [];
+    for (const unit of units) {
+      if (completedUnits.has(unit.unit_id) || unit.status === 'completed') continue;
+      await this.indexingService.enqueueAsset({
+        job_type: unitTypeToJobType(unit.unit_type),
+        asset_id: envelope.asset_id,
+        user_id: envelope.user_id,
+        source: envelope.source,
+        segment:
+          unit.start_s != null
+            ? { start_s: Number(unit.start_s), end_s: Number(unit.end_s) }
+            : null,
+        priority: envelope.priority,
+        processing_config: {
+          unitId: unit.unit_id,
+          forceReindex: envelope.processing_config?.forceReindex,
+        },
+      });
+    }
+  }
+
+  private async executeAnalyzeFrames(
+    job: Job<IndexingJobData | FactoryJobEnvelope>,
+    envelope: FactoryJobEnvelope,
+  ): Promise<void> {
+    const assetId = envelope.asset_id;
+    const unitId = envelope.processing_config?.unitId || `scene_${envelope.segment ? 'x' : '0'}`;
+    const resolvedUnitId =
+      envelope.processing_config?.unitId ||
+      (envelope.segment ? undefined : 'scene_0');
+    const unit =
+      (resolvedUnitId ? await this.unitsService.getUnit(assetId, resolvedUnitId) : null) ||
+      (await this.unitsService.getUnits(assetId)).find(
+        (u) =>
+          u.unit_type === 'analyze_frames' &&
+          Number(u.start_s) === envelope.segment?.start_s,
+      );
+    const sceneUnitId = unit?.unit_id || resolvedUnitId || unitId;
+    if (unit?.status === 'completed') {
+      await this.completeUnitJob(job);
+      return;
+    }
+
+    const meta = unit?.metadata || {};
+    const scene: SceneBoundary = {
+      sceneId: Number(meta.sceneId ?? 0),
+      startTime: Number(meta.startTime ?? envelope.segment?.start_s ?? 0),
+      endTime: Number(meta.endTime ?? envelope.segment?.end_s ?? 0),
+      representativeTimestamp: Number(meta.representativeTimestamp ?? 0),
+      keyframePath: String(meta.keyframePath || ''),
+      keyframes: Array.isArray(meta.keyframes) ? meta.keyframes : [],
+    };
+    const scratch = path.join(this.scratchDir, String(envelope.job_id || job.id));
+    try {
+      const frames = materializeKeyframeFiles(scene.keyframes || [], this.storageRoot, scratch);
+      const analysisScene = { ...scene, keyframes: frames };
+      const res = await this.geminiService.analyzeFrames([analysisScene]);
+      const observations = (res.observations || []).filter(
+        (obs) =>
+          obs.timestamp >= scene.startTime - 0.05 && obs.timestamp <= scene.endTime + 0.05,
+      );
+      const kept = observations.length > 0 ? observations : res.observations || [];
+      await this.persistSceneCheckpoint(assetId, envelope.user_id, scene, kept);
+      await this.unitsService.markUnitCompleted(assetId, sceneUnitId, {
+        observations: kept,
+        observationsCount: kept.length,
+      });
+      await this.completeUnitJob(job);
+    } catch (err) {
+      await this.failUnitJob(job, envelope, sceneUnitId, err);
+      throw err;
+    } finally {
+      this.cleanupJobScratch(scratch);
+    }
+  }
+
+  private async executeGeminiVideo(
+    job: Job<IndexingJobData | FactoryJobEnvelope>,
+    envelope: FactoryJobEnvelope,
+  ): Promise<void> {
+    const assetId = envelope.asset_id;
+    const unit = await this.unitsService.getUnit(assetId, 'gemini_video');
+    if (unit?.status === 'completed') {
+      await this.completeUnitJob(job);
+      return;
+    }
+    const jobId = envelope.job_id || job.id || assetId;
+    const scratch = path.join(this.scratchDir, String(jobId));
+    fs.mkdirSync(scratch, { recursive: true });
+    const provider = envelope.source.provider || 'upload';
+    const remoteId = envelope.source.remoteId;
+    const connectorAccountId = envelope.source.connectorAccountId;
+    const sourcePath = envelope.source.sourcePath || '';
+    const originalFilename = envelope.source.originalFilename || 'source.mp4';
+    const isRemoteMaster = provider !== 'upload' && Boolean(remoteId);
+    let effectiveSourcePath = sourcePath;
+    try {
+      if (isRemoteMaster) {
+        const sourceExt = path.extname(originalFilename) || '.mp4';
+        effectiveSourcePath = path.join(scratch, `source${sourceExt}`);
+        this.checkScratchCapacity(scratch, envelope.source.fileSize || 0, 'full_download');
+        const connector = this.connectorRegistry.get(
+          provider === 'drive' ? 'google_drive' : provider,
+        );
+        const auth = await this.connectorsService.getAuthContext(
+          connectorAccountId!,
+          envelope.user_id,
+        );
+        await connector.downloadAsset(auth, remoteId!, effectiveSourcePath);
+      } else if (!fs.existsSync(sourcePath)) {
+        throw new Error(`Source video file not found on disk: ${sourcePath}`);
+      }
+      const res = await this.geminiService.analyzeVideo(effectiveSourcePath);
+      const analysis = res.analysis || { video_summary: '', key_themes: [], segments: [] };
+      if (analysis.segments) {
+        for (const gSeg of analysis.segments) {
+          await this.db.query(
+            `INSERT INTO media_observations (asset_id, user_id, observation_type, timestamp_start, timestamp_end, raw_data)
+             VALUES ($1, $2, 'gemini_segment', $3, $4, $5)`,
+            [assetId, envelope.user_id, gSeg.start_time, gSeg.end_time, JSON.stringify(gSeg)],
+          );
+        }
+      }
+      await this.unitsService.markUnitCompleted(assetId, 'gemini_video', { analysis });
+      await this.completeUnitJob(job);
+    } catch (err) {
+      await this.failUnitJob(job, envelope, 'gemini_video', err);
+      throw err;
+    } finally {
+      this.cleanupJobScratch(scratch);
+    }
+  }
+
+  private async executeEmbed(
+    job: Job<IndexingJobData | FactoryJobEnvelope>,
+    envelope: FactoryJobEnvelope,
+  ): Promise<void> {
+    const assetId = envelope.asset_id;
+    const unitId = envelope.processing_config?.unitId || 'embed';
+    const unit = await this.unitsService.getUnit(assetId, unitId);
+    if (unit?.status === 'completed') {
+      await this.completeUnitJob(job);
+      return;
+    }
+    const sceneId = Number(unit?.metadata?.sceneId ?? String(unitId).replace('embed_scene_', ''));
+    const sceneUnit = await this.unitsService.getUnit(assetId, `scene_${sceneId}`);
+    if (!sceneUnit || sceneUnit.status !== 'completed') {
+      await this.delayJob(job);
+    }
+    const start = Number(unit?.start_s ?? envelope.segment?.start_s ?? 0);
+    const end = Number(unit?.end_s ?? envelope.segment?.end_s ?? 0);
+    const segId = `${assetId}_seg_${String(sceneId + 1).padStart(3, '0')}`;
+    const segRes = await this.db.query<{
+      title: string;
+      description: string;
+      visual_objects: string[];
+      actions: string[];
+      transcript_text: string;
+      on_screen_text: string[];
+    }>(
+      `SELECT title, description, visual_objects, actions, transcript_text, on_screen_text
+       FROM media_segments WHERE id = $1`,
+      [segId],
+    );
+    const row = segRes.rows[0];
+    const transRes = await this.db.query<{ raw_data: any }>(
+      `SELECT raw_data FROM media_observations
+       WHERE asset_id = $1 AND observation_type = 'transcript'
+         AND timestamp_start < $3 AND timestamp_end > $2`,
+      [assetId, start, end],
+    );
+    const transcript = transRes.rows
+      .map((r) => (typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data))
+      .map((c) => (c?.text || '').trim())
+      .filter(Boolean)
+      .join(' ');
+    const embeddingText = [
+      row?.title,
+      row?.description,
+      (row?.visual_objects || []).join(', '),
+      (row?.actions || []).join(', '),
+      transcript || row?.transcript_text,
+      (row?.on_screen_text || []).join(' '),
+    ]
+      .filter(Boolean)
+      .join('. ');
+    try {
+      const embedded = await this.mergerService.generateEmbeddingForText(
+        embeddingText || `Scene ${sceneId} ${start}s-${end}s`,
+      );
+      const dim = embedded.values.length;
+      const embeddingStr = `[${embedded.values.join(',')}]`;
+      if (row) {
+        await this.db.query(
+          `UPDATE media_segments
+           SET embedding = CASE WHEN $2 = 3072 THEN $1::vector ELSE embedding END,
+               embedding_384 = CASE WHEN $2 = 384 THEN $1::vector ELSE embedding_384 END,
+               embedding_dim = $2,
+               transcript_text = COALESCE(NULLIF($3, ''), transcript_text)
+           WHERE id = $4`,
+          [embeddingStr, dim, transcript, segId],
+        );
+      }
+      await this.unitsService.markUnitCompleted(assetId, unitId, {
+        embeddingDim: dim,
+        segmentId: segId,
+      });
+      await this.completeUnitJob(job);
+    } catch (err) {
+      await this.failUnitJob(job, envelope, unitId, err);
+      throw err;
+    }
+  }
+
+  private async executeFinalize(
+    job: Job<IndexingJobData | FactoryJobEnvelope>,
+    envelope: FactoryJobEnvelope,
+  ): Promise<void> {
+    const assetId = envelope.asset_id;
+    const pending = await this.unitsService.pendingSiblingUnits(assetId, 'finalize');
+    if (pending > 0) {
+      await this.delayJob(job, 6000);
+    }
+    const hasFailed = await this.unitsService.hasFailedUnits(assetId);
+    const finalStatus = hasFailed ? 'partially_indexed' : 'indexed';
+    const finalStage = hasFailed ? 'partially_indexed' : 'completed';
+    const counts = await this.db.query<{ scenes: string; frames: string }>(
+      `SELECT
+         (SELECT COUNT(*)::int FROM media_segments WHERE asset_id = $1) AS scenes,
+         (SELECT COUNT(*)::int FROM media_observations WHERE asset_id = $1 AND observation_type = 'frame') AS frames`,
+      [assetId],
+    );
+    await this.unitsService.markUnitCompleted(assetId, 'finalize');
+    await this.db.query(
+      `UPDATE media_assets
+       SET status = $1, stage = $2, progress = 100,
+           frames_analyzed = COALESCE($3, frames_analyzed),
+           scene_count = COALESCE($4, scene_count),
+           availability = 'online', indexed_at = NOW(), updated_at = NOW()
+       WHERE id = $5`,
+      [
+        finalStatus,
+        finalStage,
+        Number(counts.rows[0]?.frames || 0),
+        Number(counts.rows[0]?.scenes || 0),
+        assetId,
+      ],
+    );
+    await this.completeUnitJob(job);
+    this.logger.log(`[F2] Finalized asset ${assetId} as ${finalStatus}`);
   }
 
   private async persistTranscriptObservations(
@@ -1520,24 +1622,25 @@ export class IndexingProcessor extends WorkerHost {
     const objects = Array.from(new Set(observations.flatMap((o) => o.objects || [])));
     const actions = Array.from(new Set(observations.flatMap((o) => o.activity || [])));
     const onScreen = Array.from(new Set(observations.flatMap((o) => o.onScreenText || [])));
-    const segmentId = `${assetId}_partial_${scene.sceneId}`;
+    const segmentId = `${assetId}_seg_${String(scene.sceneId + 1).padStart(3, '0')}`;
 
     await this.db.query(
       `INSERT INTO media_segments (
          id, asset_id, user_id, start_time, end_time, title, description,
          visual_objects, actions, transcript_text, on_screen_text,
-         keyframe_path, sources, analysis_version
+         keyframe_path, sources, analysis_version, keyframe_paths
        ) VALUES (
          $1, $2, $3, $4, $5, $6, $7,
          $8, $9, $10, $11,
-         $12, $13, $14
+         $12, $13, $14, $15::jsonb
        )
        ON CONFLICT (id) DO UPDATE SET
          description = EXCLUDED.description,
          visual_objects = EXCLUDED.visual_objects,
          actions = EXCLUDED.actions,
          on_screen_text = EXCLUDED.on_screen_text,
-         keyframe_path = EXCLUDED.keyframe_path`,
+         keyframe_path = EXCLUDED.keyframe_path,
+         keyframe_paths = EXCLUDED.keyframe_paths`,
       [
         segmentId,
         assetId,
@@ -1550,9 +1653,16 @@ export class IndexingProcessor extends WorkerHost {
         actions,
         '',
         onScreen,
-        scene.keyframePath || '',
+        scene.keyframePath ? this.locator(scene.keyframePath) : '',
         ['visual'],
         ANALYSIS_VERSION,
+        JSON.stringify(
+          (scene.keyframes || []).map((kf) => ({
+            timestamp: kf.timestamp,
+            path: kf.path ? this.locator(kf.path) : kf.path,
+            data: (kf as { data?: string }).data,
+          })),
+        ),
       ],
     );
 
@@ -1593,7 +1703,14 @@ export class IndexingProcessor extends WorkerHost {
        SET proxy_path = $1, thumbnail_path = $2, original_path = $3, original_deleted = $4,
            thumbnail_data = COALESCE($5, thumbnail_data)
        WHERE id = $6`,
-      [proxyExists ? proxyPath : null, thumbnailPath, sourcePath, Boolean(isRemoteMaster), thumbnailData, assetId],
+      [
+        proxyExists ? this.locator(proxyPath) : null,
+        thumbnailPath ? this.locator(thumbnailPath) : null,
+        sourcePath,
+        Boolean(isRemoteMaster),
+        thumbnailData,
+        assetId,
+      ],
     );
 
     const keptSegmentIds: string[] = [];
@@ -1650,7 +1767,7 @@ export class IndexingProcessor extends WorkerHost {
           seg.actions || [],
           seg.transcriptText || '',
           seg.onScreenText || [],
-          seg.keyframePath || '',
+          seg.keyframePath ? this.locator(seg.keyframePath) : '',
           seg.sources || [],
           seg.provider || 'google',
           seg.model || 'gemini-2.5-flash',
@@ -1658,7 +1775,13 @@ export class IndexingProcessor extends WorkerHost {
           is384 ? embeddingStr : null,
           dim || 3072,
           seg.analysisVersion || 2,
-          JSON.stringify(seg.keyframePaths || []),
+          JSON.stringify(
+            (seg.keyframePaths || []).map((kf: { timestamp: number; path: string; data?: string }) => ({
+              timestamp: kf.timestamp,
+              path: kf.path ? this.locator(kf.path) : kf.path,
+              data: kf.data,
+            })),
+          ),
         ],
       );
       keptSegmentIds.push(seg.id);
@@ -1715,8 +1838,11 @@ export class IndexingProcessor extends WorkerHost {
 
     if (donorRes.rows.length > 0) {
       const d = donorRes.rows[0];
+      const donorProxyAbs = resolveStorageLocator(d.proxy_path, this.storageRoot);
       const donorProxyExists =
-        Boolean(d.proxy_path) && fs.existsSync(d.proxy_path) && fs.statSync(d.proxy_path).size > 0;
+        Boolean(donorProxyAbs) &&
+        fs.existsSync(donorProxyAbs!) &&
+        fs.statSync(donorProxyAbs!).size > 0;
       const clonedProxyStatus = donorProxyExists
         ? 'ready'
         : d.proxy_status === 'skipped'
@@ -1737,8 +1863,8 @@ export class IndexingProcessor extends WorkerHost {
           d.fps,
           d.codec,
           d.has_audio,
-          donorProxyExists ? d.proxy_path : null,
-          d.thumbnail_path,
+          donorProxyExists ? this.locator(donorProxyAbs!) : null,
+          d.thumbnail_path ? this.locator(d.thumbnail_path) : d.thumbnail_path,
           d.frames_analyzed,
           d.scene_count,
           donorId,

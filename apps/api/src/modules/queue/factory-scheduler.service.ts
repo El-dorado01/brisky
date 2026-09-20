@@ -111,13 +111,18 @@ export class FactorySchedulerService {
     if (typeof this.db.getClient !== 'function') {
       const peek = await this.checkSlotAvailability(userId, priority);
       if (!peek.canRun) return peek;
-      await this.db.query(
+      const claimed = await this.db.query(
         `UPDATE indexing_jobs
          SET status = 'active', stage = 'active', waiting_reason = NULL,
-             started_at = COALESCE(started_at, NOW()), updated_at = NOW()
-         WHERE bull_job_id = $1`,
+             started_at = COALESCE(started_at, NOW()), last_heartbeat_at = NOW(),
+             updated_at = NOW()
+         WHERE bull_job_id = $1 AND status = 'waiting'
+         RETURNING id`,
         [bullJobId],
       );
+      if (!claimed.rowCount) {
+        return { canRun: false, waitingReason: 'global_capacity' };
+      }
       return { canRun: true };
     }
 
@@ -131,20 +136,43 @@ export class FactorySchedulerService {
          WHERE status = 'active'
          GROUP BY user_id`,
       );
-      const decision = this.evaluateCounts(activeRes.rows, userId, priority);
+      await client.query(
+        `UPDATE indexing_jobs
+         SET status = 'failed', stage = 'failed',
+             error = 'Stale slot: no heartbeat from worker',
+             finished_at = NOW(), updated_at = NOW()
+         WHERE status = 'active'
+           AND COALESCE(last_heartbeat_at, started_at, created_at) < NOW() - INTERVAL '15 minutes'`,
+      );
+
+      const refreshed = await client.query<{ user_id: string; count: string }>(
+        `SELECT user_id, COUNT(*)::int AS count
+         FROM indexing_jobs
+         WHERE status = 'active'
+         GROUP BY user_id`,
+      );
+      const decision = this.evaluateCounts(refreshed.rows, userId, priority);
       if (!decision.canRun) {
         await client.query('COMMIT');
         return decision;
       }
 
-      await client.query(
+      const claimed = await client.query(
         `UPDATE indexing_jobs
          SET status = 'active', stage = 'active', waiting_reason = NULL,
-             started_at = COALESCE(started_at, NOW()), updated_at = NOW()
-         WHERE bull_job_id = $1 OR asset_id = $2`,
-        [bullJobId, assetId],
+             started_at = COALESCE(started_at, NOW()), last_heartbeat_at = NOW(),
+             updated_at = NOW()
+         WHERE bull_job_id = $1 AND status = 'waiting'
+         RETURNING id`,
+        [bullJobId],
       );
       await client.query('COMMIT');
+      if (!claimed.rowCount) {
+        this.logger.warn(
+          `claimSlot matched 0 waiting rows for bull_job_id=${bullJobId} asset=${assetId}`,
+        );
+        return { canRun: false, waitingReason: 'global_capacity' };
+      }
       this.logger.debug(
         `Claimed factory slot for job ${bullJobId} (asset ${assetId}, user ${userId}, ${priority})`,
       );
@@ -159,6 +187,14 @@ export class FactorySchedulerService {
     } finally {
       client.release();
     }
+  }
+
+  async heartbeat(bullJobId: string): Promise<void> {
+    await this.db.query(
+      `UPDATE indexing_jobs SET last_heartbeat_at = NOW(), updated_at = NOW()
+       WHERE bull_job_id = $1 AND status = 'active'`,
+      [bullJobId],
+    );
   }
 
   async releaseSlot(bullJobId: string, markFailed = false, errorMsg?: string): Promise<void> {
@@ -187,18 +223,17 @@ export class FactorySchedulerService {
     await this.db.query(
       `UPDATE indexing_jobs
        SET waiting_reason = $1, stage = $2, updated_at = NOW()
-       WHERE (bull_job_id = $3 OR asset_id = $4)
-         AND status = 'waiting'`,
-      [reason, `waiting (${reason})`, bullJobId, assetId],
+       WHERE bull_job_id = $3 AND status = 'waiting'`,
+      [reason, `waiting (${reason})`, bullJobId],
     );
   }
 
-  async clearWaitingReason(bullJobId: string, assetId: string): Promise<void> {
+  async clearWaitingReason(bullJobId: string, _assetId?: string): Promise<void> {
     await this.db.query(
       `UPDATE indexing_jobs
        SET waiting_reason = NULL, updated_at = NOW()
-       WHERE (bull_job_id = $1 OR asset_id = $2)`,
-      [bullJobId, assetId],
+       WHERE bull_job_id = $1 AND status = 'waiting'`,
+      [bullJobId],
     );
   }
 

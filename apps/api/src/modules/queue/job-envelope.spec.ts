@@ -38,7 +38,7 @@ describe('Factory Job Envelope Seam (Phase F1)', () => {
     };
 
     const normalized = normalizeJobEnvelope(envelope);
-    expect(normalized.job_type).toBe('index_asset');
+    expect(normalized.job_type).toBe('plan_asset');
     expect(normalized.asset_id).toBe('vid_456');
     expect(normalized.priority).toBe('interactive');
     expect(normalized.source.provider).toBe('google_drive');
@@ -58,7 +58,7 @@ describe('Factory Job Envelope Seam (Phase F1)', () => {
     };
 
     const normalized = normalizeJobEnvelope(legacyData);
-    expect(normalized.job_type).toBe('index_asset');
+    expect(normalized.job_type).toBe('plan_asset');
     expect(normalized.asset_id).toBe('vid_legacy_1');
     expect(normalized.user_id).toBe('user_1');
     expect(normalized.priority).toBe('normal');

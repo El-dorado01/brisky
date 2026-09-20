@@ -57,6 +57,25 @@ describe('BullmqMediaFactory (Phase F7 Seam 1)', () => {
       );
     });
 
+    it('passes envelope.job_id through as the BullMQ jobId so claimSlot can match the waiting row', async () => {
+      const envelope: FactoryJobEnvelope = {
+        job_id: 'job_explicit_1',
+        asset_id: 'asset_f7_2',
+        user_id: 'user_1',
+        job_type: 'generate_proxy',
+        priority: 'interactive',
+        source: { provider: 'google_drive', fileSize: 1 },
+      };
+
+      await factory.dispatch(envelope);
+
+      expect(mockQueue.add).toHaveBeenCalledWith(
+        'generate_proxy',
+        envelope,
+        expect.objectContaining({ jobId: 'job_explicit_1' }),
+      );
+    });
+
     it('deduplicates identical waiting jobs of the same type and segment', async () => {
       const existingJob = {
         id: 'old_job_1',

@@ -450,30 +450,30 @@ export class ConnectorsService {
 
     const { provider, sync_cursor } = accRes.rows[0];
 
-    // If no cursor exists yet, fallback to full sync
-    if (!sync_cursor) {
-      this.logger.log(`No sync_cursor found for account ${accountId}; running full sync`);
-      const fullRes = await this.syncAccount(accountId, userId);
-      return {
-        addedCount: fullRes.queued,
-        modifiedCount: 0,
-        renamedCount: 0,
-        deletedCount: fullRes.archived,
-      };
-    }
-
-    const connector = this.connectorRegistry.get(provider);
-    if (!connector.getChanges) {
-      this.logger.log(`Connector ${provider} does not implement getChanges; skipping incremental sync`);
-      return { addedCount: 0, modifiedCount: 0, renamedCount: 0, deletedCount: 0 };
-    }
-
-    const selectedFolders = Array.isArray(accRes.rows[0].selected_folders)
-      ? accRes.rows[0].selected_folders
-      : [];
-    const folderIds = selectedFolders.map((f) => f.id);
-
     try {
+      // If no cursor exists yet, fallback to full sync
+      if (!sync_cursor) {
+        this.logger.log(`No sync_cursor found for account ${accountId}; running full sync`);
+        const fullRes = await this.syncAccount(accountId, userId);
+        return {
+          addedCount: fullRes.queued,
+          modifiedCount: 0,
+          renamedCount: 0,
+          deletedCount: fullRes.archived,
+        };
+      }
+
+      const connector = this.connectorRegistry.get(provider);
+      if (!connector.getChanges) {
+        this.logger.log(`Connector ${provider} does not implement getChanges; skipping incremental sync`);
+        return { addedCount: 0, modifiedCount: 0, renamedCount: 0, deletedCount: 0 };
+      }
+
+      const selectedFolders = Array.isArray(accRes.rows[0].selected_folders)
+        ? accRes.rows[0].selected_folders
+        : [];
+      const folderIds = selectedFolders.map((f) => f.id);
+
       const auth = await this.getAuthContext(accountId, userId);
       const changes = await connector.getChanges(auth, sync_cursor);
 

@@ -142,32 +142,12 @@ export class IntelligenceMergerService {
         .filter(Boolean)
         .join('. ');
 
-      this.logger.log(`Embedding segment ${i + 1} (${start}s-${end}s)`);
-      const preferredProvider = this.configService.get<string>(
-        'EMBEDDING_PROVIDER',
-        'gemini',
-      );
-      let embedded: { values: number[]; usage: ModelUsage };
-      if (
-        preferredProvider === 'local' &&
-        this.localEmbeddingService.isAvailable()
-      ) {
-        try {
-          embedded =
-            await this.localEmbeddingService.generateEmbedding(embeddingText);
-        } catch (localErr) {
-          this.logger.warn(
-            `Local embedding failed, falling back to Gemini: ${localErr}`,
-          );
-          embedded = await this.geminiService.generateEmbedding(embeddingText);
-        }
-      } else {
-        embedded = await this.geminiService.generateEmbedding(embeddingText);
-      }
+      this.logger.log(`Embedding segment ${scene.sceneId + 1} (${start}s-${end}s)`);
+      const embedded = await this.generateEmbeddingForText(embeddingText);
       embeddingUsages.push(embedded.usage);
 
       segments.push({
-        id: `${assetId}_seg_${String(i + 1).padStart(3, '0')}`,
+        id: `${assetId}_seg_${String(scene.sceneId + 1).padStart(3, '0')}`,
         assetId,
         startTime: start,
         endTime: end,
@@ -281,6 +261,26 @@ export class IntelligenceMergerService {
       `Persisted hybrid intelligence for ${assetId} to ${scratchDir}`,
     );
     return artifacts;
+  }
+
+  async generateEmbeddingForText(embeddingText: string): Promise<{ values: number[]; usage: ModelUsage }> {
+    const preferredProvider = this.configService.get<string>(
+      'EMBEDDING_PROVIDER',
+      'gemini',
+    );
+    if (
+      preferredProvider === 'local' &&
+      this.localEmbeddingService.isAvailable()
+    ) {
+      try {
+        return await this.localEmbeddingService.generateEmbedding(embeddingText);
+      } catch (localErr) {
+        this.logger.warn(
+          `Local embedding failed, falling back to Gemini: ${localErr}`,
+        );
+      }
+    }
+    return this.geminiService.generateEmbedding(embeddingText);
   }
 
   private addSpatialHints(object: string, contextDesc: string): string {

@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -14,7 +14,7 @@ export class ProxyCacheService {
   constructor(
     private readonly configService: ConfigService,
     private readonly db: DatabaseService,
-    customProxyDir?: string,
+    @Optional() customProxyDir?: string,
   ) {
     const storageRoot = resolveFromRepo(
       this.configService.get<string>('STORAGE_ROOT', './storage'),
