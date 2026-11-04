@@ -1696,3 +1696,18 @@ completed at 10043 ms, 82 chunks / 288000 PCM bytes. This is one TTS measurement
 not end-to-end conversational latency or a production benchmark. API restarted
 healthy with workers and automatic polling off. Existing cumulative $30 allowance
 and journal retained; no personal media or microphone audio sent to Gemini.
+
+### Thank-you voice HTTP 400 and application-owned call ending
+
+Owner reported a disconnect after saying thank you. Runtime logs showed Meta
+HTTP 400, not a detected explicit farewell. The acknowledgement path incorrectly
+used tool_choice=none; official Meta Chat Completions docs permit only auto.
+A generated-only comparison reproduced HTTP 400 with none and returned HTTP 200
+when tools/tool_choice were omitted, under the unchanged cumulative allowance.
+Acknowledgements now omit tools; the application no longer advertises end_call
+in normal dialogue, and ignores fabricated end_call responses when the user has
+not explicitly ended the call. The deterministic farewell path remains for clear
+end-session requests. Regression tests cover plain thanks, mixed requests, genuine
+farewells, and erroneous model hang-up attempts. This fixes a concrete request
+bug, not all possible voice/provider failures. Source:
+https://dev.meta.ai/docs/tool-calling .
