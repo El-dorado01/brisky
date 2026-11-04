@@ -1669,3 +1669,10 @@ the same TTS provider. Local recording configuration selects Kore and retains
 Meta vision/embeddings/transcription, the $30 allowance and existing journal.
 Updated demo narration and judge reproduction settings. No paid calls or existing
 personal media sent as part of offline implementation checks.
+
+Recording-profile acceptance: offline voice/profile checks passed, API and web
+started with healthy PostgreSQL/Redis and no indexing workers. Authenticated
+voice config returned meta-mms plus ttsProvider=gemini. One generated-only Kore
+settings preview returned a valid 334436-byte WAV through the live speech service;
+temporary acceptance session removed. Real microphone conversation and listening
+across all six voices remain owner acceptance, not established by this preview.
