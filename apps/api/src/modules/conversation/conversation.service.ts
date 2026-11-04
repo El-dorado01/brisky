@@ -25,7 +25,10 @@ export function validateConversation(raw:unknown):ConversationRequest {
 export function followupSource(input:ConversationRequest):string|undefined {
   const latest=input.history.at(-1)!.content;
   const ids=[...new Set(input.selection.map(s=>s.assetId))];
-  if(requestsNewLibraryMoment(latest)||input.history.length<3||ids.length!==1||/\b(other|another|elsewhere|library|archive|collection|across|all (?:my )?(?:videos|clips|recordings))\b/i.test(latest))return undefined;
+  if(input.history.length<3||ids.length!==1)return undefined;
+  // "Another hug in this clip" is explicitly scoped despite the word another.
+  if(/\b(?:in|within|from|throughout) (?:this|that|the same|the selected|the current) (?:video|clip|recording|scene)\b/i.test(latest))return ids[0];
+  if(requestsNewLibraryMoment(latest)||/\b(other|another|elsewhere|library|archive|collection|across|all (?:my )?(?:videos|clips|recordings))\b/i.test(latest))return undefined;
   // A relative clause ("a lady that throws...") does not refer to the old clip.
   // Require an actual anaphor or an explicitly referenced source, not bare "that".
   return /\b(the two|those two|they|them|it|(?:this|that|same) (?:video|clip|recording|scene)|(?:before|after|around|following) (?:this|that))\b/i.test(latest)?ids[0]:undefined;
@@ -38,6 +41,9 @@ export function requestsNewLibraryMoment(text:string):boolean {
   return (described||quoted)&&!scoped&&(quoted||!/\b(the two|those two|they|them)\b/i.test(text));
 }
 export function requestsFootageSearch(text:string):boolean {
+  // Whole utterances only: a usage question or thanks must not force a lookup
+  // merely because it contains "search"/"find". Mixed requests still search.
+  if(/^(?:how does (?:(?:brisky|your|the) )?search(?:ing)? work|what can (?:you|brisky) (?:find|search for)|(?:thank you|thanks) for (?:helping me )?(?:find|finding) (?:this|that|the) (?:clip|moment|video))[?!.\s]*$/i.test(text.trim()))return false;
   return requestsNewLibraryMoment(text)||/\b(find|search|locate)\b/i.test(text)||/\b(exact )?timestamps?\b/i.test(text)||/\b(?:moment|clip|video|recording|scene)\b.{0,40}\b(?:says?|said|hear|quote|line)\b/i.test(text);
 }
 
@@ -60,7 +66,7 @@ export class ConversationService {
       const context:SpaceAiInput={sourceMetadata,phase:'plan',history:input.history,evidence,selectionNotes:input.selection.map(s=>({title:s.title||'',notes:s.notes||''})),searchStatus:'not_requested'};
       const latest=input.history.at(-1)!.content,sourceIds=[...new Set(input.selection.map(s=>s.assetId))];
       const wholeReview=/\b(whole|full|entire)\b.*\b(clip|video|recording)\b|\b(clip|video|recording)\b.*\b(whole|full|entire)\b/i.test(latest)&&/\b(narrate|describe|summari[sz]e|happened|detail|explain|review)\b/i.test(latest);
-      if(wholeReview&&sourceIds.length===1){
+      if(wholeReview&&sourceIds.length===1&&!requestsFootageSearch(latest)){
         const duration=sourceMetadata.find(source=>source.assetId===sourceIds[0])?.durationS;
         const wholeEvidence=duration?await this.evidence(userId,[{assetId:sourceIds[0],startS:0,endS:duration}],true):[];
         let covered=0;
@@ -80,7 +86,7 @@ export class ConversationService {
       const usages=plan.usage?[plan.usage]:[];
       if(plan.action==='reply')return {text:plan.text,citations:[],evidence:[],searchStatus:'not_requested',usage:usages};
       if(plan.action==='search'){
-        const search=await this.media.searchDetailed(plan.searchQuery,followupSource(input),12,userId,'verify',signal);
+        const search=await this.media.searchDetailed(plan.searchQuery,followupSource(input),12,userId,'verify',signal,undefined,latest);
         // Search results may contain synthetic segment IDs. Re-read actual owned index rows
         // within their source ranges rather than persisting fabricated segment references.
         // Keep assessments attached, including negative ones. A rejected exact
@@ -88,8 +94,15 @@ export class ConversationService {
         // The grounded answer selects citations; these are not automatic matches.
         const ranges=search.results.slice(0,12).map(r=>({assetId:r.assetId,startS:r.startTime,endS:r.endTime}));
         const retrieved=contextualSpaceEvidence(await this.evidence(userId,ranges),search.results);
-        const combined=[...retrieved,...evidence];
-        evidence=combined.filter((e,i)=>combined.findIndex(other=>other.assetId===e.assetId&&other.startS===e.startS&&other.endS===e.endS)===i).slice(0,20).map((e,i)=>({...e,id:`e${i+1}`}));
+        // Old selected excerpts are planning context, not results of the new search.
+        // Keeping them here lets an empty search turn into an unrelated citation.
+        evidence=retrieved.filter((e,i)=>retrieved.findIndex(other=>other.assetId===e.assetId&&other.startS===e.startS&&other.endS===e.endS)===i).slice(0,20).map((e,i)=>({...e,id:`e${i+1}`}));
+        const resultIds=[...new Set(evidence.map(e=>e.assetId))];
+        const resultSources=resultIds.length?await this.db.query(
+          'SELECT id,duration,original_filename FROM public.media_assets WHERE user_id=$1 AND id=ANY($2::varchar[]) AND duration>0',
+          [userId,resultIds]):{rows:[]};
+        context.sourceMetadata=resultSources.rows.filter(row=>resultIds.includes(row.id)&&Number.isFinite(Number(row.duration))&&Number(row.duration)>0)
+          .map(row=>({assetId:row.id,durationS:Number(row.duration),filename:row.original_filename}));
         context.searchStatus=search.searchStatus==='incomplete'||search.searchStatus==='refining'||search.identitySearch?.status==='needs_clarification'?'incomplete':'complete';
       }
       context.phase='answer';context.evidence=evidence;

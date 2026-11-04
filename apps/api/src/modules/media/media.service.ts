@@ -1066,7 +1066,10 @@ export class MediaService implements OnModuleDestroy {
     phase: 'retrieve' | 'verify' = 'verify',
     signal?: AbortSignal,
     people?: {references?:string[];selections?:Array<{reference:string;personId:string}>},
+    originalRequest?: string,
   ): Promise<SearchResponse> {
+    const evidenceQuery=originalRequest&&originalRequest!==query
+      ? `Resolved search: ${query}\nOriginal user request (preserve constraints): ${originalRequest}` : query;
     const identityOptions=peopleSearchOptions(people);
     const retained = new Map<string, SearchResult>();
     const publish = (hits: SearchResult[]) => {
@@ -1085,7 +1088,7 @@ export class MediaService implements OnModuleDestroy {
             }
             return identities;
           }
-          return this.searchWithinDeadline(query, assetIdFilter, limit, userId);
+          return this.searchWithinDeadline(query, assetIdFilter, limit, userId,evidenceQuery);
         }, signal));
       if (response.identitySearch) return response;
       if (phase === 'retrieve') return { ...response, searchStatus: response.results.length ? 'refining' : 'complete',
@@ -1112,6 +1115,7 @@ export class MediaService implements OnModuleDestroy {
     assetIdFilter?: string,
     limit = 15,
     userId?: string,
+    evidenceQuery?: string,
   ): Promise<SearchResponse> {
     const trimmed = query.trim();
     if (!trimmed) {
@@ -1136,7 +1140,7 @@ export class MediaService implements OnModuleDestroy {
           .join(' | ')}`,
       );
       results = await this.searchCompoundMultiTopic(
-        trimmed,
+        evidenceQuery||trimmed,
         understood.subQueries,
         assetIdFilter,
         limit,
@@ -1151,7 +1155,7 @@ export class MediaService implements OnModuleDestroy {
         undefined,
         understood.aliases,
         targetEntity,
-        trimmed,
+        evidenceQuery||trimmed,
       );
     }
 

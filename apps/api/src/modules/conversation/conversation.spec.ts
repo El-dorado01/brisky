@@ -62,6 +62,14 @@ describe('Space conversational reply contract',()=>{
 });
 
 describe('Engine conversational orchestration',()=>{
+  it.each(['How does search work?','What can you find?','Thanks for helping me find that clip.'])(
+    'does not force a keyword-only media lookup for %s',query=>{
+      expect(requestsFootageSearch(query)).toBe(false);
+    });
+  it.each(['How does search work? Also find a hippo.','Thanks, find another clip.'])(
+    'preserves an actionable request mixed with ordinary conversation: %s',query=>{
+      expect(requestsFootageSearch(query)).toBe(true);
+    });
   function fixture(){
     const db={query:jest.fn().mockResolvedValue({rows:[row],rowCount:1})};
     const media={searchDetailed:jest.fn().mockResolvedValue({results:[{assetId:'asset',startTime:10,endTime:20}],searchStatus:'complete'})};
@@ -78,7 +86,7 @@ describe('Engine conversational orchestration',()=>{
     const f=fixture();f.ai.spaceConversation.mockReset().mockResolvedValueOnce({action:'answer',text:'',searchQuery:'',citedEvidenceIds:[]}).mockResolvedValueOnce(supported);
     const followup=[{role:'user' as const,content:'Find the staff strike'},{role:'assistant' as const,content:'Found that in this clip.'},{role:'user' as const,content:'find the exact timestamps where the two were hugging'}];
     await f.service.reply('owner',{history:followup,selection:[{assetId:'asset',startS:0,endS:20}]});
-    expect(f.media.searchDetailed).toHaveBeenCalledWith(followup[2].content,'asset',12,'owner','verify',undefined);
+    expect(f.media.searchDetailed).toHaveBeenCalledWith(followup[2].content,'asset',12,'owner','verify',undefined,undefined,followup[2].content);
   });
   it('keeps an explicit wider library request unfiltered',async()=>{
     const f=fixture();await f.service.reply('owner',{history:[...history,{role:'assistant',content:'Found it'},{role:'user',content:'Find them in other videos'}],selection:[{assetId:'asset',startS:0,endS:20}]});
@@ -102,6 +110,42 @@ describe('Engine conversational orchestration',()=>{
       expect(followupSource({history:[...history,{role:'assistant',content:'Found this clip.'},{role:'user',content:query}],
         selection:[{assetId:'asset',startS:0,endS:20}]})).toBe('asset');
     });
+  it.each(['Find another hug in this clip','Find a different action within the selected video'])(
+    'keeps explicit local scope despite broadening words: %s',query=>{
+      expect(followupSource({history:[...history,{role:'assistant',content:'Found this clip.'},{role:'user',content:query}],
+        selection:[{assetId:'asset',startS:0,endS:20}]})).toBe('asset');
+    });
+  it('does not reuse old selected evidence or duration when a new search returns nothing',async()=>{
+    const f=fixture();f.media.searchDetailed.mockResolvedValue({results:[],searchStatus:'incomplete'});
+    f.db.query.mockResolvedValue({rows:[{...row,id:'asset',duration:53}],rowCount:1});
+    f.ai.spaceConversation.mockReset().mockResolvedValueOnce({action:'search',searchQuery:'unseen elephant',text:'',citedEvidenceIds:[]})
+      .mockResolvedValue({...supported,text:'I could not establish that from this search.',citedEvidenceIds:[]});
+    const result=await f.service.reply('owner',{history:[...history,{role:'assistant',content:'Found the previous clip.'},
+      {role:'user',content:'Find an elephant in my collection'}],selection:[{assetId:'asset',startS:0,endS:20}]});
+    const answer=f.ai.spaceConversation.mock.calls[1][0] as SpaceAiInput;
+    expect(answer.evidence).toEqual([]);expect(answer.sourceMetadata).toEqual([]);
+    expect(result.citations).toEqual([]);expect(result.searchStatus).toBe('incomplete');
+  });
+  it('loads authenticated duration metadata for newly retrieved sources rather than the previous clip',async()=>{
+    const f=fixture();f.media.searchDetailed.mockResolvedValue({results:[{assetId:'new',startTime:10,endTime:20}],searchStatus:'complete'});
+    f.db.query.mockReset().mockResolvedValueOnce({rows:[{id:'asset',duration:53,original_filename:'old.mp4'}],rowCount:1})
+      .mockResolvedValueOnce({rows:[row]}).mockResolvedValueOnce({rows:[{...row,asset_id:'new'}]})
+      .mockResolvedValueOnce({rows:[{id:'new',duration:20,original_filename:'new.mp4'}]});
+    await f.service.reply('owner',{history:[...history,{role:'assistant',content:'Found the old clip.'},
+      {role:'user',content:'Find a hippo in my collection'}],selection:[{assetId:'asset',startS:0,endS:20}]});
+    const answer=f.ai.spaceConversation.mock.calls[1][0] as SpaceAiInput;
+    expect(answer.evidence.every(e=>e.assetId==='new')).toBe(true);
+    expect(answer.sourceMetadata).toEqual([{assetId:'new',durationS:20,filename:'new.mp4'}]);
+    expect(f.db.query.mock.calls[3][1]).toEqual(['owner',['new']]);
+    expect(f.db.query.mock.calls[3][0]).toContain('user_id=$1');
+  });
+  it('does not let whole-video narration bypass a request to find a different source',async()=>{
+    const f=fixture();f.db.query.mockResolvedValue({rows:[{...row,id:'asset',duration:53}],rowCount:1});
+    await f.service.reply('owner',{history:[...history,{role:'assistant',content:'Found this clip.'},
+      {role:'user',content:'Find another whole clip and describe what happened'}],selection:[{assetId:'asset',startS:0,endS:20}]});
+    expect(f.media.searchDetailed).toHaveBeenCalled();
+    expect(f.ai.spaceConversation.mock.calls[1][0].sourceOverview).toBeUndefined();
+  });
   it('retains an exact-match rejection for a qualified alternative without changing its assessment',async()=>{
     const f=fixture();
     f.media.searchDetailed.mockResolvedValue({results:[{assetId:'asset',startTime:10,endTime:20,
@@ -137,7 +181,7 @@ describe('Engine conversational orchestration',()=>{
     expect(followupSource({...input,history:[...input.history.slice(0,2),{role:'user',content:'Find a moment that says hello in this clip'}]})).toBe('asset');
     const f=fixture();f.db.query.mockResolvedValue({rows:[{...row,duration:53}],rowCount:1});
     f.ai.spaceConversation.mockReset().mockResolvedValueOnce({action:'reply',text:'Only the kitchen clip is here.',searchQuery:'',citedEvidenceIds:[]}).mockResolvedValue(supported);
-    await f.service.reply('owner',input);expect(f.media.searchDetailed).toHaveBeenCalledWith(query,undefined,12,'owner','verify',undefined);
+    await f.service.reply('owner',input);expect(f.media.searchDetailed).toHaveBeenCalledWith(query,undefined,12,'owner','verify',undefined,undefined,query);
   });
   it('does not perform retrieval for a conversational greeting',async()=>{
     const f=fixture();f.ai.spaceConversation.mockReset().mockResolvedValue({action:'reply',text:'Hi! What would you like to explore?',searchQuery:'',citedEvidenceIds:[]});
