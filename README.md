@@ -1,5 +1,20 @@
 # Brisky
 
+## Hackathon team and pre-existing contributions
+
+**Sole hackathon participant: [El-dorado01](https://github.com/El-dorado01), the
+project owner.** The owner confirms that no other human contributor participated
+in or assisted with this hackathon entry. An earlier contributor worked on the
+original Brisky engine before the event and did **not** help with the hackathon.
+
+This repository contains pre-existing engine work as well as event-developed
+extensions. Its GitHub contributor list reflects the project's full history;
+it is not the hackathon team roster. Existing contributor attribution is retained.
+The separate [hackathon submission](https://github.com/El-dorado01/brisky-meta-hackathon)
+documents the event work and declares this engine as a pre-existing dependency.
+This team statement records the owner's confirmation; it does not claim sole
+authorship of pre-existing code or third-party dependencies.
+
 Brisky helps people find, understand and connect moments in their media collections.
 Search results retain source timestamps; Spaces hold conversations, saved moments and
 shortlists. Processing uses cloud connectors, FFmpeg, speech and configurable AI adapters.

@@ -302,3 +302,12 @@ Gemini Live is not covered: it also performs recognition/reasoning. Declare the
 actual demo TTS and a reproducible setup in the public README; do not suggest a
 recording shows an implementation that judges cannot run. This clarification is
 owner-supplied, not independently authenticated organizer correspondence.
+
+2026-11-04 owner update: the cumulative local live-test ceiling is now $50,
+superseding $30. Retain the existing append-only journal and all prior spending,
+unknown holds and reservations; this is not a fresh $50 allowance. The local
+32 MiB demo source cap remains a local-only override, not a published default.
+The owner also confirmed sole human hackathon participation: the contributor to
+the earlier original engine did not participate in or assist with this hackathon.
+Retain that contributor's historical attribution and distinguish it from the
+hackathon team roster; do not erase history or claim sole authorship of old code.
