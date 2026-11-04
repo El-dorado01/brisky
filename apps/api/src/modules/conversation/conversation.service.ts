@@ -6,6 +6,7 @@ import { AiIntelligenceService } from '../pipeline/ai-intelligence.service';
 import { SpaceAiInput,SpaceEvidence,SpaceHistory,contextualSpaceEvidence } from '../pipeline/space-conversation';
 import { StudioFormat } from '../pipeline/studio-document';
 import { withSearchDeadline } from '../../common/search-deadline';
+import {requestsSourceReview,reviewScopeIsClear,fairReviewEvidence,isTemporalFollowup,referencesSelectedSources} from './source-review';
 
 type Selection={assetId:string;startS:number;endS:number;title?:string;notes?:string};
 export type ConversationRequest={history:SpaceHistory[];selection:Selection[]};
@@ -31,7 +32,7 @@ export function followupSource(input:ConversationRequest):string|undefined {
   if(requestsNewLibraryMoment(latest)||/\b(other|another|elsewhere|library|archive|collection|across|all (?:my )?(?:videos|clips|recordings))\b/i.test(latest))return undefined;
   // A relative clause ("a lady that throws...") does not refer to the old clip.
   // Require an actual anaphor or an explicitly referenced source, not bare "that".
-  return /\b(the two|those two|they|them|it|(?:this|that|same) (?:video|clip|recording|scene)|(?:before|after|around|following) (?:this|that))\b/i.test(latest)?ids[0]:undefined;
+  return isTemporalFollowup(latest)||/\b(the two|those two|they|them|it|(?:this|that|same) (?:video|clip|recording|scene)|(?:before|after|around|following) (?:this|that))\b/i.test(latest)?ids[0]:undefined;
 }
 /** A new described/quoted moment is not implicitly restricted to a previous result. */
 export function requestsNewLibraryMoment(text:string):boolean {
@@ -40,7 +41,13 @@ export function requestsNewLibraryMoment(text:string):boolean {
   const scoped=/\b(?:in|within|from) (?:this|that|the same) (?:clip|video|recording|scene)\b/i.test(text);
   return (described||quoted)&&!scoped&&(quoted||!/\b(the two|those two|they|them)\b/i.test(text));
 }
+export function isAnswerTransformation(text:string):boolean {
+  const rewrite=/^(?:please )?(?:rewrite|rephrase|translate|shorten|simplify|reformat|summari[sz]e)\b/i.test(text.trim())&&
+    /\b(?:your|the) (?:last |previous )?(?:answer|response|reply)\b|["'\u201c]/i.test(text);
+  return rewrite&&!/\b(?:and|also|then|but)\s+(?:please\s+)?(?:find|search|locate|show)\b/i.test(text);
+}
 export function requestsFootageSearch(text:string):boolean {
+  if(isAnswerTransformation(text))return false;
   // Whole utterances only: a usage question or thanks must not force a lookup
   // merely because it contains "search"/"find". Mixed requests still search.
   if(/^(?:how does (?:(?:brisky|your|the) )?search(?:ing)? work|what can (?:you|brisky) (?:find|search for)|(?:thank you|thanks) for (?:helping me )?(?:find|finding) (?:this|that|the) (?:clip|moment|video))[?!.\s]*$/i.test(text.trim()))return false;
@@ -63,24 +70,23 @@ export class ConversationService {
         sourceMetadata=valid.rows.filter(row=>Number.isFinite(Number(row.duration))&&Number(row.duration)>0).map(row=>({assetId:row.id,durationS:Number(row.duration),filename:row.original_filename}));
       }
       let evidence=await this.evidence(userId,input.selection);
-      const context:SpaceAiInput={sourceMetadata,phase:'plan',history:input.history,evidence,selectionNotes:input.selection.map(s=>({title:s.title||'',notes:s.notes||''})),searchStatus:'not_requested'};
+      const context:SpaceAiInput={sourceMetadata,selectedRanges:input.selection.map(({assetId,startS,endS})=>({assetId,startS,endS})),phase:'plan',history:input.history,evidence,selectionNotes:input.selection.map(s=>({title:s.title||'',notes:s.notes||''})),searchStatus:'not_requested'};
       const latest=input.history.at(-1)!.content,sourceIds=[...new Set(input.selection.map(s=>s.assetId))];
-      const wholeReview=/\b(whole|full|entire)\b.*\b(clip|video|recording)\b|\b(clip|video|recording)\b.*\b(whole|full|entire)\b/i.test(latest)&&/\b(narrate|describe|summari[sz]e|happened|detail|explain|review)\b/i.test(latest);
-      if(wholeReview&&sourceIds.length===1&&!requestsFootageSearch(latest)){
-        const duration=sourceMetadata.find(source=>source.assetId===sourceIds[0])?.durationS;
-        const wholeEvidence=duration?await this.evidence(userId,[{assetId:sourceIds[0],startS:0,endS:duration}],true):[];
-        let covered=0;
-        for(const item of [...wholeEvidence].sort((a,b)=>a.startS-b.startS)){if(item.startS>covered+.05)break;covered=Math.max(covered,item.endS);}
-        const reviewed={evidence:wholeEvidence,usage:[],overview:{kind:'indexed' as const,assetId:sourceIds[0],durationS:duration||0,inspectedRanges:wholeEvidence.map(e=>({startS:e.startS,endS:e.endS})),complete:!!duration&&covered>=duration-.05}};
-        context.phase='answer';context.evidence=reviewed.evidence;context.sourceOverview=reviewed.overview;context.searchStatus=reviewed.overview.complete?'complete':'incomplete';
+      const sourceReview=!isAnswerTransformation(latest)&&requestsSourceReview(latest);
+      if(sourceReview&&referencesSelectedSources(latest)&&reviewScopeIsClear(latest,sourceIds.length)&&!requestsFootageSearch(latest)){
+        const reviewed=await this.reviewSources(userId,sourceMetadata);
+        context.phase='answer';context.evidence=reviewed.evidence;context.sourceOverviews=reviewed.overviews;
+        context.sourceOverview=reviewed.overviews.length===1?reviewed.overviews[0]:undefined;
+        context.searchStatus=reviewed.overviews.length>0&&reviewed.overviews.every(source=>source.complete)?'complete':'incomplete';
         const answer=await this.ai.spaceConversation(context);
         if(answer.action!=='reply')throw new ServiceUnavailableException('Brisky could not finish reviewing this video');
         const citations=answer.citedEvidenceIds.map(id=>reviewed.evidence.find(e=>e.id===id)!);
-        return {text:answer.text,citations,evidence:citations,searchStatus:context.searchStatus,usage:[...reviewed.usage,...(answer.usage?[answer.usage]:[])]};
+        return {text:answer.text,citations,evidence:citations,searchStatus:context.searchStatus,usage:answer.usage?[answer.usage]:[]};
       }
       const plan=await this.ai.spaceConversation(context);
       // A media lookup must not become a negative answer from an old excerpt.
-      if(requestsNewLibraryMoment(latest)||plan.action!=='search'&&requestsFootageSearch(latest)){
+      if(isAnswerTransformation(latest)&&plan.action==='search')plan.action='answer';
+      if(requestsFootageSearch(latest)&&(requestsNewLibraryMoment(latest)||plan.action!=='search')){
         plan.action='search';plan.searchQuery=input.history.at(-1)!.content;
       }
       const usages=plan.usage?[plan.usage]:[];
@@ -104,6 +110,12 @@ export class ConversationService {
         context.sourceMetadata=resultSources.rows.filter(row=>resultIds.includes(row.id)&&Number.isFinite(Number(row.duration))&&Number(row.duration)>0)
           .map(row=>({assetId:row.id,durationS:Number(row.duration),filename:row.original_filename}));
         context.searchStatus=search.searchStatus==='incomplete'||search.searchStatus==='refining'||search.identitySearch?.status==='needs_clarification'?'incomplete':'complete';
+        if(sourceReview&&reviewScopeIsClear(latest,resultIds.length)){
+          const reviewed=await this.reviewSources(userId,context.sourceMetadata);
+          evidence=contextualSpaceEvidence(reviewed.evidence,search.results);context.sourceOverviews=reviewed.overviews;
+          context.sourceOverview=reviewed.overviews.length===1?reviewed.overviews[0]:undefined;
+          if(!reviewed.overviews.length||reviewed.overviews.some(source=>!source.complete))context.searchStatus='incomplete';
+        }
       }
       context.phase='answer';context.evidence=evidence;
       const answer=await this.ai.spaceConversation(context);
@@ -114,6 +126,18 @@ export class ConversationService {
       const citations=answer.citedEvidenceIds.map(id=>evidence.find(e=>e.id===id)!);
       return {text:answer.text,citations,evidence:citations,searchStatus:context.searchStatus,usage:usages};
     },signal);
+  }
+  private async reviewSources(userId:string,sources:NonNullable<SpaceAiInput['sourceMetadata']>){
+    const unique=sources.filter((source,i)=>sources.findIndex(other=>other.assetId===source.assetId)===i).slice(0,20);
+    const groups=await Promise.all(unique.map(source=>this.evidence(userId,[{assetId:source.assetId,startS:0,endS:source.durationS}],true)));
+    const evidence=fairReviewEvidence(groups);
+    const overviews=unique.map(source=>{
+      const ranges=evidence.filter(item=>item.assetId===source.assetId).sort((a,b)=>a.startS-b.startS);
+      let covered=0;for(const item of ranges){if(item.startS>covered+.05)break;covered=Math.max(covered,item.endS);}
+      return {kind:'indexed' as const,assetId:source.assetId,durationS:source.durationS,
+        inspectedRanges:ranges.map(item=>({startS:item.startS,endS:item.endS})),complete:covered>=source.durationS-.05};
+    });
+    return {evidence,overviews};
   }
   async studio(userId:string,raw:unknown,signal?:AbortSignal){
     if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new BadRequestException('Invalid Studio request');

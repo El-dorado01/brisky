@@ -73,3 +73,42 @@ modify Spaces. Without `--live` it only prints usage. No test resets the ledger.
 No model was added merely to claim improved intelligence. The corrections keep
 the model supplied with the right scope, current evidence and original request,
 while preserving uncertainty instead of concealing it.
+
+## Follow-up: source reasoning and conversation styles
+
+Extended the shared engine beyond simple clip lookup. A request to explain a
+selected tutorial, compare selected recordings or ask what happened next can
+read broader indexed source context. Evidence is bounded to 20 items globally,
+allocated across sources rather than exhausting the budget on the first one.
+Each source keeps its own duration, selected excerpt anchors and coverage flag.
+An omitted later section makes that source incomplete; it is not evidence that
+the recording never contained the step/event. Explicit excerpt-only requests
+stay narrow. New described topics do not silently become a review of an old
+selected video, including relative clauses containing ?that?.
+
+Answer instructions now distinguish source facts from proposed questions and
+ideas, meeting proposals from final decisions, observable sequence from cause,
+and a user's search correction from proof about the footage. Rewriting or
+translating an earlier response preserves uncertainty and does not itself
+request a new search, even if the text contains ?find? or ?search?. Mixed
+rewrite-plus-search requests still reach retrieval. Ambiguous singular source
+references should prompt clarification instead of guessing among recordings.
+
+Five additional generated-only live Meta cases passed: shortening preserved
+uncertainty; two meeting proposals did not become an agreement; a dropped cup
+followed by laughter did not establish causation; general family-memory
+brainstorming worked without pretending to inspect footage; an ambiguous
+singular clip reference produced a clarification. Rephrasing legitimately used
+plan=answer followed by the answer phase. The harness now follows that workflow
+rather than incorrectly requiring every edit to finish during planning.
+
+Run just those extra generated cases with:
+
+```sh
+node --env-file=.env scripts/check-reasoning-live.cjs --live --styles
+```
+
+These are small adversarial examples, not an overall reasoning-accuracy score.
+The 20-item context budget, source indexing gaps, ambiguous active-video context
+when several moments are selected, and model phrasing still need broader user
+acceptance. No UI was redesigned and no extra personal media was uploaded.

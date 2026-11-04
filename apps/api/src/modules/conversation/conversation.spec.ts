@@ -62,11 +62,13 @@ describe('Space conversational reply contract',()=>{
 });
 
 describe('Engine conversational orchestration',()=>{
-  it.each(['How does search work?','What can you find?','Thanks for helping me find that clip.'])(
+  it.each(['How does search work?','What can you find?','Thanks for helping me find that clip.',
+    'Rephrase your last answer about the search.','Translate "find the hippo" into French.'])(
     'does not force a keyword-only media lookup for %s',query=>{
       expect(requestsFootageSearch(query)).toBe(false);
     });
-  it.each(['How does search work? Also find a hippo.','Thanks, find another clip.'])(
+  it.each(['How does search work? Also find a hippo.','Thanks, find another clip.',
+    'Rephrase your answer and find a hippo.'])(
     'preserves an actionable request mixed with ordinary conversation: %s',query=>{
       expect(requestsFootageSearch(query)).toBe(true);
     });
@@ -144,7 +146,7 @@ describe('Engine conversational orchestration',()=>{
     await f.service.reply('owner',{history:[...history,{role:'assistant',content:'Found this clip.'},
       {role:'user',content:'Find another whole clip and describe what happened'}],selection:[{assetId:'asset',startS:0,endS:20}]});
     expect(f.media.searchDetailed).toHaveBeenCalled();
-    expect(f.ai.spaceConversation.mock.calls[1][0].sourceOverview).toBeUndefined();
+    expect(f.ai.spaceConversation).toHaveBeenCalledTimes(2);
   });
   it('retains an exact-match rejection for a qualified alternative without changing its assessment',async()=>{
     const f=fixture();
@@ -171,6 +173,69 @@ describe('Engine conversational orchestration',()=>{
     f.ai.spaceConversation.mockReset().mockResolvedValue(supported);
     const result=await f.service.reply('owner',{history:[{role:'user',content:'Narrate the whole clip'}],selection:[{assetId:'asset',startS:0,endS:20}]});
     expect(result.searchStatus).toBe('incomplete');expect(f.ai.spaceConversation.mock.calls[0][0]).toMatchObject({sourceOverview:{complete:false,durationS:53}});
+  });
+  it('loads later lesson steps for tutorial brainstorming rather than only the saved excerpt',async()=>{
+    const f=fixture();f.db.query.mockReset().mockResolvedValueOnce({rowCount:1,rows:[{id:'asset',duration:120,original_filename:'lesson.mp4'}]})
+      .mockResolvedValueOnce({rows:[row]}).mockResolvedValueOnce({rows:[{...row,start_time:0,end_time:30},
+        {...row,id:'later',start_time:30,end_time:120,transcript_text:'Later lesson step: validate the result.'}]});
+    f.ai.spaceConversation.mockReset().mockResolvedValue(supported);
+    await f.service.reply('owner',{history:[{role:'user',content:'Explain this tutorial and brainstorm questions I can ask'}],
+      selection:[{assetId:'asset',startS:10,endS:20}]});
+    expect(f.media.searchDetailed).not.toHaveBeenCalled();
+    const answer=f.ai.spaceConversation.mock.calls[0][0] as SpaceAiInput;
+    expect(answer.sourceOverview).toMatchObject({complete:true,durationS:120});
+    expect(answer.evidence.some(e=>e.transcript.includes('validate the result'))).toBe(true);
+    expect(spaceConversationPrompt(answer)).toContain('never as quotations or things the instructor actually said');
+  });
+  it('compares multiple sources with separate coverage and balanced context',async()=>{
+    const f=fixture();f.db.query.mockReset().mockResolvedValueOnce({rowCount:2,rows:[{id:'asset',duration:120,original_filename:'one.mp4'},
+      {id:'second',duration:60,original_filename:'two.mp4'}]}).mockResolvedValueOnce({rows:[row]})
+      .mockResolvedValueOnce({rows:[{...row,start_time:0,end_time:30},{...row,id:'later',start_time:30,end_time:120}]})
+      .mockResolvedValueOnce({rows:[{...row,id:'two',asset_id:'second',start_time:0,end_time:60}]});
+    f.ai.spaceConversation.mockReset().mockResolvedValue(supported);
+    await f.service.reply('owner',{history:[{role:'user',content:'Compare these two tutorials and suggest questions'}],
+      selection:[{assetId:'asset',startS:10,endS:20},{assetId:'second',startS:10,endS:20}]});
+    const answer=f.ai.spaceConversation.mock.calls[0][0] as SpaceAiInput;
+    expect(answer.sourceOverview).toBeUndefined();
+    expect(answer.sourceOverviews).toMatchObject([{assetId:'asset',durationS:120,complete:true},{assetId:'second',durationS:60,complete:true}]);
+    expect(answer.evidence.map(e=>e.assetId)).toEqual(['asset','second','asset']);
+    expect(new Set(answer.evidence.map(e=>e.id)).size).toBe(3);
+  });
+  it('answers what happened next from later indexed context while retaining the selected anchor',async()=>{
+    const f=fixture();f.db.query.mockReset().mockResolvedValueOnce({rowCount:1,rows:[{id:'asset',duration:53,original_filename:'memory.mp4'}]})
+      .mockResolvedValueOnce({rows:[row]}).mockResolvedValueOnce({rows:[{...row,start_time:0,end_time:20},
+        {...row,id:'later',start_time:20,end_time:53,description:'The visitors arrive afterward.'}]});
+    f.ai.spaceConversation.mockReset().mockResolvedValue(supported);
+    await f.service.reply('owner',{history:[...history,{role:'assistant',content:'Found this moment.'},
+      {role:'user',content:'What happened next?'}],selection:[{assetId:'asset',startS:10,endS:20}]});
+    const answer=f.ai.spaceConversation.mock.calls[0][0] as SpaceAiInput;
+    expect(answer.selectedRanges).toEqual([{assetId:'asset',startS:10,endS:20}]);
+    expect(answer.evidence.some(e=>e.description.includes('visitors arrive'))).toBe(true);
+    expect(f.media.searchDetailed).not.toHaveBeenCalled();
+  });
+  it('keeps explicit excerpt-only brainstorming within the supplied moment',async()=>{
+    const f=fixture();f.db.query.mockResolvedValue({rowCount:1,rows:[{...row,id:'asset',duration:120}]});
+    f.ai.spaceConversation.mockReset().mockResolvedValueOnce({action:'answer',text:'',searchQuery:'',citedEvidenceIds:[]}).mockResolvedValue(supported);
+    await f.service.reply('owner',{history:[{role:'user',content:'Brainstorm questions about this tutorial excerpt'}],selection:[{assetId:'asset',startS:10,endS:20}]});
+    expect(f.db.query).toHaveBeenCalledTimes(2);
+    expect(f.ai.spaceConversation.mock.calls[1][0].sourceOverviews).toBeUndefined();
+  });
+  it('does not search or reopen a whole source merely to rewrite a previous answer',async()=>{
+    const f=fixture();f.db.query.mockResolvedValue({rowCount:1,rows:[{...row,id:'asset',duration:120}]});
+    await f.service.reply('owner',{history:[...history,{role:'assistant',content:'Possibly a match, but the details remain uncertain.'},
+      {role:'user',content:'Rephrase your last answer about the whole video.'}],selection:[{assetId:'asset',startS:10,endS:20}]});
+    expect(f.media.searchDetailed).not.toHaveBeenCalled();
+    expect(f.db.query).toHaveBeenCalledTimes(2);
+    expect(f.ai.spaceConversation.mock.calls[1][0].sourceOverviews).toBeUndefined();
+  });
+  it('does not claim complete source coverage when the shared context budget omits later sections',async()=>{
+    const f=fixture(),item=(assetId:string,startS:number,endS:number)=>({...evidence,assetId,startS,endS});
+    jest.spyOn(f.service as any,'evidence').mockResolvedValueOnce(Array.from({length:20},(_,i)=>item('asset',i,i+1)))
+      .mockResolvedValueOnce([item('second',0,10)]);
+    const reviewed=await (f.service as any).reviewSources('owner',[{assetId:'asset',durationS:20,filename:'one'},
+      {assetId:'second',durationS:10,filename:'two'}]);
+    expect(reviewed.evidence).toHaveLength(20);
+    expect(reviewed.overviews).toMatchObject([{assetId:'asset',complete:false},{assetId:'second',complete:true}]);
   });
   it('searches a new quoted moment archive-wide despite an earlier selected source and a reply-only plan',async()=>{
     const query='a moment that says "i look at my exam questions, and they look back at me. i know nothing"';
