@@ -42,6 +42,7 @@ import { ProxyCacheService } from '../pipeline/proxy-cache.service';
 import { FactorySchedulerService } from './factory-scheduler.service';
 import { openSeekableMediaSource, SeekableMediaSource } from '../pipeline/seekable-media-source';
 import { planAudioWindows, processAudioWindows, audioWindowId } from '../pipeline/audio-windows';
+import { planVideoChunks } from '../pipeline/video-chunks';
 import { withSearchDeadline } from '../../common/search-deadline';
 import { AiBudgetError, AiUsageLedger, withAiBudgetPlan } from '../pipeline/ai-usage-ledger';
 
@@ -1406,7 +1407,11 @@ export class IndexingProcessor extends WorkerHost {
         if(this.useAiTranscription()&&(!Number.isSafeInteger(chunkSeconds)||chunkSeconds<=0||chunkSeconds>300))throw new AiBudgetError('Invalid AI transcription chunk size');
         // One extra chunk covers encoding padding at exact chunk boundaries.
         const speechCalls=metadata.hasAudio&&this.useAiTranscription()?Math.ceil(metadata.duration/chunkSeconds)+1:0;
-        const calls = scenes.reduce((sum, scene) => sum + Math.ceil((scene.keyframes?.length || 1) / 4), 0) + 1 + speechCalls;
+        const videoCeiling=provider==='baseten'?70*1024*1024:50_000_000;
+        const videoCalls=provider==='google'?1:planVideoChunks(metadata.duration,Number(envelope.source.fileSize),
+          Number(this.configService.get(provider==='baseten'?'BASETEN_MAX_MEDIA_BYTES':'META_MAX_MEDIA_BYTES',videoCeiling)),
+          Number(this.configService.get('AI_VIDEO_CHUNK_SECONDS',90))).length;
+        const calls = scenes.reduce((sum, scene) => sum + Math.ceil((scene.keyframes?.length || 1) / 4), 0) + videoCalls + speechCalls;
         const models=provider==='meta'?[this.aiService.getPrimaryModel(),String(this.configService.get('META_VIDEO_MODEL','')),
           ...(speechCalls?[String(this.configService.get('META_AUDIO_MODEL',''))]:[])]:provider==='google'?(this.aiService.getModelCascade?.()||[this.aiService.getPrimaryModel()]):[this.aiService.getPrimaryModel()];
         new AiUsageLedger(this.configService).reservePlan(provider!, this.aiService.getPrimaryModel(), calls * multiplier, `${userId}/${assetId}`,models);

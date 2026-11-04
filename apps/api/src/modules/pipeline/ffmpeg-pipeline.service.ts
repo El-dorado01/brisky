@@ -344,6 +344,28 @@ export class FfmpegPipelineService {
     );
   }
 
+  /** Prepare a complete temporal window, retaining audio and native dimensions.
+   * No -fs truncation: callers validate size/duration before sending any window. */
+  async prepareAnalysisWindow(source:string,output:string,start:number,end:number,maxBytes:number):Promise<string> {
+    const duration=end-start;
+    if(!Number.isFinite(start)||start<0||!Number.isFinite(duration)||duration<=0||duration>300||!Number.isSafeInteger(maxBytes)||maxBytes<1024)
+      throw new Error('Invalid analysis window');
+    fs.mkdirSync(path.dirname(output),{recursive:true});
+    const audioRate=64000;
+    // Leave room for encoder rate variation, audio and container overhead.
+    const videoRate=Math.floor(Math.min(6000000,maxBytes*8*.6/duration-audioRate));
+    if(videoRate<64000)throw new Error('Media byte allowance too small for this video window');
+    const command=ffmpeg(source).setStartTime(start).setDuration(duration).videoCodec('libx264')
+      .outputOptions(['-preset fast',`-b:v ${videoRate}`,`-maxrate ${videoRate}`,`-bufsize ${videoRate*2}`,
+        '-pix_fmt yuv420p','-movflags +faststart']).audioCodec('aac').audioBitrate('64k').output(output);
+    return this.executeFfmpegWithTimeout(command,Math.max(60000,Math.ceil(duration*5000)),
+      'prepare bounded video analysis window',()=>{
+        const size=fs.statSync(output).size;
+        if(size<=0||size>maxBytes)throw new Error('Encoded video window exceeds inline allowance; reduce AI_VIDEO_CHUNK_SECONDS');
+        return output;
+      });
+  }
+
   async generateThumbnail(
     videoPath: string,
     outputThumbnailPath: string,

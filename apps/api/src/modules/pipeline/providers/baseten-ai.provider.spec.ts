@@ -94,8 +94,9 @@ describe('Baseten sponsor adapter',()=>{
     fetcher.mockResolvedValueOnce(mediaResponse(video('Unsupported speech')));
     await expect(make({BASETEN_MEDIA_ENABLED:true},ffmpeg).analyzeVideo(source)).rejects.toThrow('invented dialogue');
   });
-  it('rejects video duration above the provider limit before inference',async()=>{
-    await expect(make({BASETEN_MEDIA_ENABLED:true},{probeMetadata:jest.fn().mockResolvedValue({duration:301})}).analyzeVideo('not-read.mp4')).rejects.toThrow('300 seconds');
+  it('rejects analysis windows exceeding the provider duration limit before inference',async()=>{
+    const source=path.join(root,'source.mp4');fs.writeFileSync(source,'fixture');
+    await expect(make({BASETEN_MEDIA_ENABLED:true,AI_VIDEO_CHUNK_SECONDS:301},{probeMetadata:jest.fn().mockResolvedValue({duration:301})}).analyzeVideo(source)).rejects.toThrow('settings');
     expect(fetcher).not.toHaveBeenCalled();
   });
   it('admits media above the text cap and keeps serialized media bounds before reservation',async()=>{

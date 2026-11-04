@@ -137,6 +137,29 @@ describe('dormant Meta adapter (offline transport fixtures only)', () => {
     fetcher.mockResolvedValueOnce(response({...verification,matchedTimestamp:2.125}));
     expect(await make().verifyClip(fixture('clip.mp4'),'sequence',100,110)).toMatchObject({matched:true,matchedTimestamp:102.125});
   });
+  it('splits video, retains source timestamps, aggregates usage and removes only its temporary windows', async()=>{
+    const source=fixture('long.mp4'),durations=new Map<string,number>();
+    ffmpeg.probeMetadata.mockImplementation(async(p:string)=>({duration:durations.get(p)??10}));
+    ffmpeg.prepareAnalysisWindow=jest.fn(async(_source:string,p:string,start:number,end:number)=>{
+      fs.writeFileSync(p,'generated-window');durations.set(p,end-start);return p;
+    });
+    const row=(end:number)=>({video_summary:'window',key_themes:['test'],segments:[{
+      start_time:0,end_time:end,title:'Event',description:'Visible event',visual_objects:[],actions:[],dialogue:''}]});
+    fetcher.mockResolvedValueOnce(response(row(6))).mockResolvedValueOnce(response(row(4)));
+    const result=await make({AI_VIDEO_CHUNK_SECONDS:6}).analyzeVideo(source);
+    expect(result.analysis.segments.map(s=>[s.start_time,s.end_time])).toEqual([[0,6],[6,10]]);
+    expect(result.usage.inputTokens).toBe(200);expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fs.existsSync(source)).toBe(true);
+    expect(fs.readdirSync(path.join(root,'scratch'))).toEqual([]);
+  });
+  it('rejects an incomplete prepared window without sending it or reporting complete coverage',async()=>{
+    const source=fixture('source.mp4');
+    ffmpeg.prepareAnalysisWindow=jest.fn(async(_s:string,p:string)=>{fs.writeFileSync(p,'window');return p;});
+    ffmpeg.probeMetadata.mockResolvedValue({duration:10});
+    await expect(make({AI_VIDEO_CHUNK_SECONDS:6}).analyzeVideo(source)).rejects.toThrow('duration');
+    expect(fetcher).not.toHaveBeenCalled();expect(fs.existsSync(source)).toBe(true);
+    expect(fs.readdirSync(path.join(root,'scratch'))).toEqual([]);
+  });
   it('rejects inconsistent clip bounds and unavailable modality configuration', async () => {
     expect(await make().verifyClip(fixture('clip.mp4'),'sequence',100,120)).toMatchObject({status:'insufficient_evidence'});
     expect(await make({META_VIDEO_MODEL:''}).verifyClip(fixture('clip2.mp4'),'sequence',100,110)).toMatchObject({status:'error',matched:false});

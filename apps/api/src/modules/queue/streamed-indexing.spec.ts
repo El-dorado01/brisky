@@ -112,6 +112,13 @@ describe('streamed indexing and preparation checkpoint reuse', () => {
     expect(processor.db.query).toHaveBeenCalledWith(expect.stringContaining("stage='blocked'"),expect.arrayContaining(['owner']));
     expect(ffmpeg.probeMetadata).not.toHaveBeenCalled();
   });
+  it('reserves every video window rather than one call for a long source',async()=>{
+    controlledBudget('5');settings.AI_VIDEO_CHUNK_SECONDS='4';
+    await processor.executeProcessing(job(),envelope);
+    const events=fs.readFileSync(path.join(root,'usage.jsonl'),'utf8').trim().split('\n').map(line=>JSON.parse(line));
+    // One frame call plus three video windows, with two attempts per call.
+    expect(events[0].attempt.reservedUsd).toBeCloseTo(.8);
+  });
   it('admits sources larger than the former test cap while retaining account scope', async () => {
     controlledBudget('1'); settings.INDEX_ALLOWED_CONNECTOR_ACCOUNT_IDS='account';
     envelope.source.fileSize=128*1024*1024;

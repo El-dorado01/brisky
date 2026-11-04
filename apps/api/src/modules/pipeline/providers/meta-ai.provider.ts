@@ -15,6 +15,7 @@ import { MetaPart, MetaTransport } from './meta-transport';
 import { SpaceAiInput,parseSpaceReply,spaceConversationSystem,spaceReplySchema } from '../space-conversation';
 import { metaSchemas, MetaResponseError, parseMetaFrames, parseMetaQuery, parseMetaTranscript,
   parseMetaVerification, parseMetaVideo, rawMetaQuery } from './meta-contract';
+import { planVideoChunks } from '../video-chunks';
 
 type Embeddings = Pick<AiIntelligenceProvider,'getEmbeddingModel'|'generateEmbedding'>;
 const noEvidence = (explanation: string): VerificationResult => ({status:'insufficient_evidence',matched:false,confidence:0,explanation});
@@ -169,7 +170,40 @@ Return JSON with all schema fields; nullable fields must be null when absent. Qu
   async analyzeVideo(videoPath: string) {
     this.ready();
     const models = this.mediaModels('VIDEO'), duration = await this.duration(videoPath);
-    if (this.backend==='baseten' && duration>300) throw new Error('Baseten video duration exceeds 300 seconds; split explicitly before analysis');
+    const ceiling=this.backend==='baseten'?70*1024*1024:50_000_000;
+    const limit=this.transport.boundedSetting('META_MAX_MEDIA_BYTES',ceiling,ceiling);
+    const windows=planVideoChunks(duration,fs.statSync(videoPath).size,limit,Number(this.config.get('AI_VIDEO_CHUNK_SECONDS',90)));
+    if(windows.length===1&&windows[0].original)return this.analyzeVideoWindow(videoPath,duration,models);
+    const scratch=path.join(resolveFromRepo(this.config.get<string>('STORAGE_ROOT','./storage')),'scratch');
+    fs.mkdirSync(scratch,{recursive:true});
+    const temporary=fs.mkdtempSync(path.join(scratch,'meta-video-'));
+    const usages:ModelUsage[]=[],analyses:import('../pipeline.types').VideoAnalysis[]=[];
+    try {
+      // Keep only one bounded prepared window on disk. Each is validated before
+      // its own remote call; originals are never removed here.
+      for(let index=0;index<windows.length;index++){
+        assertSearchActive();const window=windows[index];
+        const file=path.join(temporary,`${index}.mp4`);
+        await this.ffmpeg.prepareAnalysisWindow(videoPath,file,window.start,window.end,limit);
+        const actual=await this.duration(file);
+        if(Math.abs(actual-(window.end-window.start))>.25)throw new Error('Prepared video window duration does not cover its source interval');
+        const result=await this.analyzeVideoWindow(file,window.end-window.start,models);
+        usages.push(result.usage);
+        analyses.push({...result.analysis,segments:result.analysis.segments.map(segment=>({...segment,
+          start_time:segment.start_time+window.start,end_time:segment.end_time+window.start}))});
+        fs.unlinkSync(file);
+      }
+      // Each summary is explicitly scoped; no extra unbudgeted synthesis call.
+      const analysis={video_summary:analyses.map((a,i)=>`[${windows[i].start.toFixed(3)}–${windows[i].end.toFixed(3)}s] ${a.video_summary}`).join('\n'),
+        key_themes:[...new Set(analyses.flatMap(a=>a.key_themes))],segments:analyses.flatMap(a=>a.segments)};
+      // Each window was schema/coverage-validated before offsetting. Do not run
+      // per-response summary/list caps over an aggregate spanning many requests.
+      return {analysis,usage:this.aggregate('video_analysis',usages)};
+    } finally {
+      if(path.dirname(path.resolve(temporary))===path.resolve(scratch)&&path.basename(temporary).startsWith('meta-video-'))fs.rmSync(temporary,{recursive:true,force:true});
+    }
+  }
+  private async analyzeVideoWindow(videoPath:string,duration:number,models:string[]) {
     const result = await this.transport.complete('video_analysis',models,()=>[
       this.prompt(`${this.backend==='baseten'?'Analyze the visual video only. The provider ignores its audio track: dialogue must be empty in every segment. Do not infer speech, sounds or conversation from visuals.':'Analyze the actual video and its available audio.'} Use concise chronological descriptions without repeating unchanged clothing/scenery in every segment. Return a video_summary, key_themes and ordered non-overlapping segments covering 0 through ${duration} seconds without gaps. Each segment needs start_time, end_time, title, description, visual_objects, actions and dialogue (empty if unsupported). Do not infer unseen actions from objects alone or guess private identities. All times are relative to this supplied video. JSON only.`),
       this.video(videoPath),

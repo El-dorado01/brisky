@@ -1641,3 +1641,17 @@ processing or a separately implemented upload path; larger defaults are not a
 large-media accuracy or end-to-end support claim. References checked November 4:
 https://dev.meta.ai/docs/file-handling and
 https://docs.baseten.co/inference/model-apis/vision .
+
+### Automatic bounded whole-video understanding
+
+Implemented the oversized-inline gap fix in the shared Meta/Baseten video adapter:
+contiguous configurable temporal windows, local H.264/AAC preparation sized below
+inline bounds, decoded-duration checks, source timestamp offsets, usage aggregation,
+scoped cleanup and full-coverage-only success. Shared window planning now reserves
+all expected video calls in controlled indexing admission. Native short inputs
+remain unchanged; Google is not modified. AI_VIDEO_CHUNK_SECONDS=90 is documented
+in local/general/judge env templates. See docs/bounded-video-understanding.md for
+lossy re-encoding, no overlap, no per-window retry checkpoint and actual validation
+limits. Generated decoder check passed without personal footage or API calls.
+No live large-file accuracy/Drive end-to-end claim, no worker/polling startup,
+no budget increase and no Files API upload implementation are implied.
