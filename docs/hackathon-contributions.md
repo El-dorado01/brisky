@@ -1599,3 +1599,15 @@ exact server env configuration, model setup, database/auth startup order, Drive
 account allowlisting, operational checks and troubleshooting. No inference or
 media processing is needed for this documentation/export update. Source comparison
 and owner attestation do not independently prove dates or eligibility.
+
+### Judge environment templates and read-only preflight
+
+Added dedicated Meta-only engine and Next.js env examples to the event repository,
+plus a credential-safe local preflight checking required keys, profile flags,
+origins, pricing and Drive allowlists. The full setup guide now copies these
+instead of the broad legacy development example. Generated configuration tests
+verify successful setup and reject missing credentials, non-Meta selections,
+invalid pricing and mismatched account scope. This does not validate credentials
+against external providers or establish a fresh-machine installation. Legacy local
+SMTP server/port entries are unused by the pinned web server, which configures
+Brevo's SMTP endpoint internally. No model calls are needed for these checks.
