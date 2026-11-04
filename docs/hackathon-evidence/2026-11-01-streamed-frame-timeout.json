@@ -1,0 +1,8 @@
+{
+  "date": "2026-11-01",
+  "status": "passed",
+  "timestamp": 0.05,
+  "timeoutMs": 60000,
+  "inferenceCalls": 0,
+  "scope": "Real Drive ranged decoding of a timestamp that previously hit the 15-second limit; nonempty JPEG verified, temporary file removed. Full queue not rerun after the guard change."
+}

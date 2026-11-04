@@ -1,0 +1,44 @@
+{
+  "date": "2026-10-31",
+  "scope": "One owner-scoped native-video/local-speech index; no queue workers, polling or broad sync",
+  "status": "passed",
+  "checks": {
+    "sourceStable": true,
+    "audioProcessed": true,
+    "videoProcessed": true,
+    "visualDialogueEmpty": true
+  },
+  "limitations": [
+    "Persisted native-video/local-speech pilot, not normal queue ingestion or labelled accuracy evaluation.",
+    "No independent frame OCR was performed. Original-quality playback copy is retained in ignored storage."
+  ],
+  "sourceBytes": 4182700,
+  "durationSeconds": 53.033,
+  "audio": {
+    "provider": "faster-whisper",
+    "model": "whisper-base",
+    "cues": 7,
+    "durationMs": 10419
+  },
+  "video": {
+    "segments": 12,
+    "usage": {
+      "stage": "video_analysis",
+      "provider": "baseten",
+      "model": "meta-models/muse-spark-open-1026",
+      "modelVersion": "meta-models/muse-spark-open-1026",
+      "inputTokens": 7396,
+      "outputTokens": 3216,
+      "durationMs": 34307,
+      "usageSource": "reported",
+      "estimatedUsd": 0.022913
+    }
+  },
+  "persistence": {
+    "segments": 12,
+    "embeddingDimensions": 384,
+    "profile": "native-video-local-speech-v1",
+    "retainedPlaybackCopy": true,
+    "frameOcr": false
+  }
+}

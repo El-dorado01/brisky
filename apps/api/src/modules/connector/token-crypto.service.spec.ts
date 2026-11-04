@@ -4,7 +4,7 @@ describe('TokenCryptoService', () => {
   const fakeConfig = {
     get: (key: string, def?: string) => {
       if (key === 'CONNECTOR_ENCRYPTION_KEY') {
-        return '29a4c79d0aab2fb3895e5618145f5c2022bc31572a2e6eeec2eee620551e7a09';
+        return 'a1'.repeat(32); // Synthetic test-only key, never a deployment key.
       }
       return def;
     },

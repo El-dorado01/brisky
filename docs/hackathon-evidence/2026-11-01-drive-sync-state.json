@@ -1,0 +1,19 @@
+{
+  "date": "2026-11-01",
+  "status": "passed",
+  "checks": {
+    "discoveryAndDeduplication": true,
+    "checksumChangeWithoutTimestampAdvance": true,
+    "renameWithoutInference": true,
+    "moveOutsideSelection": true,
+    "moveBackIntoSelection": true,
+    "deletion": true,
+    "crossInstanceAdvisoryLock": true,
+    "saveAndSync": true,
+    "saveSurvivesSyncFailure": true
+  },
+  "scope": "Rollback-only real PostgreSQL; simulated connector listing/change stream; no Google writes, queue dispatch or inference",
+  "limitations": [
+    "Does not establish real Drive added/changed/deleted notifications or live polling."
+  ]
+}

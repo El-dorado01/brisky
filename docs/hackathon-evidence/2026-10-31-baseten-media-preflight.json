@@ -1,0 +1,62 @@
+{
+  "date": "2026-10-31",
+  "provider": "baseten",
+  "model": "meta-models/muse-spark-open-1026",
+  "scope": "Generated four-second red-then-blue visual video and silent audio; no personal footage, workers or Drive sync",
+  "results": [
+    {
+      "stage": "video",
+      "checks": {
+        "completeRange": true,
+        "noInventedDialogue": true,
+        "mentionsBothColors": true,
+        "provider": true
+      },
+      "analysis": {
+        "video_summary": "A 4-second minimalist video consisting of two static solid-color fields with an abrupt cut between them. The first half shows a uniform bright red screen, the second half a uniform bright blue screen. No people, objects, text, camera movement, or other visual variation is present.",
+        "key_themes": [
+          "solid color field",
+          "minimalist abstraction",
+          "abrupt color transition"
+        ],
+        "segments": [
+          {
+            "start_time": 0,
+            "end_time": 2,
+            "title": "Uniform red color field",
+            "description": "The entire frame is filled with a flat, bright red color with no texture, objects, people, text, or motion. The image remains static throughout the segment.",
+            "visual_objects": [],
+            "actions": [],
+            "dialogue": ""
+          },
+          {
+            "start_time": 2,
+            "end_time": 4,
+            "title": "Uniform blue color field",
+            "description": "Following an abrupt cut, the entire frame is filled with a flat, bright blue color with no texture, objects, people, text, or motion. The image remains static for the remainder of the video.",
+            "visual_objects": [],
+            "actions": [],
+            "dialogue": ""
+          }
+        ]
+      },
+      "usage": {
+        "stage": "video_analysis",
+        "provider": "baseten",
+        "model": "meta-models/muse-spark-open-1026",
+        "modelVersion": "meta-models/muse-spark-open-1026",
+        "inputTokens": 585,
+        "outputTokens": 1350,
+        "durationMs": 7502,
+        "usageSource": "reported",
+        "estimatedUsd": 0.00646875
+      }
+    }
+  ],
+  "status": "passed",
+  "limitations": [
+    "Synthetic smoke checks only; no real speech, personal video or retrieval accuracy evaluation.",
+    "Direct Meta transport remains offline-tested only.",
+    "Remote audio check explicitly omitted from this run."
+  ]
+}

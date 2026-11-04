@@ -1,0 +1,44 @@
+{
+  "date": "2026-11-01",
+  "status": "passed",
+  "inferenceCalls": 0,
+  "sources": {
+    "local": {
+      "duration": 53.057596,
+      "windows": [
+        {
+          "start": 0,
+          "end": 0.1,
+          "frames": 2
+        },
+        {
+          "start": 0.1,
+          "end": 53.06,
+          "frames": 30
+        }
+      ],
+      "attempts": 32,
+      "failedTimestamps": [],
+      "frames": 32
+    },
+    "remote": {
+      "duration": 53.057596,
+      "windows": [
+        {
+          "start": 0,
+          "end": 0.1,
+          "frames": 2
+        },
+        {
+          "start": 0.1,
+          "end": 53.06,
+          "frames": 30
+        }
+      ],
+      "attempts": 32,
+      "failedTimestamps": [],
+      "frames": 32
+    }
+  },
+  "bytesRead": 4182700
+}

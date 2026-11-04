@@ -22,7 +22,8 @@ elif os.path.isdir(_venv_site_unix) and _venv_site_unix not in sys.path:
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Transcribe audio using faster-whisper")
-    parser.add_argument("--audio", required=True, help="Path to audio file (mp3, wav, etc.)")
+    parser.add_argument("--audio", help="Path to audio file (mp3, wav, etc.)")
+    parser.add_argument("--serve", action="store_true", help="JSONL requests; reuse one model for this session")
     parser.add_argument("--model", default=os.getenv("WHISPER_MODEL", "base"), help="Whisper model size (tiny, base, small, medium)")
     parser.add_argument("--device", default=os.getenv("WHISPER_DEVICE", "cpu"), help="Inference device (cpu, cuda)")
     parser.add_argument("--compute_type", default=os.getenv("WHISPER_COMPUTE_TYPE", "int8"), help="Compute precision (int8, float16, float32)")
@@ -33,32 +34,27 @@ def parse_args():
     return parser.parse_args()
 
 
-def main():
-    args = parse_args()
-
-    if not os.path.isfile(args.audio):
-        sys.stderr.write(f"Error: audio file not found: {args.audio}\n")
-        sys.exit(1)
-
+def load_model(args):
     try:
         from faster_whisper import WhisperModel
     except ImportError as e:
-        sys.stderr.write(f"Error importing faster_whisper: {e}. Ensure faster-whisper is installed in your Python environment.\n")
-        sys.exit(2)
-
-    t0 = time.time()
+        raise RuntimeError(f"faster-whisper is unavailable: {e}") from e
 
     # Initialize model (cached in standard huggingface/ctranslate2 cache)
-    model = WhisperModel(
+    return WhisperModel(
         args.model,
         device=args.device,
         compute_type=args.compute_type,
         cpu_threads=int(os.getenv("WHISPER_CPU_THREADS", "4")),
     )
 
+def transcribe(model, args, audio):
+    if not os.path.isfile(audio):
+        raise ValueError("Audio file not found")
+    t0 = time.time()
     # Transcribe with Silero VAD filter
     segments_generator, info = model.transcribe(
-        args.audio,
+        audio,
         language=args.language if args.language else None,
         task=args.task,
         vad_filter=args.vad,
@@ -80,7 +76,7 @@ def main():
 
     duration_ms = int((time.time() - t0) * 1000)
 
-    result = {
+    return {
         "language": getattr(info, "language", args.language or "unknown"),
         "language_probability": round(float(getattr(info, "language_probability", 1.0)), 3),
         "duration_sec": round(float(getattr(info, "duration", 0.0)), 2),
@@ -89,6 +85,41 @@ def main():
         "cues_count": len(cues),
         "cues": cues,
     }
+
+def serve(args, model_loader=load_model, transcriber=transcribe):
+    model = None
+    while True:
+        line = sys.stdin.readline(8193)
+        if not line:
+            return
+        request_id = None
+        try:
+            if len(line) > 8192:
+                raise ValueError("Whisper request exceeds input limit")
+            request = json.loads(line)
+            request_id = request["id"]
+            audio = request["audio"]
+            if not isinstance(request_id, int) or not isinstance(audio, str) or not os.path.isfile(audio):
+                raise ValueError("Invalid Whisper request")
+            if model is None:
+                model = model_loader(args)
+            result = transcriber(model, args, audio)
+            response = {"id": request_id, "ok": True, "result": result}
+        except Exception as error:
+            response = {"id": request_id, "ok": False, "error": str(error)}
+        print(json.dumps(response, ensure_ascii=False), flush=True)
+
+def main():
+    args = parse_args()
+    if args.serve:
+        serve(args)
+        return
+    if not args.audio or not os.path.isfile(args.audio):
+        sys.stderr.write("Error: audio file not found\n")
+        sys.exit(1)
+    started = time.time()
+    result = transcribe(load_model(args), args, args.audio)
+    result["inference_duration_ms"] = int((time.time() - started) * 1000)
 
     output_json = json.dumps(result, ensure_ascii=False, indent=2)
 

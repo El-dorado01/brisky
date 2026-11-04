@@ -1,0 +1,14 @@
+{
+  "date": "2026-11-01",
+  "status": "passed",
+  "checks": {
+    "completeFileHoldBeforeInference": true,
+    "tenCallsConsumePlan": true,
+    "allCallsSettled": true,
+    "unusedHoldReleased": true
+  },
+  "plannedHoldUsd": 5,
+  "attempts": 10,
+  "reportedEstimateUsd": 0.13066925,
+  "scope": "Real isolated Drive queue with complete-file budget plan; existing ledger retained; estimates are not invoices."
+}

@@ -1,0 +1,10 @@
+{
+  "date": "2026-11-01",
+  "status": "passed",
+  "checks": {
+    "nextSessionBridge": true,
+    "combinedSavePersists": true,
+    "pausedStateExplicit": true
+  },
+  "scope": "Actual Next/engine/PostgreSQL fixture HTTP; no Google or AI calls; temporary user/session/account deleted"
+}

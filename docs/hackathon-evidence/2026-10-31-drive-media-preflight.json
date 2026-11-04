@@ -1,0 +1,37 @@
+{
+  "date": "2026-10-31",
+  "scope": "One explicitly selected Drive video; original quality; no database writes, indexing workers, polling or broad sync",
+  "status": "passed",
+  "checks": {
+    "sourceStable": true,
+    "audioProcessed": true,
+    "videoProcessed": true,
+    "visualDialogueEmpty": true
+  },
+  "limitations": [
+    "Real-media component preflight, not persisted indexing or a labelled accuracy evaluation.",
+    "No private filenames, IDs, observations or transcript text are stored in this evidence."
+  ],
+  "sourceBytes": 4182700,
+  "durationSeconds": 53.033,
+  "audio": {
+    "provider": "faster-whisper",
+    "model": "whisper-base",
+    "cues": 7,
+    "durationMs": 17371
+  },
+  "video": {
+    "segments": 12,
+    "usage": {
+      "stage": "video_analysis",
+      "provider": "baseten",
+      "model": "meta-models/muse-spark-open-1026",
+      "modelVersion": "meta-models/muse-spark-open-1026",
+      "inputTokens": 7396,
+      "outputTokens": 4016,
+      "durationMs": 38141,
+      "usageSource": "reported",
+      "estimatedUsd": 0.026313
+    }
+  }
+}

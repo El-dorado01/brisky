@@ -15,6 +15,7 @@ export function shouldRunWorkerProcess(
   env: NodeJS.ProcessEnv = process.env,
   argv: string[] = process.argv,
 ): boolean {
+  if(env.FACE_ONLY_WORKER==='true')return false;
   if (env.IS_WORKER === 'true' || env.RUN_WORKER_IN_API === 'true') {
     return true;
   }

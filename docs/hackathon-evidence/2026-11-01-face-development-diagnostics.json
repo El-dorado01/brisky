@@ -1,0 +1,169 @@
+{
+  "date": "2026-11-01",
+  "status": "development_diagnostics_only_not_ready_for_automatic_tagging",
+  "reviewedFrames": 36,
+  "labelledFaces": 41,
+  "sourceFiles": 18,
+  "unknownLabelMeaning": "Different people from every named participant, confirmed by owner; names may be known to the owner but were not enrolled",
+  "scope": "Two reviewed sample frames per source file. Not an exhaustive video scan or calibrated held-out recognition test. No identity names/images/vectors are included here.",
+  "detectorPresets": [
+    {
+      "detectorThreshold": 0.9,
+      "labelledFaces": 41,
+      "extractedFaces": 22,
+      "fixedCutoffDiagnostic": {
+        "matchCutoff": 0.55,
+        "enrolledIdentities": 4,
+        "gallerySourceFiles": 3,
+        "probeFaces": 34,
+        "knownProbes": 7,
+        "unenrolledProbes": 27,
+        "explicitlyUnknownProbes": 23,
+        "namedButUnenrollableProbes": 4,
+        "correctKnown": 0,
+        "wrongKnown": 0,
+        "unknownFalseAccepts": 0,
+        "abstentions": 34,
+        "extractionFailures": 18
+      }
+    },
+    {
+      "detectorThreshold": 0.75,
+      "labelledFaces": 41,
+      "extractedFaces": 24,
+      "fixedCutoffDiagnostic": {
+        "matchCutoff": 0.55,
+        "enrolledIdentities": 4,
+        "gallerySourceFiles": 3,
+        "probeFaces": 34,
+        "knownProbes": 7,
+        "unenrolledProbes": 27,
+        "explicitlyUnknownProbes": 23,
+        "namedButUnenrollableProbes": 4,
+        "correctKnown": 0,
+        "wrongKnown": 0,
+        "unknownFalseAccepts": 0,
+        "abstentions": 34,
+        "extractionFailures": 16
+      }
+    },
+    {
+      "detectorThreshold": 0.6,
+      "labelledFaces": 41,
+      "extractedFaces": 26,
+      "fixedCutoffDiagnostic": {
+        "matchCutoff": 0.55,
+        "enrolledIdentities": 4,
+        "gallerySourceFiles": 3,
+        "probeFaces": 34,
+        "knownProbes": 7,
+        "unenrolledProbes": 27,
+        "explicitlyUnknownProbes": 23,
+        "namedButUnenrollableProbes": 4,
+        "correctKnown": 0,
+        "wrongKnown": 0,
+        "unknownFalseAccepts": 0,
+        "abstentions": 34,
+        "extractionFailures": 15
+      }
+    }
+  ],
+  "matchCutoffDevelopmentComparison": [
+    {
+      "matchCutoff": 0.2,
+      "enrolledIdentities": 4,
+      "gallerySourceFiles": 3,
+      "probeFaces": 34,
+      "knownProbes": 7,
+      "unenrolledProbes": 27,
+      "explicitlyUnknownProbes": 23,
+      "namedButUnenrollableProbes": 4,
+      "correctKnown": 2,
+      "wrongKnown": 0,
+      "unknownFalseAccepts": 14,
+      "abstentions": 18,
+      "extractionFailures": 16
+    },
+    {
+      "matchCutoff": 0.3,
+      "enrolledIdentities": 4,
+      "gallerySourceFiles": 3,
+      "probeFaces": 34,
+      "knownProbes": 7,
+      "unenrolledProbes": 27,
+      "explicitlyUnknownProbes": 23,
+      "namedButUnenrollableProbes": 4,
+      "correctKnown": 2,
+      "wrongKnown": 0,
+      "unknownFalseAccepts": 13,
+      "abstentions": 19,
+      "extractionFailures": 16
+    },
+    {
+      "matchCutoff": 0.363,
+      "enrolledIdentities": 4,
+      "gallerySourceFiles": 3,
+      "probeFaces": 34,
+      "knownProbes": 7,
+      "unenrolledProbes": 27,
+      "explicitlyUnknownProbes": 23,
+      "namedButUnenrollableProbes": 4,
+      "correctKnown": 2,
+      "wrongKnown": 0,
+      "unknownFalseAccepts": 8,
+      "abstentions": 24,
+      "extractionFailures": 16
+    },
+    {
+      "matchCutoff": 0.45,
+      "enrolledIdentities": 4,
+      "gallerySourceFiles": 3,
+      "probeFaces": 34,
+      "knownProbes": 7,
+      "unenrolledProbes": 27,
+      "explicitlyUnknownProbes": 23,
+      "namedButUnenrollableProbes": 4,
+      "correctKnown": 0,
+      "wrongKnown": 0,
+      "unknownFalseAccepts": 2,
+      "abstentions": 32,
+      "extractionFailures": 16
+    },
+    {
+      "matchCutoff": 0.55,
+      "enrolledIdentities": 4,
+      "gallerySourceFiles": 3,
+      "probeFaces": 34,
+      "knownProbes": 7,
+      "unenrolledProbes": 27,
+      "explicitlyUnknownProbes": 23,
+      "namedButUnenrollableProbes": 4,
+      "correctKnown": 0,
+      "wrongKnown": 0,
+      "unknownFalseAccepts": 0,
+      "abstentions": 34,
+      "extractionFailures": 16
+    }
+  ],
+  "preprocessingComparison": [
+    {
+      "variant": "max_side_640",
+      "extractedFaces": 21,
+      "labelledFaces": 41
+    },
+    {
+      "variant": "annotated_crop_640",
+      "extractedFaces": 11,
+      "labelledFaces": 41
+    }
+  ],
+  "formalEvaluation": "Not run: current extraction does not provide two enrolled identities with usable references from two distinct files each, plus separate known/unknown calibration/test sets.",
+  "selectionProtocol": "Reference file per identity is the lexicographically first file with a usable feature; up to three references. All gallery files are excluded from probes. Named identities with no usable references are counted as unenrolled, not silently excluded. These source files have not been verified as distinct original recordings.",
+  "decision": "Keep live settings unchanged and keep explicit user confirmation. Lowering cutoffs is not supported by these development results. Improve/compare the recogniser and evaluate on fresh recording-level splits.",
+  "privacy": "Owner-authorized local inference only; originals unchanged; embeddings and case-level data remain in ignored storage.",
+  "inputHashes": {
+    "development-embeddings-0.9.private.json": "b0a57ac86f684bd9ba2192632330dbbf671ef3af85b35c36dd612937a15e7ba9",
+    "development-embeddings-0.75.private.json": "b49209c741e7a822d546bf5b3ad77a428f4649e7a8352ce9a25593f8d62e6616",
+    "development-embeddings-0.6.private.json": "86c5583e0cfc7b9e0467d97184da24c27f985484d527e6303b0b255fff72b80e"
+  }
+}

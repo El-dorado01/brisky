@@ -1,0 +1,23 @@
+{
+  "date": "2026-10-31",
+  "scope": "Real Next.js/engine/PostgreSQL/Chrome with temporary accounts and connector/media fixtures; no Google consent/token/folder API calls, indexing workers or inference",
+  "status": "passed",
+  "checks": [
+    "Owner-only account and indexing lists, no encrypted token exposure",
+    "Factory canvas uses live fixture files/progress and has no sample accounts",
+    "Folder selections persisted",
+    "Cross-owner save/delete denied",
+    "Missing Origin rejected",
+    "Sync stays disabled without creating work",
+    "Google auth URL points at configured SaaS callback",
+    "OAuth denial handled and cookie consumed; replay rejected",
+    "Connector modal uses real accounts",
+    "Disconnect retains indexed media",
+    "Unauthenticated account/status access denied"
+  ],
+  "screenshots": [
+    390,
+    1280
+  ],
+  "cleanup": "Temporary users, accounts and media rows deleted in finally"
+}

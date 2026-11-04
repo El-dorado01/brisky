@@ -1,0 +1,44 @@
+{
+  "date": "2026-10-31",
+  "scope": "One synthetic JPEG through actual Baseten analyzeFrames adapter; no personal footage, embeddings, indexing workers or Google calls",
+  "provider": "baseten",
+  "model": "meta-models/muse-spark-open-1026",
+  "checks": {
+    "singleObservation": true,
+    "originalTimestamp": true,
+    "readableText": true,
+    "colors": true
+  },
+  "observation": {
+    "timestamp": 7.5,
+    "objects": [
+      "solid red rectangle on left",
+      "solid blue rectangle on right",
+      "plain white background"
+    ],
+    "scene": "minimal static graphic display with white background and two colored blocks centered horizontally",
+    "activity": [
+      "no human activity visible - static graphic with no movement or action"
+    ],
+    "onScreenText": [
+      "BRISKY 47"
+    ],
+    "description": "A minimalist image on a white background with the black uppercase text 'BRISKY 47' centered at the top. Below the text are two solid-color rectangles separated by white space: a red rectangle on the left and a blue rectangle on the right. No people, motion, or environmental context is visible.",
+    "provider": "meta",
+    "model": "meta-models/muse-spark-open-1026",
+    "modelVersion": "meta-models/muse-spark-open-1026"
+  },
+  "usage": {
+    "stage": "frame_analysis",
+    "provider": "meta",
+    "model": "meta-models/muse-spark-open-1026",
+    "modelVersion": "meta-models/muse-spark-open-1026",
+    "inputTokens": 552,
+    "outputTokens": 785,
+    "durationMs": 6589,
+    "estimatedUsd": 0.00402625,
+    "usageSource": "reported"
+  },
+  "status": "passed",
+  "limitation": "Single-frame smoke test; not temporal, audio or real-footage accuracy evaluation"
+}

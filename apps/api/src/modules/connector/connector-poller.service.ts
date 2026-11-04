@@ -71,6 +71,10 @@ export class ConnectorPollerService implements OnModuleInit, OnModuleDestroy {
     }
 
     for (const account of accounts.rows) {
+      if (this.configService.get('INDEX_BUDGET_PLAN_ENABLED', 'false') === 'true') {
+        const allowed = String(this.configService.get('SAAS_DRIVE_SYNC_ACCOUNT_IDS', '')).split(/[,\s]+/);
+        if (this.configService.get('SAAS_DRIVE_SYNC_ENABLED', 'false') !== 'true' || !allowed.includes(account.id)) continue;
+      }
       if (this.activeSyncs.has(account.id)) {
         this.logger.debug(`Account ${account.id} sync already in progress, skipping poller tick`);
         continue;

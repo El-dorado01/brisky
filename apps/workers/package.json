@@ -1,0 +1,13 @@
+{
+  "name": "@brisky/workers",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "node --check src/main.cjs",
+    "dev": "pnpm --filter @brisky/api run build && node --watch src/main.cjs",
+    "start": "node src/main.cjs"
+  },
+  "dependencies": {
+    "@brisky/api": "workspace:*"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "date": "2026-10-31",
+  "status": "passed",
+  "checks": {
+    "indexedRetrieval": true,
+    "queryIndexDimensionsAgree": true,
+    "searchOwnership": true,
+    "playbackReady": true,
+    "persistedNaturalReply": true,
+    "persistedSourceCitations": true,
+    "sourceRangePlayback": true,
+    "sourceThumbnail": true,
+    "retryWithoutInference": true,
+    "reloadAndShortlist": true,
+    "thumbnailAuth": true
+  },
+  "segments": 12,
+  "replyCitations": 1,
+  "limitations": [
+    "Actual source HTTP/retrieval integration, not labelled accuracy or a new mobile browser playback evaluation.",
+    "Temporary test space/session removed; persisted source index and private playback media retained.",
+    "Queue ingestion, independent frame OCR and automatic sync remain unverified."
+  ]
+}

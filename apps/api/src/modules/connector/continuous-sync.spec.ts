@@ -116,7 +116,7 @@ describe('ConnectorsService Continuous Sync (Phase F6 Seams 1 & 2)', () => {
       // Connector returns 1 added video
       mockConnector.getChanges.mockResolvedValueOnce({
         added: [{
-          remoteId: 'drive_vid_new',
+          remoteId: 'drive_vid_new', path: 'f_1',
           name: 'new_lecture.mp4',
           mimeType: 'video/mp4',
           size: 104857600,
@@ -169,7 +169,7 @@ describe('ConnectorsService Continuous Sync (Phase F6 Seams 1 & 2)', () => {
       mockConnector.getChanges.mockResolvedValueOnce({
         added: [],
         modified: [{
-          remoteId: 'drive_vid_mod',
+          remoteId: 'drive_vid_mod', path:'f_1',
           name: 'edited_lecture.mp4',
           mimeType: 'video/mp4',
           size: 209715200,
@@ -227,7 +227,7 @@ describe('ConnectorsService Continuous Sync (Phase F6 Seams 1 & 2)', () => {
       mockConnector.getChanges.mockResolvedValueOnce({
         added: [],
         modified: [{
-          remoteId: 'drive_vid_renamed',
+          remoteId: 'drive_vid_renamed', path: 'f_1',
           name: 'renamed_lecture.mp4',
           mimeType: 'video/mp4',
           size: 104857600,

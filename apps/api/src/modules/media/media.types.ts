@@ -1,4 +1,5 @@
 export interface SearchResult {
+  conversationVerification?: import('../pipeline/conversation-evidence').ConversationVerification;
   assetId: string;
   segmentId: string;
   startTime: number;
@@ -7,8 +8,9 @@ export interface SearchResult {
   description: string;
   transcriptSnippet: string;
   score: number;
-  matchType: 'lexical' | 'semantic' | 'fusion';
-  winningPath: 'transcript' | 'visual' | 'gemini' | 'fusion' | 'semantic';
+  matchType: 'lexical' | 'semantic' | 'fusion' | 'identity';
+  winningPath: 'transcript' | 'visual' | 'gemini' | 'fusion' | 'semantic' | 'identity';
+  playbackUrl?: string;
   matchQuality?: 'direct' | 'related';
   thumbnailUrl: string;
   filename?: string;
@@ -16,12 +18,23 @@ export interface SearchResult {
   whyPicked?: string;
   queryRelation?: string;
   subTopic?: string;
+  verificationStatus?: 'pending' | 'matched' | 'not_matched' | 'uncertain' | 'insufficient_evidence' | 'error';
+  verificationIssue?: 'budget' | 'source' | 'temporary' | 'invalid_response';
   stage2Verified?: boolean;
   verificationConfidence?: number;
+  verificationEvidenceKind?: 'original' | 'preview' | 'stored_frames';
+  verificationMethod?: 'video' | 'frames';
   verificationExplanation?: string;
 }
 
 export interface SearchResponse {
+  identitySearch?: {
+    status: 'resolved' | 'needs_clarification';
+    references: import('../people/people-search').PersonReference[];
+    evidenceScope: 'manual_appearance_overlap'; queryConditionsVerified: false; hasMore: boolean;
+  };
+  searchStatus?: 'complete' | 'refining' | 'incomplete';
+  canContinue?: boolean;
   results: SearchResult[];
   hasExactMatch: boolean;
   queryIntent: 'spoken' | 'visual' | 'mixed';
@@ -101,6 +114,7 @@ export interface LibraryBenchmarkSummary {
 
 export interface UnitEconomicsSummary {
   stage1Ingestion: {
+    costBasis: 'legacy_asset_estimates';
     totalCostUsd: number;
     totalSourceMinutes: number;
     costPerSourceMinuteUsd: number;
@@ -108,15 +122,18 @@ export interface UnitEconomicsSummary {
     totalFramesAnalyzed: number;
   };
   stage2Verification: {
+    cachedEvaluations: number;
+    measurementStatus: 'not_measured';
+    /** Deprecated alias for cachedEvaluations; not an inference/request count. */
     totalQueriesVerified: number;
-    estimatedCostUsd: number;
-    costPerQueryUsd: number;
-    cacheHitRate: number;
+    estimatedCostUsd: number | null;
+    costPerQueryUsd: number | null;
+    cacheHitRate: number | null;
   };
   searchFeedback: {
     positiveCount: number;
     negativeCount: number;
-    positiveRatio: number;
+    positiveRatio: number | null;
   };
 }
 

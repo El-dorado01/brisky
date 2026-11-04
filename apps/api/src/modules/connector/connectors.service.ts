@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException,ConflictException } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import { TokenCryptoService } from './token-crypto.service';
 import { GoogleDriveConnector, GoogleDriveTokens, OAuth2Client } from './google-drive.connector';
@@ -37,6 +37,19 @@ export interface IncrementalSyncResult {
 @Injectable()
 export class ConnectorsService {
   private readonly logger = new Logger(ConnectorsService.name);
+  private readonly syncing=new Set<string>();
+  private async serializedSync<T>(account:string,owner:string,run:()=>Promise<T>):Promise<T>{
+    const key=owner+':'+account;if(this.syncing.has(key))throw new ConflictException('This source is already syncing. Please retry shortly.');
+    this.syncing.add(key);let client:any,locked=false;
+    try{
+      if(typeof this.db.getClient==='function'){
+        client=await this.db.getClient();
+        const result=await client.query('SELECT pg_try_advisory_lock(hashtext($1),hashtext($2)) AS locked',[owner,account]);locked=result.rows[0]?.locked===true;
+        if(!locked)throw new ConflictException('This source is already syncing. Please retry shortly.');
+      }
+      return await run();
+    }finally{try{if(locked)await client.query('SELECT pg_advisory_unlock(hashtext($1),hashtext($2))',[owner,account]);}catch(error){client?.release(error);client=undefined;}finally{client?.release();this.syncing.delete(key);}}
+  }
 
   constructor(
     private readonly db: DatabaseService,
@@ -46,35 +59,29 @@ export class ConnectorsService {
     private readonly indexingService: IndexingService,
   ) {}
 
+  private readonly oauthStates=new Map<string,{owner:string;expires:number}>();
+
   getGoogleAuthUrl(userId: string): string {
     if (!this.driveConnector.isConfigured()) {
       throw new BadRequestException('Google Drive OAuth credentials are not configured in .env');
     }
-    const state = JSON.stringify({ userId, nonce: randomBytes(8).toString('hex') });
-    return this.driveConnector.getAuthUrl(Buffer.from(state).toString('base64'));
+    if(!userId)throw new BadRequestException('Authenticated user required');
+    for(const [key,value] of this.oauthStates)if(value.expires<Date.now())this.oauthStates.delete(key);
+    if(this.oauthStates.size>=1000)throw new BadRequestException('Please retry linking shortly');
+    const state=randomBytes(32).toString('base64url');
+    this.oauthStates.set(state,{owner:userId,expires:Date.now()+600000});
+    return this.driveConnector.getAuthUrl(state);
   }
 
-  async handleGoogleCallback(code: string, stateEncoded?: string): Promise<{ accountId: string; email: string }> {
-    let userId: string | undefined;
-    if (stateEncoded) {
-      try {
-        const parsed = JSON.parse(Buffer.from(stateEncoded, 'base64').toString('utf8'));
-        userId = parsed.userId;
-      } catch {
-        this.logger.warn('Failed to parse OAuth state parameter');
-      }
-    }
+  async handleGoogleCallback(code:string,stateEncoded?:string){
+    const state=this.oauthStates.get(stateEncoded||'');this.oauthStates.delete(stateEncoded||'');
+    if(!state||state.expires<Date.now())throw new BadRequestException('OAuth session expired; start linking again');
+    return this.linkGoogleForUser(code,state.owner);
+  }
 
-    if (!userId) {
-      const userRes = await this.db.query<{ id: string }>('SELECT id FROM users LIMIT 1');
-      userId = userRes.rows[0]?.id;
-    }
-
-    if (!userId) {
-      throw new BadRequestException('No authenticated user found for OAuth link');
-    }
-
-    const tokens = await this.driveConnector.exchangeCodeForTokens(code);
+  async linkGoogleForUser(code:string,userId:string,redirectUri?:string):Promise<{accountId:string;email:string}>{
+    if(!userId||typeof code!=='string'||!code||code.length>8192)throw new BadRequestException('Invalid authorization request');
+    const tokens = await this.driveConnector.exchangeCodeForTokens(code,redirectUri);
     const authClient = this.driveConnector.createAuthenticatedClient(tokens);
     const userInfo = await this.driveConnector.getUserInfo(authClient);
 
@@ -229,6 +236,9 @@ export class ConnectorsService {
    * detects additions, modifications, and deletions, and enqueues indexing.
    */
   async syncAccount(accountId: string, userId: string): Promise<SyncResult> {
+    return this.serializedSync(accountId,userId,()=>this.fullSync(accountId,userId));
+  }
+  private async fullSync(accountId: string, userId: string): Promise<SyncResult> {
     const accRes = await this.db.query<{
       provider: string;
       selected_folders: Array<{ id: string; name: string }>;
@@ -256,8 +266,6 @@ export class ConnectorsService {
     const connector = this.connectorRegistry.get(provider);
     const auth = await this.getAuthContext(accountId, userId);
 
-    const { assets: discoveredFiles } = await connector.listAssets(auth, { folderIds });
-
     let initialCursor: string | null = null;
     if (connector.getStartCursor) {
       try {
@@ -266,6 +274,9 @@ export class ConnectorsService {
         this.logger.warn(`Failed to retrieve start cursor for account ${accountId}: ${err.message}`);
       }
     }
+    // Capture before enumeration so changes during listing are replayed, never skipped.
+    const {assets:discoveredFiles,nextCursor}=await connector.listAssets(auth,{folderIds});
+    if(nextCursor)throw new BadRequestException('Source discovery is incomplete. No missing files were archived.');
 
     this.logger.log(
       `[MediaConnector: ${provider}] Sync account ${accountId}: discovered ${discoveredFiles.length} file(s)`,
@@ -287,11 +298,12 @@ export class ConnectorsService {
         checksum: string;
         original_filename: string;
         original_path: string;
+        availability?:string;
       }>(
-        `SELECT id, status, drive_modified_time, checksum, original_filename, original_path FROM media_assets
-         WHERE external_file_id = $1 AND user_id = $2
+        `SELECT id, status, drive_modified_time, checksum, original_filename, original_path, availability FROM media_assets
+         WHERE external_file_id = $1 AND user_id = $2 AND connector_account_id=$3
          LIMIT 1`,
-        [file.remoteId, userId],
+        [file.remoteId, userId,accountId],
       );
 
       const fileModTime = file.modifiedTime || new Date();
@@ -299,10 +311,11 @@ export class ConnectorsService {
       if (existing.rows.length > 0) {
         const row = existing.rows[0];
         const prevModTime = row.drive_modified_time ? new Date(row.drive_modified_time) : null;
-        const isModifiedTime = prevModTime && fileModTime.getTime() > prevModTime.getTime() + 1000;
+        const isModifiedTime = !prevModTime || fileModTime.getTime() > prevModTime.getTime() + 1000;
         const checksumMatches = file.md5Checksum && row.checksum === file.md5Checksum;
 
-        if (checksumMatches || !isModifiedTime) {
+        if ((file.md5Checksum ? checksumMatches : !isModifiedTime) && row.status !== 'failed') {
+          if(row.availability==='offline')await this.db.query("UPDATE media_assets SET availability='online' WHERE id=$1 AND user_id=$2",[row.id,userId]);
           // Byte contents unchanged. Check for rename or move
           const nameChanged = file.name && file.name !== row.original_filename;
           const pathChanged = file.path && file.path !== row.original_path;
@@ -323,6 +336,7 @@ export class ConnectorsService {
           await this.db.query(
             `UPDATE media_assets
              SET status = 'queued', stage = 'queued', progress = 0,
+                 error = NULL, availability = 'online',
                  checksum = $1, original_filename = $2, original_path = $3,
                  drive_modified_time = $4, file_size = $5, updated_at = NOW()
              WHERE id = $6`,
@@ -348,6 +362,7 @@ export class ConnectorsService {
             externalFileId: file.remoteId,
             connectorAccountId: accountId,
             priority: 'batch',
+            forceReindex: true,
           });
           queuedCount++;
         }
@@ -435,6 +450,9 @@ export class ConnectorsService {
    * re-indexing on checksum drift with priority 'batch', and marking deleted media offline.
    */
   async syncAccountChanges(accountId: string, userId: string): Promise<IncrementalSyncResult> {
+    return this.serializedSync(accountId,userId,()=>this.incrementalSync(accountId,userId));
+  }
+  private async incrementalSync(accountId: string, userId: string): Promise<IncrementalSyncResult> {
     const accRes = await this.db.query<{
       provider: string;
       selected_folders: Array<{ id: string; name: string }>;
@@ -454,7 +472,7 @@ export class ConnectorsService {
       // If no cursor exists yet, fallback to full sync
       if (!sync_cursor) {
         this.logger.log(`No sync_cursor found for account ${accountId}; running full sync`);
-        const fullRes = await this.syncAccount(accountId, userId);
+        const fullRes = await this.fullSync(accountId, userId);
         return {
           addedCount: fullRes.queued,
           modifiedCount: 0,
@@ -473,6 +491,8 @@ export class ConnectorsService {
         ? accRes.rows[0].selected_folders
         : [];
       const folderIds = selectedFolders.map((f) => f.id);
+      if(!folderIds.length)throw new BadRequestException('Select at least one folder before syncing.');
+      const inScope=(file:ConnectorAsset)=>Boolean(file.path&&folderIds.includes(file.path));
 
       const auth = await this.getAuthContext(accountId, userId);
       const changes = await connector.getChanges(auth, sync_cursor);
@@ -483,14 +503,14 @@ export class ConnectorsService {
       let deletedCount = 0;
 
       // Helper to insert and enqueue a newly added asset
-      const handleNewAsset = async (file: ConnectorAsset) => {
-        if (folderIds.length > 0 && file.path && !folderIds.includes(file.path)) {
+      const handleNewAsset = async (file: ConnectorAsset,knownNew=false) => {
+        if (!inScope(file)) {
           return;
         }
 
-        const existing = await this.db.query<{ id: string }>(
-          `SELECT id FROM media_assets WHERE external_file_id = $1 AND user_id = $2 LIMIT 1`,
-          [file.remoteId, userId],
+        const existing = knownNew?{rows:[]}:await this.db.query<{ id: string }>(
+          `SELECT id FROM media_assets WHERE external_file_id = $1 AND user_id = $2 AND connector_account_id=$3 LIMIT 1`,
+          [file.remoteId, userId,accountId],
         );
 
         if (existing.rows.length > 0) {
@@ -540,13 +560,14 @@ export class ConnectorsService {
         this.logger.log(`[Incremental Sync] Added & queued asset '${file.name}' (${file.remoteId}) -> ${assetId}`);
       };
 
-      // 1. Process added assets
-      for (const file of changes.added) {
-        await handleNewAsset(file);
-      }
-
-      // 2. Process modified assets (Drive changes.list returns all file changes under modified)
-      for (const file of changes.modified) {
+      // Drive's creation-time heuristic can call a quick rename an "addition".
+      // Reconcile both sets against owned state rather than trusting that label.
+      for (const file of [...changes.added,...changes.modified]) {
+        if(!inScope(file)){
+          const hidden=await this.db.query("UPDATE media_assets SET availability='offline',updated_at=NOW() WHERE external_file_id=$1 AND user_id=$2 AND connector_account_id=$3",[file.remoteId,userId,accountId]);
+          deletedCount+=Number(hidden.rowCount||0);
+          continue;
+        }
         const existing = await this.db.query<{
           id: string;
           checksum: string;
@@ -554,12 +575,12 @@ export class ConnectorsService {
           original_path: string;
         }>(
           `SELECT id, checksum, original_filename, original_path FROM media_assets
-           WHERE external_file_id = $1 AND user_id = $2 LIMIT 1`,
-          [file.remoteId, userId],
+           WHERE external_file_id = $1 AND user_id = $2 AND connector_account_id=$3 LIMIT 1`,
+          [file.remoteId, userId,accountId],
         );
 
         if (existing.rows.length === 0) {
-          await handleNewAsset(file);
+          await handleNewAsset(file,true);
           continue;
         }
 
@@ -571,7 +592,7 @@ export class ConnectorsService {
           // Rename or move - retain intelligence
           await this.db.query(
             `UPDATE media_assets
-             SET original_filename = $1, original_path = $2, drive_modified_time = $3,
+             SET availability='online',original_filename = $1, original_path = $2, drive_modified_time = $3,
                  drive_web_view_link = COALESCE($4, drive_web_view_link), updated_at = NOW()
              WHERE id = $5`,
             [file.name, file.path || '', fileModTime, file.webViewLink || null, row.id],

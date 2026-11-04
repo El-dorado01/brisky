@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-31",
+  "provider": "baseten",
+  "model": "meta-models/muse-spark-open-1026",
+  "scope": "Generated four-second red-then-blue visual video and silent audio; no personal footage, workers or Drive sync",
+  "results": [
+    {
+      "stage": "silent_audio",
+      "checks": {
+        "noInventedSpeech": true,
+        "provider": true
+      },
+      "transcript": [],
+      "usage": {
+        "stage": "transcription",
+        "provider": "baseten",
+        "model": "meta-models/muse-spark-open-1026",
+        "modelVersion": "meta-models/muse-spark-open-1026",
+        "inputTokens": 261,
+        "outputTokens": 689,
+        "durationMs": 5051,
+        "estimatedUsd": 0.0032545,
+        "usageSource": "reported"
+      }
+    }
+  ],
+  "status": "passed",
+  "limitations": [
+    "Synthetic smoke checks only; no real speech, personal video or retrieval accuracy evaluation.",
+    "Direct Meta transport remains offline-tested only."
+  ]
+}

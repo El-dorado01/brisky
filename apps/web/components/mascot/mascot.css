@@ -1,0 +1,10 @@
+/* Rules for the Brisky mascot, copied from brisky-alien-mascot/src/style.css */
+.character-stage{position:relative}
+.character-stage canvas{position:relative;z-index:1}
+.ground-shadow{position:absolute;bottom:21px;width:105px;height:10px;left:calc(50% - 52px);border-radius:50%;background:#7d73c82b;filter:blur(8px)}
+.mascot-hit{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border:0;border-radius:48%;background:transparent;z-index:2;cursor:grab;touch-action:none;padding:0}
+.mascot-hit:active{cursor:grabbing}
+.mascot-hit:focus-visible{outline:2px dashed #8b83f4;outline-offset:5px}
+.static-brisky{position:absolute;left:calc(50% - 75px);top:40px;width:150px;height:125px;border-radius:48% 48% 43% 46%;background:radial-gradient(ellipse at 25% 20%,#f0bcff,transparent 30%),radial-gradient(ellipse at 75% 85%,#78e7ff,transparent 45%),linear-gradient(135deg,#78ddff,#3540e8 55%,#c29afa);box-shadow:inset 0 0 6px 3px #cefaff}
+.disabled-note{position:absolute;inset:0;display:grid;place-items:center;font-size:11px;color:#6b7190}
+@keyframes thought-in{from{opacity:0;transform:translateY(6px) scale(.96)}to{opacity:1;transform:none}}

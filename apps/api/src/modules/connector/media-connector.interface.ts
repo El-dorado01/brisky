@@ -24,6 +24,18 @@ export interface ConnectorChanges {
   newCursor?: string;
 }
 
+export interface MediaRangeResponse {
+  stream: NodeJS.ReadableStream;
+  status: number;
+  contentRange: string;
+}
+export interface MediaReadSession {
+  size: number;
+  version: string;
+  read(start: number, length: number, signal: AbortSignal): Promise<MediaRangeResponse>;
+  validate(signal: AbortSignal): Promise<void>;
+}
+
 export interface ListAssetsOptions {
   folderIds?: string[];
   cursor?: string;
@@ -85,7 +97,11 @@ export interface MediaConnector<TAuth = any> {
     remoteId: string,
     start: number,
     length?: number,
+    signal?: AbortSignal,
   ): Promise<NodeJS.ReadableStream>;
+
+  /** Version-checked byte access for decoders that perform their own seeking. */
+  openReadSession?(auth: TAuth, remoteId: string, signal?: AbortSignal): Promise<MediaReadSession>;
 
   watchChanges?(auth: TAuth, callbackUrl: string): Promise<{ channelId: string; resourceId: string }>;
 

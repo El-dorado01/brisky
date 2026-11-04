@@ -1,14 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { embeddingProviderForUser } from './embedding-provider';
 import * as fs from 'fs';
 import * as path from 'path';
-import { GeminiIntelligenceService } from './gemini-intelligence.service';
+import { AiIntelligenceService } from './ai-intelligence.service';
 import { LocalEmbeddingService } from './local-embedding.service';
 import { aggregateFrameObservations, unique } from './scene-sampling';
 import {
   ANALYSIS_VERSION,
   FrameObservation,
-  GeminiVideoAnalysis,
+  VideoAnalysis,
   ModelUsage,
   PipelineArtifacts,
   PipelineCost,
@@ -24,12 +25,13 @@ export class IntelligenceMergerService {
   private readonly logger = new Logger(IntelligenceMergerService.name);
 
   constructor(
-    private readonly geminiService: GeminiIntelligenceService,
+    private readonly aiService: AiIntelligenceService,
     private readonly localEmbeddingService: LocalEmbeddingService,
     private readonly configService: ConfigService,
   ) {}
 
   async mergeAndPersist(input: {
+    userId?:string;
     assetId: string;
     originalFilename: string;
     checksum: string;
@@ -41,7 +43,7 @@ export class IntelligenceMergerService {
     scenes: SceneBoundary[];
     visual: FrameObservation[];
     transcript: TranscriptCue[];
-    gemini: GeminiVideoAnalysis;
+    gemini: VideoAnalysis;
     usages: ModelUsage[];
     timings: StageTiming[];
     indexStartedAt: number;
@@ -61,7 +63,7 @@ export class IntelligenceMergerService {
 
     const segments: UnifiedSegment[] = [];
     const embeddingUsages: ModelUsage[] = [];
-    const modelLabel = this.geminiService.getPrimaryModel();
+    const modelLabel = this.aiService.getPrimaryModel();
 
     for (let i = 0; i < scenes.length; i++) {
       const scene = scenes[i];
@@ -143,7 +145,7 @@ export class IntelligenceMergerService {
         .join('. ');
 
       this.logger.log(`Embedding segment ${scene.sceneId + 1} (${start}s-${end}s)`);
-      const embedded = await this.generateEmbeddingForText(embeddingText);
+      const embedded = await this.generateEmbeddingForText(embeddingText,input.userId);
       embeddingUsages.push(embedded.usage);
 
       segments.push({
@@ -263,24 +265,13 @@ export class IntelligenceMergerService {
     return artifacts;
   }
 
-  async generateEmbeddingForText(embeddingText: string): Promise<{ values: number[]; usage: ModelUsage }> {
-    const preferredProvider = this.configService.get<string>(
-      'EMBEDDING_PROVIDER',
-      'gemini',
-    );
-    if (
-      preferredProvider === 'local' &&
-      this.localEmbeddingService.isAvailable()
-    ) {
-      try {
-        return await this.localEmbeddingService.generateEmbedding(embeddingText);
-      } catch (localErr) {
-        this.logger.warn(
-          `Local embedding failed, falling back to Gemini: ${localErr}`,
-        );
-      }
+  async generateEmbeddingForText(embeddingText: string,userId?:string): Promise<{ values: number[]; usage: ModelUsage }> {
+    const preferredProvider = embeddingProviderForUser(this.configService,userId);
+    if (preferredProvider === 'local') {
+      if (!this.localEmbeddingService.isAvailable()) throw new Error('Local embedding engine unavailable');
+      return await this.localEmbeddingService.generateEmbedding(embeddingText);
     }
-    return this.geminiService.generateEmbedding(embeddingText);
+    return this.aiService.generateEmbedding(embeddingText);
   }
 
   private addSpatialHints(object: string, contextDesc: string): string {

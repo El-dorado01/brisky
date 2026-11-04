@@ -1,0 +1,15 @@
+{
+  "date": "2026-11-01",
+  "status": "passed",
+  "scope": "Rollback-only PostgreSQL schema and real service fixture; no media/model calls",
+  "checks": [
+    "Owner isolation",
+    "Pending suggestions excluded from search",
+    "Idempotent confirmation creates one frame-scoped face_match tag",
+    "Confirmed tag becomes searchable",
+    "Rejection creates no tag",
+    "Changed reference invalidates suggestions",
+    "Changed source checksum blocks confirmation",
+    "Profile deletion cascades suggestions"
+  ]
+}

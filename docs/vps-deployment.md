@@ -58,6 +58,8 @@ Create `/opt/brisky/.env` on the VPS host:
 NODE_ENV=production
 IS_WORKER=true
 RUN_WORKER_IN_API=false
+JWT_SECRET=<private-random-secret-at-least-32-characters>
+ENABLE_DEMO_ACCOUNT=false
 
 # Database & Queue Connectivity (Points to your DB/Redis host)
 DATABASE_URL=postgresql://postgres:<password>@<db-host>:5432/brisky
@@ -66,8 +68,10 @@ REDIS_PORT=6379
 REDIS_PASSWORD=<redis-password>
 
 # AI Services
-GEMINI_API_KEY=<your-gemini-api-key>
-GEMINI_MODEL=gemini-2.5-flash
+AI_PROVIDER=google
+AI_API_KEY=<your-provider-api-key>
+AI_MODEL=gemini-2.5-flash
+# Remote inference also requires explicit budget and verified model pricing; see ai-budget-controls.md.
 
 # Worker concurrency & scratch (must match apps/api env names)
 GLOBAL_MAX_ACTIVE_JOBS=2

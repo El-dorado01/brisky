@@ -10,8 +10,15 @@ import { QueueModule } from './modules/queue/queue.module';
 import { MediaModule } from './modules/media/media.module';
 import { ConnectorsModule } from './modules/connector/connectors.module';
 import * as path from 'path';
+import { APP_FILTER } from '@nestjs/core';
+import { ApiErrorsFilter } from './common/api-errors';
+import { ApiContractController } from './common/api-contract';
+import { PeopleModule } from './modules/people/people.module';
+import { ConversationModule } from './modules/conversation/conversation.module';
 
 @Module({
+  controllers: [ApiContractController],
+  providers: [{ provide: APP_FILTER, useClass: ApiErrorsFilter }],
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
@@ -26,6 +33,7 @@ import * as path from 'path';
     BullModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
+        extraOptions: { manualRegistration: config.get('BRISKY_MANUAL_QUEUE_REGISTRATION') === 'true' },
         connection: {
           host: config.get<string>('REDIS_HOST', 'localhost'),
           port: Number(config.get('REDIS_PORT', 6379)),
@@ -38,6 +46,8 @@ import * as path from 'path';
     PipelineModule,
     HealthModule,
     MediaModule,
+    PeopleModule,
+    ConversationModule,
   ],
 })
 export class AppModule {}

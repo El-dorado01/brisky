@@ -91,8 +91,8 @@ export class GoogleDriveConnector implements MediaConnector<OAuth2Client> {
     }
   }
 
-  createOAuthClient(): OAuth2Client {
-    return new google.auth.OAuth2(this.clientId, this.clientSecret, this.redirectUri);
+  createOAuthClient(redirectUri=this.redirectUri): OAuth2Client {
+    return new google.auth.OAuth2(this.clientId, this.clientSecret, redirectUri);
   }
 
   createAuthenticatedClient(tokens: GoogleDriveTokens): OAuth2Client {
@@ -101,8 +101,8 @@ export class GoogleDriveConnector implements MediaConnector<OAuth2Client> {
     return client;
   }
 
-  getAuthUrl(state?: string): string {
-    const client = this.createOAuthClient();
+  getAuthUrl(state?: string,redirectUri?:string): string {
+    const client = this.createOAuthClient(redirectUri);
     const scopes = [
       // Read-only access to user's existing media files (guarantees originals can never be modified)
       'https://www.googleapis.com/auth/drive.readonly',
@@ -120,8 +120,8 @@ export class GoogleDriveConnector implements MediaConnector<OAuth2Client> {
     });
   }
 
-  async exchangeCodeForTokens(code: string): Promise<GoogleDriveTokens> {
-    const client = this.createOAuthClient();
+  async exchangeCodeForTokens(code: string,redirectUri?:string): Promise<GoogleDriveTokens> {
+    const client = this.createOAuthClient(redirectUri);
     const { tokens } = await client.getToken(code);
     return tokens;
   }
@@ -325,7 +325,9 @@ export class GoogleDriveConnector implements MediaConnector<OAuth2Client> {
     remoteId: string,
     start: number,
     length?: number,
+    signal?: AbortSignal,
   ): Promise<NodeJS.ReadableStream> {
+    signal?.throwIfAborted();
     const drive = google.drive({ version: 'v3', auth: authClient });
     const endHeader = length !== undefined ? `${start + length - 1}` : '';
     const rangeHeader = `bytes=${start}-${endHeader}`;
@@ -335,10 +337,51 @@ export class GoogleDriveConnector implements MediaConnector<OAuth2Client> {
       {
         responseType: 'stream',
         headers: { Range: rangeHeader },
+        ...(signal ? { signal } : {}),
       },
     );
 
+    if (signal?.aborted) {
+      (res.data as any)?.destroy?.();
+      signal.throwIfAborted();
+    }
     return res.data as NodeJS.ReadableStream;
+  }
+
+  async openReadSession(authClient: OAuth2Client, remoteId: string, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    const drive = google.drive({ version: 'v3', auth: authClient });
+    const identity = async (abortSignal?: AbortSignal) => {
+      abortSignal?.throwIfAborted();
+      const res = await drive.files.get({ fileId: remoteId, fields: 'size,version,capabilities(canDownload)' },
+        { retry: false, ...(abortSignal ? { signal: abortSignal } : {}) });
+      abortSignal?.throwIfAborted();
+      const size = Number(res.data.size);
+      const version = String(res.data.version || '');
+      if (!Number.isSafeInteger(size) || size <= 0 || !version || res.data.capabilities?.canDownload === false) {
+        throw new Error('Cloud source does not support versioned media reads');
+      }
+      return { size, version };
+    };
+    const initial = await identity(signal);
+    return { ...initial,
+      read: async (start: number, length: number, abortSignal: AbortSignal) => {
+        abortSignal.throwIfAborted();
+        if (!Number.isSafeInteger(start) || start < 0 || !Number.isSafeInteger(length) || length <= 0 ||
+            !Number.isSafeInteger(start + length) || start + length > initial.size) throw new Error('Invalid source byte range');
+        const res = await drive.files.get({ fileId: remoteId, alt: 'media' }, {
+          responseType: 'stream', headers: { Range: `bytes=${start}-${start + length - 1}` }, signal: abortSignal, retry: false,
+        });
+        if (abortSignal.aborted) { (res.data as any)?.destroy?.(); abortSignal.throwIfAborted(); }
+        const headers = res.headers as unknown as { get?: (name: string) => string | null; [key: string]: unknown };
+        return { stream: res.data as NodeJS.ReadableStream, status: res.status,
+          contentRange: String((typeof headers.get === 'function' ? headers.get('content-range') : headers['content-range']) || '') };
+      },
+      validate: async (abortSignal: AbortSignal) => {
+        const current = await identity(abortSignal);
+        if (current.size !== initial.size || current.version !== initial.version) throw new Error('Cloud source changed during inspection');
+      },
+    };
   }
 
   async deleteAsset(authClient: OAuth2Client, remoteId: string): Promise<boolean> {

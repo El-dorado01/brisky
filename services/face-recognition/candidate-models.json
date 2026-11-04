@@ -1,0 +1,17 @@
+{
+  "status": "development_comparison_only",
+  "checked_on": "2026-11-01",
+  "auraface": {
+    "repository": "fal/AuraFace-v1",
+    "revision": "af6d057c9b0ec4071d4c49c80e3539258798b609",
+    "file": "glintr100.onnx",
+    "bytes": 260694151,
+    "sha256": "a7933ea5330113b01c9b60351d8f4c33003f145d8470ac5f0e52ee2effe25c60",
+    "license": "Apache-2.0 (publisher declaration; training provenance not independently audited)",
+    "source": "https://huggingface.co/fal/AuraFace-v1",
+    "license_file": "LICENSE.md",
+    "license_bytes": 12624,
+    "license_sha256": "609e2cb599f84aaa41d8ef29d8fdb04d164fab22e8d9292ca34a599d0f56a338",
+    "note": "Recognition weights only. Do not download the bundled detector, landmarks or attribute models. Existing YuNet supplies detection and the SFace alignCrop implementation supplies the shared ArcFace 112x112 landmark template. Never mix the 512-dimensional candidate vectors with SFace vectors or activate this candidate in the live API."
+  }
+}

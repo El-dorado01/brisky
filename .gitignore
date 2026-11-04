@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+.pnpm-store/
 .pnp
 .pnp.js
 
@@ -7,6 +8,7 @@ node_modules/
 dist/
 build/
 *.tsbuildinfo
+__pycache__/
 
 # Environment variables
 .env
@@ -42,3 +44,9 @@ scratch/
 
 # Git worktrees
 .worktrees/
+
+# Private diagnostic scripts, snapshots and generated test storage
+.tmp/
+/test-storage-*/
+.venv-face/
+.venv-mms/

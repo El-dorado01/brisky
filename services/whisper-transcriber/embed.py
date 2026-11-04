@@ -2,7 +2,7 @@
 """
 Brisky Local Vector Embedding Engine
 High-performance CPU inference via ONNX Runtime & all-MiniLM-L6-v2.
-Produces 384-dimensional normalized semantic vectors in ~3ms.
+Produces 384-dimensional normalized semantic vectors. Supports a persistent JSONL worker.
 """
 
 import argparse
@@ -10,7 +10,6 @@ import json
 import os
 import sys
 import time
-import numpy as np
 
 # Auto-link local .venv site-packages
 _script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -35,8 +34,9 @@ def get_model():
     from tokenizers import Tokenizer
     from huggingface_hub import hf_hub_download
 
-    tok_path = hf_hub_download("sentence-transformers/all-MiniLM-L6-v2", "tokenizer.json")
-    model_path = hf_hub_download("Xenova/all-MiniLM-L6-v2", "onnx/model_quantized.onnx")
+    offline = os.getenv("LOCAL_EMBEDDING_ALLOW_DOWNLOAD", "false").lower() != "true"
+    tok_path = hf_hub_download("sentence-transformers/all-MiniLM-L6-v2", "tokenizer.json", local_files_only=offline)
+    model_path = hf_hub_download("Xenova/all-MiniLM-L6-v2", "onnx/model_quantized.onnx", local_files_only=offline)
 
     tokenizer = Tokenizer.from_file(tok_path)
     tokenizer.enable_padding(direction="right", pad_id=0, pad_token="[PAD]")
@@ -54,6 +54,7 @@ def get_model():
 
 
 def embed_batch(texts: list[str]) -> list[list[float]]:
+    import numpy as np
     if not texts:
         return []
 
@@ -85,12 +86,36 @@ def embed_batch(texts: list[str]) -> list[list[float]]:
     return normalized.tolist()
 
 
+def serve():
+    """One response per input line; model/tokenizer globals survive requests."""
+    for line in sys.stdin:
+        request_id = None
+        try:
+            request = json.loads(line)
+            request_id = request["id"]
+            texts = request["texts"]
+            if not isinstance(request_id, str) or not isinstance(texts, list) or not texts or len(texts) > 64 or not all(isinstance(t, str) for t in texts):
+                raise ValueError("Invalid embedding request")
+            started = time.perf_counter()
+            vectors = embed_batch(texts)
+            response = {"id": request_id, "model": "all-MiniLM-L6-v2", "dimensions": 384,
+                        "duration_ms": round((time.perf_counter() - started) * 1000, 2), "vectors": vectors}
+        except Exception:
+            # Keep stdout machine-readable and do not echo private input or model/cache paths.
+            response = {"id": request_id, "error": "Local embedding request failed"}
+        print(json.dumps(response), flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Brisky ONNX Embedding Engine")
     parser.add_argument("--text", help="Single text string to embed")
     parser.add_argument("--batch", help="Path to JSON file containing array of text strings")
     parser.add_argument("--output", help="Optional output JSON file path")
+    parser.add_argument("--serve", action="store_true", help="Persistent JSONL worker")
     args = parser.parse_args()
+    if args.serve:
+        serve()
+        return
 
     t0 = time.perf_counter()
 

@@ -1,2 +1,4 @@
 packages:
   - 'apps/*'
+  # Next.js retains its existing independent lockfile and package-manager version.
+  - '!apps/web'

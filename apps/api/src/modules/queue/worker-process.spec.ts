@@ -1,6 +1,9 @@
 import { shouldRunWorkerProcess } from './queue.module';
 
 describe('Worker Process Separation Seam (Phase F0)', () => {
+  it('does not consume indexing jobs in the local faces-only worker mode',()=>{
+    expect(shouldRunWorkerProcess({IS_WORKER:'true',FACE_ONLY_WORKER:'true'})).toBe(false);
+  });
   it('does NOT run worker in API by default (when RUN_WORKER_IN_API is unset)', () => {
     expect(shouldRunWorkerProcess({})).toBe(false);
   });

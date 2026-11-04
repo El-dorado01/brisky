@@ -9,6 +9,14 @@ describe('ConnectorPollerService (Phase F6 Seam 3)', () => {
   let mockConnectorsService: any;
   let mockConfig: any;
 
+  it('restricts controlled polling to explicitly enabled connector accounts', async () => {
+    const sync={syncAccountChanges:jest.fn()};
+    const db={query:jest.fn(async(sql:string)=>({rows:sql.includes('SELECT id,')?[{id:'allowed',user_id:'owner'},{id:'other',user_id:'other-owner'}]:[{count:0}]}))};
+    const values:Record<string,string>={INDEX_BUDGET_PLAN_ENABLED:'true',SAAS_DRIVE_SYNC_ENABLED:'true',SAAS_DRIVE_SYNC_ACCOUNT_IDS:'allowed'};
+    const scoped=new ConnectorPollerService(db as any,sync as any,{get:(key:string,fallback:unknown)=>values[key]??fallback} as any);
+    await scoped.pollAllAccounts();expect(sync.syncAccountChanges.mock.calls).toEqual([['allowed','owner']]);
+  });
+
   beforeEach(() => {
     jest.useFakeTimers();
 

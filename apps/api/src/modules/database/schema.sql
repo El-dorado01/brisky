@@ -113,7 +113,63 @@ CREATE TABLE IF NOT EXISTS indexing_jobs (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Event-developed manual identity grounding. No biometric embeddings or auto matches yet.
+CREATE TABLE IF NOT EXISTS people (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name VARCHAR(120) NOT NULL CHECK (length(btrim(name)) > 0),
+  aliases TEXT[] NOT NULL DEFAULT '{}',
+  is_me BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(user_id, id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_people_self ON people(user_id) WHERE is_me;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_media_asset_owner_identity ON media_assets(user_id, id);
+
+CREATE TABLE IF NOT EXISTS person_appearances (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL,
+  person_id UUID NOT NULL,
+  asset_id VARCHAR(64) NOT NULL,
+  start_s DOUBLE PRECISION NOT NULL CHECK (start_s >= 0 AND start_s < 'Infinity'::float8),
+  end_s DOUBLE PRECISION NOT NULL CHECK (end_s > start_s AND end_s <= 604800),
+  frame_s DOUBLE PRECISION NOT NULL CHECK (frame_s >= start_s AND frame_s < end_s),
+  box DOUBLE PRECISION[] NOT NULL CHECK (cardinality(box)=4 AND array_ndims(box)=1 AND array_lower(box,1)=1
+    AND array_position(box,NULL) IS NULL AND box[1]>=0 AND box[2]>=0 AND box[3]>0 AND box[4]>0
+    AND box[1]+box[3]<=1 AND box[2]+box[4]<=1),
+  status VARCHAR(16) NOT NULL DEFAULT 'confirmed' CHECK (status IN ('confirmed','rejected')),
+  origin VARCHAR(16) NOT NULL DEFAULT 'manual' CHECK (origin='manual'),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  FOREIGN KEY(user_id, person_id) REFERENCES people(user_id,id) ON DELETE CASCADE,
+  FOREIGN KEY(user_id, asset_id) REFERENCES media_assets(user_id,id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_appearances_person ON person_appearances(user_id,person_id,id);
+CREATE INDEX IF NOT EXISTS idx_appearances_asset ON person_appearances(user_id,asset_id);
+
 -- Media Registry: Asset Relationships Graph Table (Lineage, Derivatives & Duplicates)
+-- Durable clip submission/outbox. Keep keys hashed and preserve request identity across queue outages.
+CREATE TABLE IF NOT EXISTS clip_operations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  source_asset_id VARCHAR(64) NOT NULL REFERENCES media_assets(id) ON DELETE CASCADE,
+  key_hash CHAR(64) NOT NULL,
+  request_hash CHAR(64) NOT NULL,
+  bull_job_id VARCHAR(128) NOT NULL UNIQUE,
+  output_asset_id VARCHAR(64) NOT NULL UNIQUE,
+  envelope JSONB NOT NULL,
+  completed BOOLEAN NOT NULL DEFAULT FALSE,
+  dispatch_pending BOOLEAN NOT NULL DEFAULT TRUE,
+  dispatch_after TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(user_id, key_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_clip_dispatch ON clip_operations(dispatch_after) WHERE dispatch_pending;
+ALTER TABLE indexing_jobs ADD COLUMN IF NOT EXISTS clip_operation_id UUID UNIQUE REFERENCES clip_operations(id) ON DELETE SET NULL;
+ALTER TABLE indexing_jobs ADD COLUMN IF NOT EXISTS result_asset_id VARCHAR(64) REFERENCES media_assets(id) ON DELETE SET NULL;
+
 CREATE TABLE IF NOT EXISTS asset_relationships (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   source_asset_id VARCHAR(64) REFERENCES media_assets(id) ON DELETE CASCADE,
@@ -180,6 +236,9 @@ CREATE INDEX IF NOT EXISTS idx_segments_asset ON media_segments(asset_id);
 CREATE INDEX IF NOT EXISTS idx_segments_user ON media_segments(user_id);
 CREATE INDEX IF NOT EXISTS idx_observations_user ON media_observations(user_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_asset ON indexing_jobs(asset_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_owner_lookup ON indexing_jobs(bull_job_id,user_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_owner_page ON indexing_jobs(user_id,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS idx_assets_owner_page ON media_assets(user_id,created_at DESC,id DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_user ON indexing_jobs(user_id);
 
 -- Immutable FTS document vector generator function
@@ -301,6 +360,26 @@ CREATE TABLE IF NOT EXISTS asset_processing_locks (
   bull_job_id VARCHAR(128) NOT NULL,
   locked_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Event-developed Factory stage history; independent of short polling intervals.
+CREATE TABLE IF NOT EXISTS factory_stage_runs (
+  id UUID PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  asset_id VARCHAR(64) NOT NULL,
+  bull_job_id VARCHAR(128) NOT NULL,
+  attempt INT NOT NULL CHECK(attempt>0),
+  stage TEXT NOT NULL CHECK(stage IN ('fetch','scenes','transcribe','understand','index','purge')),
+  step TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('running','completed','failed','deferred')),
+  started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  finished_at TIMESTAMPTZ,
+  duration_ms DOUBLE PRECISION CHECK(duration_ms>=0),
+  FOREIGN KEY(user_id,asset_id) REFERENCES media_assets(user_id,id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_factory_runs_owner_time ON factory_stage_runs(user_id,started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_factory_runs_active ON factory_stage_runs(user_id,started_at DESC) WHERE status='running';
+ALTER TABLE factory_stage_runs ADD COLUMN IF NOT EXISTS completed_items INT;
+ALTER TABLE factory_stage_runs ADD COLUMN IF NOT EXISTS total_items INT;
 
 
 

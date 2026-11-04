@@ -1,0 +1,224 @@
+{
+  "date": "2026-11-01",
+  "status": "development_comparison_only_no_live_switch",
+  "candidatePublisher": "https://huggingface.co/fal/AuraFace-v1",
+  "candidateRevision": "af6d057c9b0ec4071d4c49c80e3539258798b609",
+  "candidateModelBytes": 260694151,
+  "license": "Apache-2.0 (publisher declaration; training provenance not independently audited)",
+  "inputHashes": {
+    "sface": "e955f33286c3e0973c0fcf2a89ec858392f8f31346237b41a04d05e54c86eddf",
+    "auraface": "9475580686a502d0268c801ae942839b5adaf9dac2dac3cd10e922bbd533a8a9"
+  },
+  "manifestSha256": "33a86b3706a7de51b5b7fd78a3d80bd883561e405a7e727cdcb1d1a3acaae307",
+  "variants": [
+    {
+      "variant": "sface",
+      "model": "sface:0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79:yunet:8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4:detector-0.75:v1",
+      "preprocessing": {
+        "opencv": "4.14.0",
+        "rgb": true,
+        "inputMean": 0,
+        "inputStd": 1,
+        "alignment": "opencv_112px_five_point_similarity",
+        "detectorThreshold": 0.75
+      },
+      "labelledFaces": 41,
+      "extractedFaces": 24,
+      "developmentCutoffSweep": [
+        {
+          "matchCutoff": 0.2,
+          "enrolledIdentities": 4,
+          "gallerySourceFiles": 3,
+          "probeFaces": 34,
+          "knownProbes": 7,
+          "unenrolledProbes": 27,
+          "explicitlyUnknownProbes": 23,
+          "namedButUnenrollableProbes": 4,
+          "correctKnown": 2,
+          "wrongKnown": 0,
+          "unknownFalseAccepts": 14,
+          "abstentions": 18,
+          "extractionFailures": 16
+        },
+        {
+          "matchCutoff": 0.3,
+          "enrolledIdentities": 4,
+          "gallerySourceFiles": 3,
+          "probeFaces": 34,
+          "knownProbes": 7,
+          "unenrolledProbes": 27,
+          "explicitlyUnknownProbes": 23,
+          "namedButUnenrollableProbes": 4,
+          "correctKnown": 2,
+          "wrongKnown": 0,
+          "unknownFalseAccepts": 13,
+          "abstentions": 19,
+          "extractionFailures": 16
+        },
+        {
+          "matchCutoff": 0.363,
+          "enrolledIdentities": 4,
+          "gallerySourceFiles": 3,
+          "probeFaces": 34,
+          "knownProbes": 7,
+          "unenrolledProbes": 27,
+          "explicitlyUnknownProbes": 23,
+          "namedButUnenrollableProbes": 4,
+          "correctKnown": 2,
+          "wrongKnown": 0,
+          "unknownFalseAccepts": 8,
+          "abstentions": 24,
+          "extractionFailures": 16
+        },
+        {
+          "matchCutoff": 0.45,
+          "enrolledIdentities": 4,
+          "gallerySourceFiles": 3,
+          "probeFaces": 34,
+          "knownProbes": 7,
+          "unenrolledProbes": 27,
+          "explicitlyUnknownProbes": 23,
+          "namedButUnenrollableProbes": 4,
+          "correctKnown": 0,
+          "wrongKnown": 0,
+          "unknownFalseAccepts": 2,
+          "abstentions": 32,
+          "extractionFailures": 16
+        },
+        {
+          "matchCutoff": 0.55,
+          "enrolledIdentities": 4,
+          "gallerySourceFiles": 3,
+          "probeFaces": 34,
+          "knownProbes": 7,
+          "unenrolledProbes": 27,
+          "explicitlyUnknownProbes": 23,
+          "namedButUnenrollableProbes": 4,
+          "correctKnown": 0,
+          "wrongKnown": 0,
+          "unknownFalseAccepts": 0,
+          "abstentions": 34,
+          "extractionFailures": 16
+        }
+      ],
+      "timing": {
+        "startupSecondsIncludingHashChecks": 0.73,
+        "extractionWallSeconds": 6.232,
+        "extractionCpuSeconds": 9.359,
+        "peakProcessMiB": 254.8,
+        "threads": 2,
+        "scope": "Annotated still-face extractions; repeated frames are re-detected. Excludes video decode, download and full archive scan."
+      }
+    },
+    {
+      "variant": "auraface",
+      "model": "auraface:a7933ea5330113b01c9b60351d8f4c33003f145d8470ac5f0e52ee2effe25c60:yunet:8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4:detector-0.75:v1",
+      "preprocessing": {
+        "opencv": "4.14.0",
+        "rgb": true,
+        "inputMean": 127.5,
+        "inputStd": 127.5,
+        "alignment": "opencv_112px_five_point_similarity",
+        "detectorThreshold": 0.75
+      },
+      "labelledFaces": 41,
+      "extractedFaces": 24,
+      "developmentCutoffSweep": [
+        {
+          "matchCutoff": 0.2,
+          "enrolledIdentities": 4,
+          "gallerySourceFiles": 3,
+          "probeFaces": 34,
+          "knownProbes": 7,
+          "unenrolledProbes": 27,
+          "explicitlyUnknownProbes": 23,
+          "namedButUnenrollableProbes": 4,
+          "correctKnown": 2,
+          "wrongKnown": 0,
+          "unknownFalseAccepts": 9,
+          "abstentions": 23,
+          "extractionFailures": 16
+        },
+        {
+          "matchCutoff": 0.3,
+          "enrolledIdentities": 4,
+          "gallerySourceFiles": 3,
+          "probeFaces": 34,
+          "knownProbes": 7,
+          "unenrolledProbes": 27,
+          "explicitlyUnknownProbes": 23,
+          "namedButUnenrollableProbes": 4,
+          "correctKnown": 2,
+          "wrongKnown": 0,
+          "unknownFalseAccepts": 3,
+          "abstentions": 29,
+          "extractionFailures": 16
+        },
+        {
+          "matchCutoff": 0.363,
+          "enrolledIdentities": 4,
+          "gallerySourceFiles": 3,
+          "probeFaces": 34,
+          "knownProbes": 7,
+          "unenrolledProbes": 27,
+          "explicitlyUnknownProbes": 23,
+          "namedButUnenrollableProbes": 4,
+          "correctKnown": 2,
+          "wrongKnown": 0,
+          "unknownFalseAccepts": 1,
+          "abstentions": 31,
+          "extractionFailures": 16
+        },
+        {
+          "matchCutoff": 0.45,
+          "enrolledIdentities": 4,
+          "gallerySourceFiles": 3,
+          "probeFaces": 34,
+          "knownProbes": 7,
+          "unenrolledProbes": 27,
+          "explicitlyUnknownProbes": 23,
+          "namedButUnenrollableProbes": 4,
+          "correctKnown": 1,
+          "wrongKnown": 0,
+          "unknownFalseAccepts": 0,
+          "abstentions": 33,
+          "extractionFailures": 16
+        },
+        {
+          "matchCutoff": 0.55,
+          "enrolledIdentities": 4,
+          "gallerySourceFiles": 3,
+          "probeFaces": 34,
+          "knownProbes": 7,
+          "unenrolledProbes": 27,
+          "explicitlyUnknownProbes": 23,
+          "namedButUnenrollableProbes": 4,
+          "correctKnown": 0,
+          "wrongKnown": 0,
+          "unknownFalseAccepts": 0,
+          "abstentions": 34,
+          "extractionFailures": 16
+        }
+      ],
+      "timing": {
+        "startupSecondsIncludingHashChecks": 2.193,
+        "extractionWallSeconds": 17.782,
+        "extractionCpuSeconds": 27.625,
+        "peakProcessMiB": 1616.0,
+        "threads": 2,
+        "scope": "Annotated still-face extractions; repeated frames are re-detected. Excludes video decode, download and full archive scan."
+      }
+    }
+  ],
+  "checks": [
+    "Matching sample IDs, identity labels, source files, image hashes and extraction outcomes",
+    "128-dimensional SFace and 512-dimensional AuraFace vectors kept separate",
+    "Identical OpenCV/alignment/detector settings",
+    "Cutoff sweeps reproduced from private embeddings"
+  ],
+  "scope": "Previously inspected development frames; deterministic single-file gallery; gallery files excluded from probes. No recording-level held-out accuracy claim.",
+  "timingLimitations": "One fresh-process run per variant on the same host; timings include CPU inference and image reads, exclude video decode/download. Background load and first-run effects are not controlled.",
+  "privacy": "No names, images, case-level scores or biometric vectors in this artifact. Local CPU inference only; no paid API calls.",
+  "liveChange": false,
+  "formalHeldOutEvaluation": "pending_fresh_independent_recordings"
+}

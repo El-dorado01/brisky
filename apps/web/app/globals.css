@@ -1,0 +1,202 @@
+@import "tailwindcss";
+@import "./appearance.css";
+
+@theme {
+  --color-surface-0: #0b0c0e;
+  --color-surface-alt: #0e0f12;
+  --color-surface-1: #141519;
+  --color-surface-2: #1c1e23;
+  --color-surface-3: #24262c;
+
+  --color-text-primary: #f4f4f2;
+  --color-text-secondary: #a8a9ae;
+  --color-text-muted: #8c8e95;
+  --color-text-dim: #6b6d74;
+  --color-text-feature: #d6d7d4;
+
+  --color-ember: #f5a93e;
+  --color-pulse: #3fd1c0;
+  --color-vector: #9b8cf2;
+  --color-success: #3fbf7a;
+
+  /* App palette: ONE brand color (violet) + neutrals. Do not add other accent colors. */
+  --color-brand-violet: #7363de;
+  --color-brand-ink: #22283f;
+  --color-brand-muted: #6b7190;
+  --color-brand-canvas: #f6f7fb;
+  --color-brand-line: #e3e6f2;
+  --color-brand-violet-hover: #5f4fc9;
+  --color-brand-surface: #ffffff;
+  --color-brand-action: #7363de;
+  --color-brand-action-hover: #5f4fc9;
+
+  --font-display: var(--font-bricolage), ui-sans-serif, system-ui, sans-serif;
+  --font-body: var(--font-instrument), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, "SF Mono", monospace;
+
+  --breakpoint-nav: 1000px;
+
+  --animate-rise: bk-up 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-pulse-soft: bk-pulse 2.8s ease-in-out infinite;
+  --animate-sweep: bk-sweep 3s linear infinite;
+  --animate-spin-slow: bk-spin 10s linear infinite;
+  --animate-halo: bk-halo 3.2s ease-in-out infinite;
+}
+
+@keyframes bk-pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@keyframes bk-sweep {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(330%);
+  }
+}
+@keyframes bk-spin {
+  from {
+    transform: rotate(0);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes bk-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    transform: opacity 1;
+    transform: none;
+  }
+}
+@keyframes bk-halo {
+  0%,
+  100% {
+    box-shadow: 0 0 0 5px rgba(245, 169, 62, 0.14);
+  }
+  50% {
+    box-shadow: 0 0 0 10px rgba(245, 169, 62, 0.07);
+  }
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    max-width: 100vw;
+    overflow-x: hidden;
+  }
+  body {
+    @apply bg-surface-0 text-text-primary font-body antialiased;
+    font-variant-numeric: tabular-nums;
+    max-width: 100vw;
+    overflow-x: hidden;
+  }
+  a {
+    @apply text-pulse transition-colors duration-200 ease-out;
+  }
+  a:hover {
+    color: #78e3d7;
+  }
+  ::selection {
+    background: rgba(245, 169, 62, 0.24);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* Prevent iOS Safari auto-zoom on input/textarea focus */
+@media screen and (max-width: 767px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+@keyframes word-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+    filter: blur(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
+/* Thin, subtle scrollbars across the SaaS app */
+.thin-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(115, 99, 222, 0.25) transparent;
+}
+.thin-scrollbar::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+.thin-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.thin-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgba(115, 99, 222, 0.25);
+  border-radius: 9999px;
+}
+.thin-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(115, 99, 222, 0.48);
+}
+
+/* Factory page: Enhanced canvas zoom & fit-view controls (+, -, []) */
+.react-flow__controls.factory-controls {
+  border-radius: 14px !important;
+  overflow: hidden !important;
+  box-shadow: 0 4px 14px rgba(34, 40, 63, 0.08) !important;
+  border: 1px solid var(--color-brand-line, #e3e6f2) !important;
+  background-color: var(--color-brand-surface, #ffffff) !important;
+}
+
+.react-flow__controls.factory-controls .react-flow__controls-button {
+  width: 36px !important;
+  height: 36px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border-bottom: 1px solid var(--color-brand-line, #e3e6f2) !important;
+  background-color: var(--color-brand-surface, #ffffff) !important;
+  color: var(--color-brand-ink, #22283f) !important;
+  transition: background-color 0.15s ease, color 0.15s ease !important;
+}
+
+.react-flow__controls.factory-controls .react-flow__controls-button:last-child {
+  border-bottom: none !important;
+}
+
+.react-flow__controls.factory-controls .react-flow__controls-button:hover {
+  background-color: var(--color-brand-canvas, #f6f7fb) !important;
+  color: var(--color-brand-violet, #7363de) !important;
+}
+
+/* Increase the size of the +, -, and [] icons */
+.react-flow__controls.factory-controls .react-flow__controls-button svg {
+  width: 15px !important;
+  height: 15px !important;
+  max-width: 15px !important;
+  max-height: 15px !important;
+  fill: currentColor !important;
+}

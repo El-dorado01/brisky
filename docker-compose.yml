@@ -49,12 +49,12 @@ services:
     environment:
       IS_WORKER: "true"
       RUN_WORKER_IN_API: "false"
-      DB_HOST: postgres
       REDIS_HOST: redis
       DATABASE_URL: postgresql://postgres:postgrespassword@postgres:5432/brisky
-    # Zero-Shared-Disk: worker uses isolated scratch space; communicates via Postgres + Redis.
+    # Isolated scratch; share the host's durable budget ledger with the API.
     volumes:
       - factory-scratch:/app/storage/scratch
+      - ./storage/usage:/app/storage/usage
     depends_on:
       postgres:
         condition: service_healthy

@@ -16,6 +16,7 @@ import { FastifyReply } from 'fastify';
 import { ConnectorsService } from './connectors.service';
 import { AuthGuard } from '../auth/auth.guard';
 import { ConfigService } from '@nestjs/config';
+import { validateFolders } from '../../common/request-validation';
 
 @Controller('connectors')
 export class ConnectorsController {
@@ -28,9 +29,11 @@ export class ConnectorsController {
 
   @Get('google-drive/auth-url')
   @UseGuards(AuthGuard)
-  getGoogleAuthUrl(@Req() req: any) {
+  getGoogleAuthUrl(@Req() req: any,@Res({passthrough:true}) res:FastifyReply) {
     const userId = req.user?.id;
     const url = this.connectorsService.getGoogleAuthUrl(userId);
+    const state=new URL(url).searchParams.get('state');
+    res.header('Cache-Control','no-store').header('Set-Cookie',`brisky_drive_legacy=${state}; Path=/api/v1/connectors/google-drive; HttpOnly; SameSite=Lax; Max-Age=600${process.env.NODE_ENV==='production'?'; Secure':''}`);
     return { url };
   }
 
@@ -39,9 +42,13 @@ export class ConnectorsController {
     @Query('code') code: string,
     @Query('state') state: string,
     @Query('error') error: string,
+    @Req() req:any,
     @Res() res: FastifyReply,
   ) {
     const frontendUrl = this.configService.get<string>('FRONTEND_URL', 'http://localhost:5173');
+    const browserState=String(req.headers?.cookie||'').split(';').map((value:string)=>value.trim()).find((value:string)=>value.startsWith('brisky_drive_legacy='))?.slice('brisky_drive_legacy='.length);
+    res.header('Set-Cookie',`brisky_drive_legacy=; Path=/api/v1/connectors/google-drive; HttpOnly; SameSite=Lax; Max-Age=0${process.env.NODE_ENV==='production'?'; Secure':''}`);
+    if(!state||!browserState||state!==browserState)throw new BadRequestException('OAuth browser session expired; start linking again');
 
     const sendRedirect = (targetUrl: string, title = 'Redirecting...') => {
       return res
@@ -148,9 +155,7 @@ export class ConnectorsController {
     @Req() req: any,
   ) {
     const userId = req.user?.id;
-    if (!Array.isArray(body?.folders)) {
-      throw new BadRequestException('folders array required');
-    }
+    validateFolders(body?.folders);
     await this.connectorsService.setSelectedFolders(id, userId, body.folders);
     return { success: true, count: body.folders.length };
   }

@@ -35,6 +35,23 @@ describe('Proxy Cache LRU Eviction Seam (Phase F3)', () => {
     cacheService = new ProxyCacheService(mockConfig, mockDb, testCacheDir);
   });
 
+  it('refreshes LRU access without invalidating the content modification timestamp', () => {
+    const file = path.join(testCacheDir, 'access_fixture.mp4');
+    const original = new Date(Date.now() - 100000);
+    fs.writeFileSync(file, Buffer.alloc(10));
+    fs.utimesSync(file, original, original);
+    try {
+      const before = fs.statSync(file);
+      cacheService.recordAccess('access_fixture');
+      cacheService.recordAccess('access_fixture');
+      const after = fs.statSync(file);
+      expect(after.mtimeMs).toBe(before.mtimeMs);
+      expect(after.atimeMs).toBeGreaterThan(before.atimeMs);
+      expect(after.size).toBe(before.size);
+      expect(mockDb.query).not.toHaveBeenCalled();
+    } finally { fs.unlinkSync(file); }
+  });
+
   it('evicts least recently accessed proxies when cache size exceeds cap and resets asset proxy_status to none', async () => {
     const fileOld = path.join(testCacheDir, 'asset_old.mp4');
     const fileNew = path.join(testCacheDir, 'asset_new.mp4');

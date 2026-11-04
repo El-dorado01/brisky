@@ -1,235 +1,142 @@
-# Brisky — AI Media Intelligence Platform
+# Brisky
 
-> **Connect your media once. We continuously understand it, so you can find any moment by simply describing what you remember.**
+Brisky helps people find, understand and connect moments in their media collections.
+Search results retain source timestamps; Spaces hold conversations, saved moments and
+shortlists. Processing uses cloud connectors, FFmpeg, speech and configurable AI adapters.
 
-An intelligence layer that continuously analyzes and indexes video archives, enabling sub-second natural language retrieval to the exact timestamp—combining **Whisper speech transcription**, **FFmpeg scene/keyframe analysis**, and **Gemini multimodal video reasoning** into a unified PostgreSQL + pgvector knowledge store.
-
----
-
-## 🏛️ Core Architectural Principle
-
-> **"We keep the intelligence, not the tape."**
-
-Unlike traditional media tools that duplicate and hoard massive camera master files:
-1. Originals stay in the user's storage (Google Drive today). Brisky downloads them only into ephemeral scratch.
-2. Indexing produces intelligence + a thumbnail. **720p proxies are generated on demand**, not for every file.
-3. After a successful index, scratch (including the downloaded master) is deleted. Search, transcripts, and durable keyframes remain.
-
----
-
-## 📁 Repository Layout
-
-This is a **pnpm monorepo**. Please use `pnpm`, not `npm` or `yarn`.
+## Three applications
 
 ```text
-brisky/
-├── apps/
-│   ├── api/                 # NestJS 11 + Fastify API & BullMQ worker (/api/v1)
-│   └── web/                 # React 18 + Vite + Tailwind CSS dashboard
-├── infra/
-│   └── postgres/init.sql    # First-boot PostgreSQL initialization (pgvector)
-├── storage/                 # Local filesystem storage roots (ephemeral & proxies)
-│   ├── uploads/             # Dev-only upload scaffold (disabled by default)
-│   ├── proxies/             # On-demand preview cache (LRU, not an archive)
-│   ├── thumbnails/          # Cover thumbnails
-│   ├── keyframes/           # Durable Stage-2 inspection frames
-│   ├── clips/               # Extracted moment cache
-│   └── scratch/             # Ephemeral per-job workspace (purged after each job)
-├── docker-compose.yml       # PostgreSQL 16 (pgvector) + Redis 7
-├── project-brief.md         # Product thesis & architectural principles
-├── phase-plan.md            # Phased execution plan (Phase 0 -> Phase 8)
-└── package.json             # Root monorepo workspace scripts
+apps/
+  api/       NestJS/Fastify engine API and shared processing modules
+  workers/   Standalone BullMQ workers; no HTTP listener
+  web/       Next.js SaaS UI and server-side SaaS API routes
 ```
 
----
+The web app handles email-code sessions and workspace routes. It calls the engine for
+media/connector operations. The engine submits jobs through Redis; workers process them
+and persist results in PostgreSQL. Workers reuse engine modules from `apps/api`.
 
-## ⚡ Prerequisites
+| App | Local address | Instructions |
+| --- | --- | --- |
+| API | `http://localhost:3001/api/v1` | [API README](apps/api/README.md) |
+| Workers | No HTTP port | [Workers README](apps/workers/README.md) |
+| Web | `http://localhost:3000` | [Web README](apps/web/README.md) |
 
-Ensure your system has the following installed before starting:
+## Setup
 
-1. **Node.js**: `v20.x` or higher (`node -v`)
-2. **pnpm**: `v9.x` or `v10.x` (`corepack enable && pnpm -v`)
-3. **Docker & Docker Compose**: Required for PostgreSQL + pgvector & Redis (`docker compose version`)
-4. **FFmpeg & FFprobe**: Required on system PATH for video decoding, scene cut detection, and proxy generation:
-   - **macOS:** `brew install ffmpeg`
-   - **Ubuntu/Debian:** `sudo apt update && sudo apt install -y ffmpeg`
-   - **Windows:** `winget install Gyan.FFmpeg` or `choco install ffmpeg`
-   - *Verify by running:* `ffmpeg -version` and `ffprobe -version`
-5. **Google Gemini API Key**: Required for multimodal frame/video analysis and text embeddings.
-   - Obtain a key from [Google AI Studio](https://aistudio.google.com/).
+Use Node.js 20 or newer, Corepack/pnpm, and Docker for PostgreSQL/pgvector and Redis.
+Media processing additionally needs FFmpeg/FFprobe. Local speech/embeddings need Python
+and the dependencies under `services/whisper-transcriber`.
 
----
+Streaming Meta voice uses a separate optional CPU runtime (Python 3.11–3.14):
 
-## 🚀 Quickstart Guide
-
-### 1. Clone & Install Dependencies
-
-```bash
-git clone <repo-url>
-cd brisky
-
-# Install all monorepo dependencies
-pnpm install
+```sh
+pnpm setup:mms
+pnpm setup:mms --check
 ```
 
-### 2. Configure Environment Variables
+It downloads about 145 MB of checksum-verified Meta MMS English weights plus CPU
+dependencies; API startup never downloads models. Set root
+`VOICE_CONVERSATION_MODE=meta-mms` for Meta streaming transcription/dialogue and
+local speech. Gemini Live remains available through the explicit `live` mode.
+See [judge setup, model licence and validation limits](docs/meta-mms-voice.md).
 
-Copy the example environment template:
+Optional local face matching has a separate, explicit setup command (Python 3.10+):
 
-```bash
-cp .env.example .env
+```sh
+pnpm setup:faces
+pnpm setup:faces --check
 ```
 
-Open `.env` in your editor and set your **Gemini API Key**:
+Setup creates `.venv-face`, installs OpenCV dependencies and downloads about 39 MB
+of checksum-verified face models with their licence notices. `--check` only verifies
+readiness. API/worker startup never downloads these files automatically. The current
+user-triggered face scan runs on the **API host**, so a worker-only machine does not
+need this optional runtime yet. See [face matching](docs/local-face-matching.md).
 
-```env
-# AI Keys (Required for video indexing and vector search)
-GEMINI_API_KEY=your_actual_gemini_api_key_here
-GEMINI_MODEL=gemini-2.5-flash
-GEMINI_EMBEDDING_MODEL=gemini-embedding-001
+From the repository root:
 
-# Database & Redis (defaults match docker-compose.yml)
-DATABASE_URL=postgresql://postgres:postgrespassword@localhost:5432/brisky
-REDIS_HOST=localhost
-REDIS_PORT=6379
+```sh
+corepack enable
+pnpm install --frozen-lockfile
+pnpm --dir apps/web install --frozen-lockfile
 ```
 
-### 3. Start PostgreSQL + Redis (Docker)
+API/workers use the root workspace and lockfile. Web retains its own workspace, lockfile
+and pinned package-manager version, so install it separately.
 
-```bash
-pnpm infra:up
+For a new checkout, copy `.env.example` to `.env` and `apps/web/.env.example` to
+`apps/web/.env.local`. Keep existing configured files.
+
+| File | Purpose |
+| --- | --- |
+| Root `.env` | Engine/workers: database, Redis, AI providers/budget, storage and Drive OAuth |
+| `apps/web/.env.local` | SaaS server: database, engine bridge, Brevo SMTP and session settings |
+
+Never commit secrets or expose them in `NEXT_PUBLIC_*` variables. See
+[environment configuration](docs/environment-configuration.md) and [budget controls](docs/ai-budget-controls.md).
+
+## Run locally
+
+Turn Docker on when database/queue work is needed, then start infrastructure:
+
+```sh
+docker compose up -d postgres redis
 ```
 
-*This spins up:*
-- **PostgreSQL 16 with pgvector** on `localhost:5432` (database: `brisky`).
-- **Redis 7** on `localhost:6379` (BullMQ async queue).
+Run each application in a separate terminal, from the repository root:
 
-### 4. Run the Development Servers
+```sh
+pnpm dev:api
+```
 
-Brisky implements an **independent Media Factory architecture**: the API and Web applications run independently from heavy video/AI compute workers.
+```sh
+pnpm dev:web
+```
 
-```bash
-# Terminal 1: Web Dashboard & Backend API
-pnpm dev
+Start workers only when queued jobs should be processed; this can trigger paid AI calls:
 
-# Terminal 2: Standalone Indexing Worker (consumes the queue)
+```sh
 pnpm dev:worker
 ```
 
-- **Web Dashboard:** [http://localhost:5173](http://localhost:5173)
-- **API Health Check:** [http://localhost:3000/api/v1/health](http://localhost:3000/api/v1/health)
+`pnpm dev` starts only the API. Web login needs PostgreSQL and configured email delivery;
+engine operations need the API, and indexing needs Redis plus workers. Engine health:
+`http://localhost:3001/api/v1/health`.
 
-*(Optional) Running services individually:*
-```bash
-pnpm dev:api     # API server only
-pnpm dev:web     # Web dashboard only
-pnpm dev:worker  # Worker process only
+## Build and checks
+
+```sh
+pnpm build:api
+pnpm build:workers
+pnpm build:web
+pnpm --filter @brisky/api test
 ```
 
----
+Worker build checks its Node entry point; the API build compiles its shared engine modules.
+Private media, caches and the durable AI journal live under ignored `storage/`. Generated
+test fixtures should use automatically cleaned temporary directories.
 
-## 🔑 Authentication & Demo Credentials
+## Scope and documentation
 
-When opening [http://localhost:5173](http://localhost:5173), an authentication dialog will appear.
+Baseten is the active testing host; direct Meta remains inactive. One confirmed Drive
+account has owner-approved worker processing and 120-second polling enabled under the
+controlled budget/profile; other accounts remain paused. See [controlled sync](docs/controlled-sync.md).
+Completed protocol tests do not establish recognition
+accuracy or unattended library readiness. Priorities: accuracy, then cost, then speed.
 
-### Option A: One-Click Quick Demo Login
-Click the **"Quick Demo: Sign In as Demo Creator"** button at the bottom of the login modal.
+- [TODO](TODO.md) and [ingestion/provider checklist](docs/media-ingestion-roadmap.md)
+- [Developer API](docs/api-contract-and-pagination.md) and [OpenAPI](docs/openapi.json)
+- [Drive validation](docs/drive-save-and-sync.md)
+- [Hackathon brief](docs/hackathon-agent-brief.md) and [contributions](docs/hackathon-contributions.md)
 
-### Option B: Pre-seeded Credentials
-- **Email:** `demo@brisky.local`
-- **Password:** `demopassword123`
+The Brisky engine predates the hackathon. The contribution record distinguishes existing
+functionality, event-developed changes and planned or unverified work.
 
-### Option C: Register a New Account
-You can register new isolated user accounts directly in the modal. All assets, search results, and observation logs enforce strict per-user multi-tenancy.
-
----
-
-## 🎬 How to Test the Platform
-
-Once logged into the dashboard, follow this end-to-end walkthrough:
-
-### 1. Connect Cloud Media (Google Drive)
-- Click the **"Connect Media"** button in the top navigation bar.
-- Authorize your Google Drive account.
-- Select the folder(s) containing video footage you wish to monitor.
-- Click **"Sync Now"**: Brisky discovers video assets directly without transferring permanent master storage onto Brisky servers.
-*(Note: Drag-and-drop direct upload is a development-only scaffold disabled by default via `ENABLE_DEV_UPLOAD=false`).*
-
-### 2. Observe the Asynchronous Indexing Pipeline
-- Ensure your worker is running (`pnpm dev:worker`).
-- Click over to the **Job Observability** tab.
-- Watch real-time, stage-by-stage progress:
-  1. **Connector Fetch & Metadata Probe:** Ephemeral download/stream and shot boundary detection via FFmpeg.
-  2. **Speech Extraction & Transcription:** Whisper speech-to-text with word-level timestamps.
-  3. **Visual Frame Analysis:** Representative keyframe selection & object/action detection.
-  4. **Gemini Contextual Video Reasoning:** Macro-narrative and temporal event understanding.
-  5. **Intelligence Merge & Vector Embeddings:** Consolidated `media_segments` with pgvector embeddings.
-  6. **Ephemeral Scratch Purge:** Downloaded master video bytes are discarded; durable keyframes & vector intelligence persist.
-
-### 3. Natural Language Moment Search
-Navigate to the **Search** tab and try different query classes:
-- **Spoken Queries:** *"when did they talk about the budget"*, *"any mention of pricing"*
-- **Visual Actions:** *"person getting into a car"*, *"goal celebration"*, *"wearing a black jacket"*
-- **On-Screen Text / OCR:** *"presentation slide with charts"*, *"text on screen"*
-- **Thematic Concepts:** *"awkward silence"*, *"team excitement"*
-
-**Search Features:**
-- Sub-50ms local execution via PostgreSQL Full-Text (BM25) + pgvector (HNSW) Reciprocal Rank Fusion.
-- Modality badges clearly indicate how the match was found (`Speech`, `Visual`, `Semantic`, or `Fusion`).
-- **Click any result card** $\to$ The player seeks to that second. If no preview exists yet, generate one on demand (or extract the moment as a clip).
-
-### 4. Inspect Asset Lineage & Deduplication
-- Sync the same Drive file twice (or enable the hidden upload scaffold).
-- Matching checksums reuse existing transcripts, keyframes, and embeddings.
-- Click **"Lineage"** on an asset card to view the relationship graph.
-
-### 5. Run the Automated Benchmark Suite
-- Open the **Benchmark** tab and click **"Run 8-Query Benchmark"**.
-- Evaluates 3 visual, 3 spoken, and 2 mixed multimodal queries against your indexed assets, verifying timestamp accuracy, retrieval speed, and match calibration.
-
-### 6. Verify "Kept the Intelligence, Not the Tape"
-- After a Drive index finishes, `storage/scratch/` for that job should be gone.
-- Search still finds the moments. Thumbnails and durable keyframes remain.
-- Playback: if no proxy is cached, the player shows **Generate 720p Preview** (on-demand job). It does not require the original master on Brisky's disk.
-
----
-
-## 🛠️ Common Troubleshooting
-
-### 1. `ffmpeg` or `ffprobe` not found
-- Ensure FFmpeg is installed and accessible from your terminal (`ffmpeg -version`).
-- If using non-standard binary paths, specify `FFMPEG_PATH` and `FFPROBE_PATH` in `.env`.
-
-### 2. Docker Port Conflicts (5432 or 6379)
-- If you already have a local PostgreSQL or Redis server running, stop them or update `DB_PORT` and `REDIS_PORT` in `.env` and `docker-compose.yml`.
-
-### 3. Gemini API 503 / 429 Errors
-- If you encounter rate limits on Gemini, verify that `GEMINI_MODEL=gemini-2.5-flash` is set in `.env` (it has higher rate limits and lower latency than experimental models).
-- The pipeline includes built-in retry backoff and concurrency throttling (`GEMINI_MAX_CONCURRENCY=2`).
-
-### 4. Stopping Background Infrastructure
-To shut down the Docker database and queue containers:
-
-```bash
-pnpm infra:down
-```
-
-To also delete database volumes and start fresh:
-
-```bash
-docker compose down -v
-```
-
----
-
-## 📜 Monorepo NPM Scripts Reference
-
-| Command | Description |
-| :--- | :--- |
-| `pnpm dev` | Starts API and Web dev servers in parallel |
-| `pnpm dev:api` | Starts only the Fastify + NestJS backend (`http://localhost:3000`) |
-| `pnpm dev:web` | Starts only the Vite React frontend (`http://localhost:5173`) |
-| `pnpm dev:worker` | Starts the standalone BullMQ indexing worker process |
-| `pnpm build` | Compiles both API and Web packages for production |
-| `pnpm infra:up` | Boots PostgreSQL (pgvector) and Redis in Docker |
-| `pnpm infra:down` | Stops PostgreSQL and Redis containers |
+Optional local archive face matching uses the existing workers app. Run
+`pnpm setup:faces` on API/face-worker hosts, build the API, then use
+`pnpm --filter @brisky/workers start --faces-only` for local face work without
+indexing consumers. Enable per-person library matching in People & Entities.
+Matches require review; cross-recording quality is still limited. See
+[scope, measured results and setup](docs/face-archive-processing.md).

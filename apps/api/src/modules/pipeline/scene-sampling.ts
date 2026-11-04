@@ -19,6 +19,13 @@ export function computeFrameTimestamps(startTime: number, endTime: number, count
   return timestamps;
 }
 
+export function plannedSceneFrames(start:number,end:number,maxFrames:number){
+  const primary=computeFrameTimestamps(start,end,framesPerWindow(end-start,maxFrames));
+  const micro:number[]=[];
+  for(let t=start;t<end;t+=2){const timestamp=Number(t.toFixed(2));if(!primary.includes(timestamp))micro.push(timestamp);}
+  return {primary,all:[...primary,...micro].sort((a,b)=>a-b)};
+}
+
 export interface FlatFrame {
   timestamp: number;
   path: string;

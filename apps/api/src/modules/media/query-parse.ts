@@ -92,7 +92,7 @@ const STOP = new Set([
   'timestamps',
 ]);
 
-const SPOKEN_PATTERNS = /\b(said|talked|mention(ed|s)?|quote|phrase|spoken|words|discussed|discussing|explain(ed|s|ing)?|speech|conversation|saying)\b/i;
+const SPOKEN_PATTERNS = /\b(says|said|talked|mention(ed|s)?|quote|phrase|spoken|words|discussed|discussing|explain(ed|s|ing)?|speech|conversation|saying)\b/i;
 const VISUAL_PATTERNS = /\b(wearing|holding|carrying|standing|walking|running|sitting|dressed|car|vehicle|screen|shirt|red|blue|green|black|white|shoes|jacket|celebrat(ing|ion)|gesture|background|diagram|slide|illustration|graphic|appearance|looks like|seen)\b/i;
 
 export function normalizeSpeech(text: string): string {
@@ -105,7 +105,7 @@ export function normalizeSpeech(text: string): string {
 }
 
 export function detectQueryIntent(raw: string): QueryIntent {
-  const isSpoken = SPOKEN_PATTERNS.test(raw);
+  const isSpoken = SPOKEN_PATTERNS.test(raw)||/[\"\u201c\u201d]/.test(raw);
   const isVisual = VISUAL_PATTERNS.test(raw);
   if (isSpoken && !isVisual) return 'spoken';
   if (isVisual && !isSpoken) return 'visual';
@@ -150,7 +150,9 @@ export function parseSearchQuery(raw: string, overrideTargetEntity?: string): Pa
   working = working.replace(/\b(is|are|was)\s+mentioned\b/gi, ' ');
   working = working.replace(/\bwhere\b/gi, ' ');
 
-  const cleaned = normalizeSpeech(working);
+  // Quoted dialogue also supplies recall terms and semantic text. Do not discard it
+  // when query understanding falls back and reparses the cleaned string.
+  const cleaned = normalizeSpeech([working,...phrases].join(' '));
   const contentTerms = cleaned
     .split(/\s+/)
     .map((t) => t.trim())

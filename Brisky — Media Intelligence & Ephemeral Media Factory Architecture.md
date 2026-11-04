@@ -173,11 +173,11 @@ The preferred architecture is now:
                     │ Web application          │
                     │ Authentication           │
                     │ Billing / plans          │
-                    │ Media Registry            │
-                    │ Connectors                │
-                    │ Search                    │
-                    │ Intelligence DB           │
-                    │ Developer API             │
+                    │ Media Registry           │
+                    │ Connectors               │
+                    │ Search                   │
+                    │ Intelligence DB          │
+                    │ Developer API            │
                     └────────────┬─────────────┘
                                  │
                             Job Queue
@@ -191,8 +191,8 @@ The preferred architecture is now:
                     │ FFmpeg                   │
                     │ Frame extraction         │
                     │ Audio extraction         │
-                    │ Media analysis            │
-                    │ AI processing             │
+                    │ Media analysis           │
+                    │ AI processing            │
                     │ Proxy generation         │
                     │ Clip extraction          │
                     └────────────┬─────────────┘

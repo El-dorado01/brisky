@@ -28,6 +28,8 @@ export interface JobSegment {
 }
 
 export interface JobProcessingConfig {
+  clipOperationId?: string;
+  clipAssetId?: string;
   analysisVersion?: number;
   model?: string;
   embeddingModel?: string;
@@ -104,6 +106,17 @@ export function priorityToBullNumber(priority?: JobPriority, fileSizeMb?: number
   }
 }
 
+/** Continue bounded work already admitted before opening another source. Lower runs first. */
+export function pipelineQueuePriority(envelope:FactoryJobEnvelope):number{
+  if(envelope.priority==='interactive')return 1;
+  const batch=envelope.priority==='batch';
+  const continuation:Partial<Record<JobType,number>>={transcribe:2,extract_audio:2,analyze_frames:3,gemini_video:3,embed:4,finalize_asset:5};
+  const rank=continuation[envelope.job_type];
+  if(rank!==undefined)return rank+(batch?20:0);
+  const size=Math.min(4,Math.max(0,Math.floor((envelope.source.fileSize||0)/(100*1024*1024))));
+  return (batch?30:10)+size;
+}
+
 export const INDEX_UNIT_JOB_TYPES: JobType[] = [
   'transcribe',
   'extract_audio',
@@ -119,7 +132,10 @@ export function isIndexUnitJob(jobType: JobType | string | undefined): boolean {
 
 export function unitTypeToJobType(unitType: string): JobType {
   switch (unitType) {
+    case 'scene_window':
+      return 'plan_asset';
     case 'transcribe':
+    case 'transcript_window':
       return 'transcribe';
     case 'analyze_frames':
       return 'analyze_frames';

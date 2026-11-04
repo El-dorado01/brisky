@@ -1,0 +1,141 @@
+{
+  "date": "2026-11-01",
+  "scope": "Owner-authorized consumed development footage, not held-out accuracy",
+  "selectedReviewCutoff": 0.65,
+  "identityMargin": 0.1,
+  "automaticConfirmation": false,
+  "results": [
+    {
+      "labelledEnrollmentFaces": 28,
+      "usableEnrollmentFaces": 8,
+      "enrolledPeople": 6,
+      "knownCrossSource": {
+        "labelled": 12,
+        "detected": 5,
+        "correct": 0,
+        "wrong": 0,
+        "abstainedOrMissed": 12
+      },
+      "unknownSeparateSources": {
+        "labelled": 30,
+        "detected": 21,
+        "falseMatches": 0
+      },
+      "sameRecordingDevelopmentNotIndependent": {
+        "cutoff": 0.65,
+        "labelled": 24,
+        "detected": 8,
+        "correct": 4,
+        "wrong": 0
+      },
+      "candidateThresholdsDevelopmentOnly": [
+        {
+          "cutoff": 0.4,
+          "knownCorrect": 0,
+          "knownWrong": 2,
+          "unknownFalseMatches": 3
+        },
+        {
+          "cutoff": 0.45,
+          "knownCorrect": 0,
+          "knownWrong": 1,
+          "unknownFalseMatches": 2
+        },
+        {
+          "cutoff": 0.55,
+          "knownCorrect": 0,
+          "knownWrong": 0,
+          "unknownFalseMatches": 0
+        },
+        {
+          "cutoff": 0.65,
+          "knownCorrect": 0,
+          "knownWrong": 0,
+          "unknownFalseMatches": 0
+        },
+        {
+          "cutoff": 0.75,
+          "knownCorrect": 0,
+          "knownWrong": 0,
+          "unknownFalseMatches": 0
+        }
+      ],
+      "unmatchedPredictedBoxesNotScored": 5,
+      "wallSeconds": 10.771,
+      "profile": "baseline"
+    },
+    {
+      "labelledEnrollmentFaces": 28,
+      "usableEnrollmentFaces": 12,
+      "enrolledPeople": 7,
+      "knownCrossSource": {
+        "labelled": 12,
+        "detected": 6,
+        "correct": 1,
+        "wrong": 2,
+        "abstainedOrMissed": 9
+      },
+      "unknownSeparateSources": {
+        "labelled": 30,
+        "detected": 22,
+        "falseMatches": 0
+      },
+      "sameRecordingDevelopmentNotIndependent": {
+        "cutoff": 0.65,
+        "labelled": 24,
+        "detected": 10,
+        "correct": 4,
+        "wrong": 0
+      },
+      "candidateThresholdsDevelopmentOnly": [
+        {
+          "cutoff": 0.4,
+          "knownCorrect": 1,
+          "knownWrong": 2,
+          "unknownFalseMatches": 2
+        },
+        {
+          "cutoff": 0.45,
+          "knownCorrect": 1,
+          "knownWrong": 2,
+          "unknownFalseMatches": 2
+        },
+        {
+          "cutoff": 0.55,
+          "knownCorrect": 1,
+          "knownWrong": 2,
+          "unknownFalseMatches": 0
+        },
+        {
+          "cutoff": 0.65,
+          "knownCorrect": 0,
+          "knownWrong": 0,
+          "unknownFalseMatches": 0
+        },
+        {
+          "cutoff": 0.75,
+          "knownCorrect": 0,
+          "knownWrong": 0,
+          "unknownFalseMatches": 0
+        }
+      ],
+      "unmatchedPredictedBoxesNotScored": 6,
+      "wallSeconds": 26.001,
+      "profile": "context-v2"
+    }
+  ],
+  "limitations": [
+    "Named people with only one recording cannot be known cross-source probes.",
+    "Gallery labels guide enrollment; target boxes never guide probe detection.",
+    "Unknown probes sharing named enrollment source files are excluded.",
+    "Unmatched predictions and seven empty fresh frames are not adjudicated.",
+    "Recheck scores all available enrolled identities; live per-person scans use at most 12 competitor reference candidates."
+  ],
+  "crossRecordingQualityStillInsufficient": true,
+  "implementationSha256": {
+    "services/face-recognition/robust_sface.py": "2cfec68130624c1f3a6828af69987c17759fe1cd9b996b1262abc6821c0ef8c2",
+    "services/face-recognition/scan_faces.py": "f9c8ea059f0cb935c5c5f57d08a2ba3db384cdf6b90518084cc08779f1bd1db3",
+    "services/face-recognition/check_reference.py": "b647e3f5a7ab2301fef9fc19f2070cd73550dd02d33cd396722253b70813fc26",
+    "services/face-recognition/development_recheck.py": "5a090b72b059e2d194206c1f0da81a19072feebe8266e5af7a246ddfff1168eb"
+  }
+}

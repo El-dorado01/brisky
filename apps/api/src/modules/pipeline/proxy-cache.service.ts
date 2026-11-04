@@ -30,7 +30,8 @@ export class ProxyCacheService {
     if (fs.existsSync(filePath)) {
       try {
         const now = new Date();
-        fs.utimesSync(filePath, now, now);
+        // LRU reads must not look like content edits to source-version guards.
+        fs.utimesSync(filePath, now, fs.statSync(filePath).mtime);
       } catch {
         // ignore
       }

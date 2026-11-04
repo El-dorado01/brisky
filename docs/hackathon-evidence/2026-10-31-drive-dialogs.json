@@ -1,0 +1,23 @@
+{
+  "date": "2026-10-31",
+  "scope": "Local browser/Next.js with temporary DB account; folder enumeration fixture intercepted in browser, no Google requests or inference",
+  "status": "passed",
+  "checks": [
+    "One visible dialog at a time",
+    "Manage separate from connector list",
+    "Cancel first opens an unsaved-changes alert",
+    "Keep editing retains the draft",
+    "Discard changes returns to main and resets draft",
+    "Back returns to main",
+    "Escape returns to main with focus inside dialog",
+    "Mobile bottom drawer fills width and stays within viewport",
+    "Desktop management modal centered and bounded",
+    "Mobile Connectors action is in the top bar",
+    "Mobile canvas details cover 390x844 including header"
+  ],
+  "screenshots": [
+    390,
+    1280
+  ],
+  "cleanup": "Temporary account and connector removed in finally"
+}

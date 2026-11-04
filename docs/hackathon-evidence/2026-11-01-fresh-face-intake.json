@@ -1,0 +1,24 @@
+{
+  "date": "2026-11-01",
+  "status": "awaiting_owner_ground_truth",
+  "sourceFiles": 13,
+  "readableFiles": 13,
+  "totalBytes": 56571190,
+  "durationSeconds": 294.885,
+  "reviewFrames": 26,
+  "duplicatesWithinBatch": 0,
+  "duplicatesPrevious": 0,
+  "recordingIndependence": "Owner-confirmed separate original recordings, not independently verified",
+  "detectorProposals": false,
+  "recognitionRun": false,
+  "accuracyMeasured": false,
+  "checks": [
+    "All source files readable by local FFprobe",
+    "SHA-256 comparison with earlier development inventory",
+    "Source checksums rechecked before frame extraction",
+    "Review JavaScript syntax checked",
+    "43 local Python regressions pass"
+  ],
+  "privacy": "Local inventory, FFmpeg frame preparation and human-review sheet only. Originals unchanged; no footage/names/vectors published; no provider calls.",
+  "inventorySha256": "8d9d83af2800129b55199c10c05d3db9b3996b12e0f0321e25e1c75f4b7df78f"
+}

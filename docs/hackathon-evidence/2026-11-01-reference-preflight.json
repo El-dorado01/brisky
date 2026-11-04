@@ -1,0 +1,41 @@
+{
+  "date": "2026-11-01",
+  "contribution": "Local advisory face-selection preflight in existing manual tagging",
+  "checks": {
+    "pythonRegressions": 51,
+    "peopleApiTests": 79,
+    "proxyCacheTests": 2,
+    "apiTypeScript": "passed",
+    "webTypeScriptAndTargetedLint": "passed",
+    "enrollmentOnlyFrames": 10,
+    "enrollmentStatuses": {
+      "ready": 2,
+      "adjust_selection": 2,
+      "no_face_detected": 5,
+      "target_not_detected": 1
+    }
+  },
+  "liveEngineIntegration": {
+    "status": "passed",
+    "fixture": "Temporary owned indexed video generated as blue frames; real FFmpeg and YuNet",
+    "checks": ["Authenticated check returns no_face_detected", "No appearance rows created", "Injected owner field rejected", "Repeated preview reads preserve the content timestamp at millisecond precision"]
+  },
+  "browserIntegration": {
+    "status": "passed",
+    "environment": "Isolated headless Chrome, Next.js webpack development mode, temporary local font fallback; no product font configuration changed",
+    "realChecks": ["Generated video playback", "Local no-face check through Next and engine", "No tag created by preflight", "Explicit manual save and undo at 390/1280 widths", "Unauthenticated denial", "Cross-owner denial"],
+    "stubbedUiChecks": ["Tighter-box response displays a proposed box", "Accepting a proposed box does not save", "Second Teach action after a ready response saves accepted coordinates"],
+    "screenshots": "390/1280 generated-frame screenshots inspected locally; no personal faces",
+    "cleanup": "Fixture users, sessions, people, tags and generated video removed",
+    "developmentLimitations": "Turbopack returned a nested playback-route 404 in the initial run. Webpack first compilation exceeded player timeout; retry succeeded after compilation. Neither result is recognition evidence."
+  },
+  "limitations": [
+    "Enrollment frames are development footage, not independent recognition probes.",
+    "Suggested tighter selections were not accepted or persisted for personal footage.",
+    "Ready means detector geometry passed, not that identity or recognition accuracy was established.",
+    "No unknown test footage was reused; no detector or recognition cutoff was changed.",
+    "Automatic archive tagging remains unimplemented."
+  ],
+  "remoteAiCalls": 0,
+  "personalMediaEgress": false
+}

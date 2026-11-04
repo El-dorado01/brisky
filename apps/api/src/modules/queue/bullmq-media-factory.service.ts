@@ -2,7 +2,7 @@ import { Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { MediaFactory, FactoryCapacity, FactoryJobStatus } from './media-factory.interface';
-import { FactoryJobEnvelope, priorityToBullNumber } from './indexing.types';
+import { FactoryJobEnvelope, pipelineQueuePriority } from './indexing.types';
 import { FactorySchedulerService } from './factory-scheduler.service';
 
 @Injectable()
@@ -16,12 +16,12 @@ export class BullmqMediaFactory implements MediaFactory {
   ) {}
 
   async dispatch(envelope: FactoryJobEnvelope): Promise<string> {
-    const fileSizeMb = Math.round((envelope.source.fileSize || 0) / (1024 * 1024));
-    const bullPriority = priorityToBullNumber(envelope.priority, fileSizeMb);
+    const bullPriority = pipelineQueuePriority(envelope);
 
     // Only deduplicate waiting jobs of the same type and segment window
     try {
-      const existingJobs = await this.queue.getJobs(['waiting', 'delayed']).catch(() => []);
+      // Clip requests have durable operation IDs. Never remove another operation with the same span.
+      const existingJobs = envelope.job_type === 'extract_clip' ? [] : await this.queue.getJobs(['waiting', 'delayed']).catch(() => []);
       const segmentKey = (data: any): string => {
         const seg = data?.segment;
         if (!seg) return '';

@@ -1,0 +1,15 @@
+{
+  "date": "2026-11-01",
+  "status": "prepared_waiting_for_owner_labels",
+  "clips": 18,
+  "frames": 36,
+  "detectorBoxSuggestions": 22,
+  "accuracyMeasured": false,
+  "checks": [
+    "Local sheet loads all frames",
+    "Manual review state can be saved as JSON",
+    "Review progress survives reload",
+    "No horizontal overflow at 390/1280 pixels"
+  ],
+  "privacy": "Original media unchanged; derived frames and participant labels remain in ignored storage; screenshots hide personal images; no remote inference"
+}

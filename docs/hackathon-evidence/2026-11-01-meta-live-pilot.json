@@ -1,0 +1,131 @@
+{
+  "date": "2026-11-01T22:17:18.049Z",
+  "provider": "meta",
+  "scope": "Generated text/video/silent audio; no personal media, indexing or workers",
+  "results": [
+    {
+      "stage": "greeting",
+      "passed": true,
+      "text": "Hi there! Good to see you. I'm here if you want to look through your collection or talk about anything you've got saved.",
+      "usage": {
+        "stage": "space_conversation_plan",
+        "provider": "meta",
+        "model": "muse-spark-1.3",
+        "modelVersion": "muse-spark-1.3",
+        "inputTokens": 778,
+        "outputTokens": 862,
+        "durationMs": 4502,
+        "usageSource": "reported",
+        "estimatedUsd": 0.004636
+      }
+    },
+    {
+      "stage": "grounded_reply",
+      "passed": true,
+      "text": "In this selected moment, a red rectangle changes to blue.",
+      "usage": {
+        "stage": "space_conversation_answer",
+        "provider": "meta",
+        "model": "muse-spark-1.3",
+        "modelVersion": "muse-spark-1.3",
+        "inputTokens": 829,
+        "outputTokens": 666,
+        "durationMs": 3780,
+        "usageSource": "reported",
+        "estimatedUsd": 0.00386675
+      }
+    },
+    {
+      "stage": "generated_video",
+      "passed": true,
+      "analysis": {
+        "video_summary": "The video is a 4-second minimalist abstract clip consisting of two static solid color fields with an abrupt cut between them. Approximately the first half displays a uniform bright red screen and the second half displays a uniform bright blue screen. There are no people, objects, text, camera movement, or discernible actions, and no supported audible speech, music, or sound effects.",
+        "key_themes": [
+          "minimalist abstraction",
+          "solid color field",
+          "abrupt color transition"
+        ],
+        "segments": [
+          {
+            "start_time": 0,
+            "end_time": 2,
+            "title": "Solid Bright Red Field",
+            "description": "The frame is filled entirely with a uniform, bright saturated red with no variation, texture, objects, people, text, or camera movement. The display remains static throughout the interval.",
+            "visual_objects": [
+              "uniform bright red color field"
+            ],
+            "actions": [
+              "no discernible movement or action; static color display"
+            ],
+            "dialogue": ""
+          },
+          {
+            "start_time": 2,
+            "end_time": 4,
+            "title": "Solid Bright Blue Field",
+            "description": "The frame is filled entirely with a uniform, bright saturated blue with no variation, texture, objects, people, text, or camera movement. The display remains static throughout the interval following an abrupt cut from red.",
+            "visual_objects": [
+              "uniform bright blue color field"
+            ],
+            "actions": [
+              "no discernible movement or action; static color display"
+            ],
+            "dialogue": ""
+          }
+        ]
+      },
+      "usage": {
+        "stage": "video_analysis",
+        "provider": "meta",
+        "model": "muse-spark-1.2",
+        "modelVersion": "muse-spark-1.2",
+        "inputTokens": 482,
+        "outputTokens": 1531,
+        "durationMs": 6967,
+        "usageSource": "reported",
+        "estimatedUsd": 0.00710925
+      }
+    },
+    {
+      "stage": "silence",
+      "passed": true,
+      "transcript": [],
+      "usage": {
+        "stage": "transcription",
+        "provider": "meta",
+        "model": "muse-spark-1.2",
+        "modelVersion": "muse-spark-1.2",
+        "inputTokens": 128,
+        "outputTokens": 570,
+        "durationMs": 3593,
+        "estimatedUsd": 0.0025825,
+        "usageSource": "reported"
+      }
+    },
+    {
+      "stage": "contextual_negative",
+      "passed": true,
+      "assessment": {
+        "status": "insufficient_evidence",
+        "scope": "conversation_between_tagged_people",
+        "explanation": "Anchor images for p and q are uniform solid red with no discernible face or identity features, so the annotated boxes cannot be grounded. The supplied clip shows only solid red and blue frames with no visible people, no audible speech, and no participant-specific speaking/response cues. Without identifiable participants or verifiable speech inside the 0-4 candidate range, the required two ordered turns covering both people with distinct cueIds and addressesOtherParticipant=true cannot be established.",
+        "turns": [],
+        "usage": {
+          "stage": "conversation_verification",
+          "provider": "meta",
+          "model": "muse-spark-1.2",
+          "modelVersion": "muse-spark-1.2",
+          "inputTokens": 998,
+          "outputTokens": 1092,
+          "durationMs": 4609,
+          "usageSource": "reported",
+          "estimatedUsd": 0.0058885
+        }
+      }
+    }
+  ],
+  "status": "passed",
+  "limitations": [
+    "Not a real-footage accuracy or end-to-end browser evaluation."
+  ]
+}

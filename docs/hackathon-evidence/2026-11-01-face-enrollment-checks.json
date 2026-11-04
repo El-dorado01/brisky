@@ -1,0 +1,14 @@
+{
+  "date": "2026-11-01",
+  "status": "passed",
+  "scope": "Actual service reference query against local PostgreSQL in a read-only transaction with nonexistent fixture owner/person IDs; no data written",
+  "checks": [
+    "Owner/person-parameterized query executes",
+    "Manual/confirmed eligibility preserved",
+    "Bounded recent-30 query plans successfully",
+    "Reloaded source API health passes",
+    "Unauthenticated scan denied with HTTP 401 before media work"
+  ],
+  "apiReloaded": true,
+  "noPaidCalls": true
+}

@@ -1,0 +1,12 @@
+{
+  "date": "2026-11-01",
+  "status": "passed",
+  "checks": {
+    "metricsHiddenUntilRequested": true,
+    "actualOwnerCountsMatch": true,
+    "mobileDrawerDesktopModalBounds": true,
+    "donutAccessibleSummary": true,
+    "closeRestoresFocus": true
+  },
+  "scope": "Actual Factory UI at 390/1280 pixels; temporary session removed, no sync/AI actions."
+}

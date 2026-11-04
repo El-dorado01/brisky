@@ -1,0 +1,23 @@
+{
+  "date": "2026-11-01",
+  "status": "passed",
+  "checks": {
+    "addition": true,
+    "fullScanDeduplication": true,
+    "quickRenameWithoutReindex": true,
+    "contentModification": true,
+    "moveOutsideSelection": true,
+    "moveBackWithoutReindex": true,
+    "deletion": true
+  },
+  "scope": "Actual Google Drive fixture lifecycle through production connector/sync service and PostgreSQL; enqueue captured, no inference or processing worker",
+  "limitations": [
+    "Not a timer/polling-load test or forced token-refresh test.",
+    "Only disposable fixture media is changed; the saved source video is not modified."
+  ],
+  "cleanup": {
+    "remoteFixturesRemoved": true,
+    "localFixtureAccountRemoved": true,
+    "localVideoRemoved": true
+  }
+}

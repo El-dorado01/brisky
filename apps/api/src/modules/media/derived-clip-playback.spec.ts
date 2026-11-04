@@ -95,6 +95,13 @@ describe('Derived Clip Playback & Fallbacks Seam (Phase F3)', () => {
     expect(mockProxyCache.recordAccess).toHaveBeenCalledWith('clip_abc123');
   });
 
+  it('reports a missing preview without enqueuing work for the SaaS bridge', async () => {
+    mockDb.query.mockResolvedValue({rows:[{id:'missing_preview',user_id:'user_1',proxy_status:'pending',source_type:'upload'}]});
+    const info=await mediaService.getStreamInfo('missing_preview','user_1',false);
+    expect(info.status).toBe('preparing');
+    expect(mockIndexingService.enqueueAsset).not.toHaveBeenCalled();
+  });
+
   it('falls back to parent asset thumbnail if derived clip thumbnail does not exist on disk', async () => {
     const parentThumb = path.join(testThumbsDir, 'parent_master_1.jpg');
     fs.writeFileSync(parentThumb, 'jpeg_header');

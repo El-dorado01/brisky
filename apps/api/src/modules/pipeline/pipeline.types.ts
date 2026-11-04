@@ -45,13 +45,14 @@ export interface GeminiTemporalSegment {
   dialogue?: string;
 }
 
-export interface GeminiVideoAnalysis {
+export interface VideoAnalysis {
   video_summary: string;
   key_themes: string[];
   segments: GeminiTemporalSegment[];
 }
 
 export interface ModelUsage {
+  usageSource?: 'reported' | 'estimated' | 'unknown';
   stage: string;
   provider: string;
   model: string;
@@ -119,7 +120,7 @@ export interface PipelineArtifacts {
   scenes: SceneBoundary[];
   visual: FrameObservation[];
   transcript: TranscriptCue[];
-  gemini: GeminiVideoAnalysis;
+  gemini: VideoAnalysis;
   segments: UnifiedSegment[];
   proxyPath: string;
   thumbnailPath: string;

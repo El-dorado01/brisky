@@ -65,4 +65,11 @@ describe('Enqueue does not clobber unrelated jobs (F1 repair)', () => {
 
     expect(proxyJob.remove).toHaveBeenCalled();
   });
+  it('keeps separate clip operations for the same asset and time interval', async () => {
+    const remove = jest.fn();
+    waitingJobs = [{ id: 'earlier-clip', data: { job_type: 'extract_clip', asset_id: 'asset_1', segment: { start_s: 0, end_s: 5 } }, remove }];
+    await service.enqueueAsset({ job_id: 'new-clip', job_type: 'extract_clip', asset_id: 'asset_1', user_id: 'user_1',
+      source: { provider: 'upload' }, priority: 'interactive', segment: { start_s: 0, end_s: 5 } });
+    expect(remove).not.toHaveBeenCalled();
+  });
 });

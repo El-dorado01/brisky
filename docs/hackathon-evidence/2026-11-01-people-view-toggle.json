@@ -1,0 +1,14 @@
+{
+  "date": "2026-11-01",
+  "status": "passed",
+  "scope": "Isolated local Next/engine/PostgreSQL and Chrome; no personal media or inference",
+  "checks": [
+    "Cards default on initial page and reload",
+    "Table displays real profile and aliases",
+    "Search preserved when changing views",
+    "Table tag review and edit open correct profile",
+    "Table delete opens confirmation and cancel preserves profile",
+    "No page overflow at 390/1280 pixels"
+  ],
+  "cleanup": "Temporary users and generated fixture removed"
+}

@@ -1,6 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { promisify } from 'util';
@@ -15,12 +15,89 @@ export interface WhisperTranscriptionResult {
   language?: string;
   languageProbability?: number;
 }
+export interface WhisperSession {
+  transcribeAudio(audio: string, signal?: AbortSignal): Promise<WhisperTranscriptionResult>;
+  close(): Promise<void>;
+}
 
 @Injectable()
-export class WhisperTranscriptionService {
+export class WhisperTranscriptionService implements OnModuleDestroy {
   private readonly logger = new Logger(WhisperTranscriptionService.name);
+  private readonly sessions = new Set<() => Promise<void>>();
 
   constructor(private readonly configService: ConfigService) {}
+
+  async onModuleDestroy() { await Promise.allSettled([...this.sessions].map((close) => close())); }
+
+  /** One job owns one model process; requests are deliberately serialized. */
+  createSession(): WhisperSession {
+    const binary = this.getPythonBinary();
+    if (!binary) throw new Error('Local Whisper runtime is unavailable');
+    const model = this.configService.get<string>('WHISPER_MODEL', 'base');
+    const args = [this.getScriptPath(), '--serve', '--model', model, '--device', this.configService.get('WHISPER_DEVICE', 'cpu'),
+      '--compute_type', this.configService.get('WHISPER_COMPUTE_TYPE', 'int8'), '--task', this.configService.get('WHISPER_TASK', 'transcribe')];
+    const language = this.configService.get<string>('WHISPER_LANGUAGE', '').trim();
+    if (language) args.push('--language', language);
+    const child = spawn(binary, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    let closed = false, buffer = '', sequence = 0;
+    let pending: { id: number; resolve(value: WhisperTranscriptionResult): void; reject(error: Error): void } | undefined;
+    let finish!: () => void;
+    const exited = new Promise<void>((resolve) => { finish = resolve; });
+    const fail = (error: Error) => { closed = true; pending?.reject(error); pending = undefined; child.kill('SIGKILL'); };
+    child.once('error', (error) => fail(error));
+    child.once('close', () => { fail(new Error('Whisper session stopped')); finish(); });
+    child.stdin.on('error', (error) => fail(error));
+    child.stderr.on('data', () => {}); // Drain diagnostics; do not let verbose runtime output block inference.
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      buffer += chunk;
+      if (buffer.length > 4 * 1024 * 1024) { fail(new Error('Whisper response exceeded protocol limit')); return; }
+      let newline: number;
+      while ((newline = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
+        try {
+          const response = JSON.parse(line);
+          if (!pending || response.id !== pending.id) {
+            throw new Error('Whisper window request failed or returned an invalid response');
+          }
+          if (response.ok !== true) throw new Error(`Whisper window failed: ${String(response.error || 'unknown local error').slice(0, 500)}`);
+          if (!Array.isArray(response.result?.cues)) throw new Error('Whisper returned an invalid response');
+          const result = response.result;
+          if (result.cues.some((cue: any) => typeof cue.text !== 'string' || !Number.isFinite(cue.start_time) ||
+            !Number.isFinite(cue.end_time) || cue.start_time < 0 || cue.end_time <= cue.start_time)) {
+            throw new Error('Whisper returned invalid cue timestamps');
+          }
+          const request = pending; pending = undefined;
+          request.resolve({ transcript: result.cues, language: result.language, languageProbability: result.language_probability,
+            usage: { stage: 'transcription', provider: 'faster-whisper', model: `whisper-${result.model || model}`,
+              inputTokens: 0, outputTokens: result.cues.length, estimatedUsd: 0, durationMs: result.inference_duration_ms || 0 } });
+        } catch (error) { fail(error instanceof Error ? error : new Error(String(error))); }
+      }
+    });
+    const close = async () => {
+      this.sessions.delete(close);
+      if (!closed) fail(new Error('Whisper session closed'));
+      await exited;
+    };
+    this.sessions.add(close);
+    return { close, transcribeAudio: async (audio: string, signal?: AbortSignal) => {
+      if (closed || pending) throw new Error('Whisper session is closed or busy');
+      signal?.throwIfAborted();
+      if (!fs.existsSync(audio)) throw new Error('Whisper window file is missing');
+      const started = Date.now();
+      const abort = () => fail(new Error('Whisper window cancelled'));
+      const timer = setTimeout(() => fail(new Error('Whisper window deadline exceeded')), 900000);
+      signal?.addEventListener('abort', abort, { once: true });
+      try {
+        const result = await new Promise<WhisperTranscriptionResult>((resolve, reject) => {
+          pending = { id: ++sequence, resolve, reject };
+          child.stdin.write(JSON.stringify({ id: sequence, audio }) + '\n');
+        });
+        result.usage.durationMs = Date.now() - started;
+        return result;
+      } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
+    } };
+  }
 
   /**
    * Find the Python executable with faster-whisper installed.

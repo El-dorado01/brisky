@@ -1,0 +1,35 @@
+{
+  "date": "2026-11-01",
+  "startedDate": "2026-11-01",
+  "status": "passed",
+  "checks": {
+    "plannedUnitsComplete": true,
+    "realFrameAnalysis": true,
+    "localSpeech": true,
+    "localEmbeddings": true,
+    "nativeVideoEnriched": true,
+    "preInferenceRetry": true,
+    "strictRequiredFrameGuard": true,
+    "everyPreparedFrameObserved": true,
+    "derivedPreviewUploaded": true,
+    "completedCheckpointWithoutInference": true,
+    "existingGoogleVectorsPreserved": true
+  },
+  "scope": "Real Google Drive source, frame/video/speech queue and derived preview upload through isolated production services; no broad sync",
+  "limitations": [
+    "Not an automatic sync, forced OAuth refresh or labelled accuracy test.",
+    "Only derived test uploads are deleted; shared Brisky app folders remain."
+  ],
+  "stage": "process units",
+  "units": 8,
+  "scenes": 2,
+  "frameObservations": 32,
+  "plannedFrames": 32,
+  "derivedUploads": 1,
+  "derivedUploadsRemoved": 1,
+  "cleanup": {
+    "isolatedQueueRemoved": true,
+    "temporaryAssetRemoved": true,
+    "privateDerivedMediaRemoved": true
+  }
+}

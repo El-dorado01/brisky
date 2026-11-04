@@ -8,13 +8,18 @@
     "pnpm": ">=10"
   },
   "scripts": {
-    "dev": "pnpm -r --parallel run dev",
+    "dev": "pnpm run dev:api",
     "dev:api": "pnpm --filter @brisky/api run dev",
-    "dev:worker": "pnpm --filter @brisky/api run dev:worker",
-    "dev:web": "pnpm --filter @brisky/web run dev",
-    "build": "pnpm -r run build",
+    "dev:worker": "pnpm --filter @brisky/workers run dev",
+    "dev:web": "pnpm --dir apps/web run dev",
+    "build": "pnpm run build:api && pnpm run build:workers && pnpm run build:web",
+    "build:api": "pnpm --filter @brisky/api run build",
+    "build:web": "pnpm --dir apps/web run build",
+    "build:workers": "pnpm --filter @brisky/workers run build",
     "infra:up": "docker compose up -d",
-    "infra:down": "docker compose down"
+    "infra:down": "docker compose down",
+    "setup:faces": "node scripts/setup-face-recognition.cjs",
+    "setup:mms": "node scripts/setup-mms.cjs"
   },
   "keywords": [],
   "author": "",

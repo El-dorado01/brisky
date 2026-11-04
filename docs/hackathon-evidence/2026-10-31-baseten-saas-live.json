@@ -1,0 +1,53 @@
+{
+  "date": "2026-10-31",
+  "scope": "Real Next.js UI, PostgreSQL and engine with live Baseten; synthetic indexed text only",
+  "model": "meta-models/muse-spark-open-1026",
+  "checks": [
+    "Automatic initial live reply persisted",
+    "Follow-up uses selected owned index source and persists 10-20s citation",
+    "Cached retry makes no further model calls",
+    "Reload retains messages and citations without regeneration"
+  ],
+  "replies": [
+    {
+      "kind": "greeting",
+      "text": "Hi there! I'm Brisky — happy to help you explore your media collection. What would you like to look at today?"
+    },
+    {
+      "kind": "source-answer",
+      "text": "According to the selected recording Synthetic prototype plan, the prototype handoff is Friday.",
+      "citations": [
+        {
+          "momentId": "92464825-13db-4658-bc20-0ea30b35cde0",
+          "startS": 10,
+          "endS": 20,
+          "title": "Synthetic prototype plan",
+          "filename": "prototype-meeting.mp4"
+        }
+      ]
+    }
+  ],
+  "status": "passed",
+  "ledgerEventsAdded": 6,
+  "fixtureCleanup": "Temporary account and its sources/spaces are deleted in finally",
+  "browserReview": {
+    "widths": [
+      390,
+      1280
+    ],
+    "scope": "Source inspector screenshots inspected; transcript and source range visible; preview unavailable as expected with no real footage"
+  },
+  "accounting": {
+    "followThroughRequestsIncludingEarlierHarnessStop": 4,
+    "totalBasetenRequestsIncludingAdapterPilot": 8,
+    "totalBasetenReportedTokenEstimateUsd": 0.02576425,
+    "totalLedgerReservationsIncludingFailedGoogleUsd": 2.15,
+    "approvedAllowanceUsd": 3,
+    "invoiceVerified": false
+  },
+  "harnessNotes": [
+    "First attempt timed out before inference while development UI hydrated.",
+    "Second attempt generated a greeting, then stopped on incorrect expected 201 status for a moment endpoint returning 200.",
+    "Final complete run passed with three live requests."
+  ]
+}

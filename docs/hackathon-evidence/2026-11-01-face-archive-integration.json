@@ -1,0 +1,67 @@
+{
+  "date": "2026-11-01",
+  "scope": "Event extension of existing worker/media/people foundations; review-only archive matching",
+  "apiRegressionTests": 102,
+  "pythonRegressionTests": 56,
+  "apiBuild": "passed",
+  "webTypeScriptAndTargetedLint": "passed",
+  "postgresFixtureChecks": [
+    "Owner-scoped repeatable discovery",
+    "Concurrent SKIP LOCKED claims",
+    "Bounded windows",
+    "Checksum reuse: three stub decodes for six windows",
+    "Cross-owner donor FK rejection",
+    "Complete-video progress",
+    "Foreign-person access denied",
+    "Changed checksums create new work",
+    "Pause cancels outstanding work",
+    "Stale lease completion blocked",
+    "Actual generated no-face runtime blocks without suggestions",
+    "Expired lease resumes on next tick and old completion token is rejected"
+  ],
+  "daemonCheck": {
+    "status": "passed",
+    "fixture": "Three short videos repeating one already-authorized annotated frame; not separate recordings or accuracy evidence",
+    "actualComponents": [
+      "HTTP SaaS session guard",
+      "PostgreSQL discovery and leases",
+      "Standalone faces-only consumer",
+      "FFmpeg",
+      "YuNet",
+      "SFace",
+      "Pending suggestions",
+      "Explicit idempotent confirmation"
+    ],
+    "completedVideos": 3,
+    "laterAdditionDiscovered": true,
+    "changedVideoRescanned": true,
+    "duplicateContentReused": true,
+    "probeSuggestions": 12,
+    "automaticallyConfirmed": 0,
+    "explicitlyConfirmed": 1
+  },
+  "browserCheck": {
+    "status": "passed",
+    "viewports": [
+      1280,
+      390
+    ],
+    "scope": "Actual FaceMatches/ArchiveMatching components with intercepted fixture responses and temporary fallback fonts",
+    "checks": [
+      "Enable/pause",
+      "Waiting for worker",
+      "Progress polling and suggestion refresh",
+      "Video/window/failure counts",
+      "Retry",
+      "No horizontal overflow"
+    ],
+    "temporaryPreviewRemoved": true
+  },
+  "fullSpaceSessionRecheck": "not established by isolated browser fixture",
+  "paidInferenceCalls": 0,
+  "personalMediaEgress": false,
+  "cleanup": "Temporary users/media/previews/browser profiles removed; face test worker and UI server stopped; real opt-ins not enabled",
+  "additionalApiUnitChecks": [
+    "Provider fallback identifiers are not reused as content hashes"
+  ]
+}

@@ -5,9 +5,10 @@ import { PipelineModule } from '../pipeline/pipeline.module';
 import { UploadConnector } from '../connector/upload.connector';
 import { QueueModule } from '../queue/queue.module';
 import { ConnectorsModule } from '../connector/connectors.module';
+import { PeopleModule } from '../people/people.module';
 
 @Module({
-  imports: [PipelineModule, QueueModule, forwardRef(() => ConnectorsModule)],
+  imports: [PipelineModule, QueueModule, PeopleModule, forwardRef(() => ConnectorsModule)],
   controllers: [MediaController],
   providers: [MediaService, UploadConnector],
   exports: [MediaService, UploadConnector],

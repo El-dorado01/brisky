@@ -1,0 +1,15 @@
+{
+  "date": "2026-11-01",
+  "status": "passed",
+  "scope": "Actual browser/Next/engine/PostgreSQL and installed OpenCV runtime; generated blue video plus explicitly seeded review candidates. Not real-face recognition accuracy.",
+  "checks": [
+    "Actual local scan rejects no-face manual reference without suggestions",
+    "Suggestion image and box rendered from owned source",
+    "Browser confirmation creates frame-scoped face_match tag",
+    "Browser rejection creates no tag",
+    "Unauthenticated proxy denied",
+    "Cross-owner review denied",
+    "390/1280 responsive review screenshots inspected separately"
+  ],
+  "cleanup": "Temporary users, tags, suggestions and generated media removed; no remote inference"
+}

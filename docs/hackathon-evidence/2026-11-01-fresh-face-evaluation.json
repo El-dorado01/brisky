@@ -1,0 +1,61 @@
+{
+  "date": "2026-11-01",
+  "status": "partial_unknown_rejection_check_not_full_accuracy",
+  "planSha256": "4105d1b3c467fb8f52a9386183562f615e0ebf63a003220cd15502d2fb279c30",
+  "labelsSha256": "0c7343379edc61366537701b317368eabba7fcb4466c1f39c874965f7a5fa740",
+  "models": {
+    "detector": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+    "recognizer": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"
+  },
+  "detectorThreshold": 0.9,
+  "matchThreshold": 0.55,
+  "reviewFrames": 26,
+  "labelledFaces": 20,
+  "gallery": {
+    "namedPeople": 6,
+    "usableEnrolledPeople": 2,
+    "failedEnrollments": 4,
+    "labelledFaces": 10,
+    "usableReferenceFaces": 2,
+    "extractionFailures": 8
+  },
+  "unknownTest": {
+    "labelledUnknownFaces": 9,
+    "extractedUnknownFaces": 3,
+    "unknownExtractionFailures": 6,
+    "wronglyMatchedUnknownFaces": 0,
+    "wrongProfileSuggestions": 0,
+    "unknownFalseAcceptRate": 0.0,
+    "unknownFalseAcceptRateWhenExtracted": 0.0,
+    "knownRecall": null
+  },
+  "excludedGalleryContextFaces": 1,
+  "emptyReviewFramesNotEvaluated": 7,
+  "wallSeconds": 3.779,
+  "peakProcessMiB": 210.6,
+  "limitations": [
+    "Each named person has only one source recording; no cross-recording known-person probes.",
+    "Only annotated faces in two sampled frames per file; unmatched detector boxes and tracking are not evaluated.",
+    "Maximum-reference pilot matching differs from the formal two-source corroboration protocol.",
+    "No threshold calibration, model selection, full recognition accuracy or deployment approval.",
+    "Skipped or failed extractions are not proof of correct unknown rejection."
+  ],
+  "privacy": "Owner-authorized local CPU only; originals unchanged; names, images, vectors and case-level scores private.",
+  "liveSettingsChanged": false,
+  "paidApiCalls": 0,
+  "implementationSha256": "85c950c58c7e3a95af241b9ef12fd5ea22b4d4cdaeb8df208e00579377f162c8",
+  "privateReportSha256": "dbd0b106b4b4123d0e2073381e953b8ccedf6ab44480b6b56877befdb9dcad03",
+  "failureReasons": {
+    "gallery": {
+      "no_face_detected": 5,
+      "target_not_detected": 3
+    },
+    "test_unknown": {
+      "target_not_detected": 4,
+      "no_face_detected": 2
+    }
+  },
+  "formalProtocolStatus": "Not run: no named identity has two source recordings or a cross-recording known probe; no calibration set.",
+  "sourceIndependence": "Owner confirmed separate original recordings; not independently verified.",
+  "offlineOnly": true
+}

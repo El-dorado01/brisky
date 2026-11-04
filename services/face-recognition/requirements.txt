@@ -1,0 +1,2 @@
+# Optional pilot dependencies; install in a dedicated environment, not Whisper's.
+opencv-python-headless==4.14.0.94

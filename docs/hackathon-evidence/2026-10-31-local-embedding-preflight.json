@@ -1,0 +1,36 @@
+{
+  "date": "2026-10-31",
+  "scope": "Existing cached local model through the actual Node/Python service; six synthetic texts, offline, no downloads or paid API calls",
+  "model": "all-MiniLM-L6-v2",
+  "dimensions": 384,
+  "normalized": true,
+  "rankingChecksPassed": 3,
+  "similarities": [
+    [
+      0.6344066303524861,
+      0.1734505268339399,
+      0.10434187865959405
+    ],
+    [
+      0.18858514336952154,
+      0.537399711347473,
+      0.007917792597798777
+    ],
+    [
+      0.022387790550727052,
+      -0.03974984808352809,
+      0.6164777761000314
+    ]
+  ],
+  "usage": {
+    "stage": "embedding",
+    "provider": "local-onnx",
+    "model": "all-MiniLM-L6-v2",
+    "inputTokens": 55,
+    "outputTokens": 0,
+    "estimatedUsd": 0,
+    "durationMs": 5429
+  },
+  "status": "passed",
+  "limitation": "Tiny text smoke test, not real-media retrieval evaluation; active embedding configuration and database vectors unchanged"
+}

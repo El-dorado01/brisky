@@ -1,5 +1,5 @@
 # Media Factory worker image (compose profile "factory").
-# The API and worker communicate strictly via Postgres + Redis (zero-shared-filesystem).
+# Jobs/results use Postgres + Redis; local processes share the durable AI usage journal.
 # Ephemeral scratch space is auto-purged inside /app/storage/scratch after each job.
 FROM node:20-bookworm-slim
 
@@ -13,12 +13,15 @@ WORKDIR /app
 
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY apps/api/package.json apps/api/package.json
-COPY apps/web/package.json apps/web/package.json
+COPY apps/workers/package.json apps/workers/package.json
 
 RUN pnpm install --frozen-lockfile
 
 COPY apps/api apps/api
+COPY apps/workers apps/workers
 COPY services/whisper-transcriber services/whisper-transcriber
+COPY services/face-recognition services/face-recognition
+COPY scripts/setup-face-recognition.cjs scripts/setup-face-recognition.cjs
 
 RUN python3 -m pip install --no-cache-dir --break-system-packages -r services/whisper-transcriber/requirements.txt \
   || python3 -m pip install --no-cache-dir -r services/whisper-transcriber/requirements.txt
@@ -31,4 +34,4 @@ ENV RUN_WORKER_IN_API=false
 ENV NODE_ENV=production
 
 WORKDIR /app
-CMD ["node", "apps/api/dist/worker.js"]
+CMD ["node", "apps/workers/src/main.cjs"]

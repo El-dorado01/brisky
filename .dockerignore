@@ -1,0 +1,12 @@
+.git
+.tmp
+storage
+**/node_modules
+**/dist
+**/.next
+**/coverage
+**/.env
+**/.env.*
+**/*.log
+**/*.tsbuildinfo
+.venv-face/

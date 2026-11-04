@@ -1,0 +1,21 @@
+{
+  "date": "2026-11-01",
+  "status": "passed",
+  "scope": "CPU generated blank frames and supplied synthetic landmarks only; not real-face accuracy, complete scan time or production throughput",
+  "opencv": "4.14.0",
+  "threads": 2,
+  "modelBytes": 38928942,
+  "startupSeconds": 0.455,
+  "blank720pFrames": 24,
+  "blankDetectionSeconds": 2.398,
+  "blankDetectionCpuSeconds": 3.859,
+  "syntheticFeatureSeconds": 0.093,
+  "peakProcessMiB": 176.0,
+  "checks": [
+    "Pinned model checksums verified",
+    "Blank reference rejected",
+    "24 blank detections return no faces",
+    "Alignment/recognition forward pass yields 128 finite values"
+  ],
+  "noRemoteInference": true
+}

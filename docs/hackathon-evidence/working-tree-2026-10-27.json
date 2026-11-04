@@ -1,0 +1,235 @@
+{
+  "recordedAt": "2026-10-27T01:49:26.861Z",
+  "comparisonCommit": "05caf9af22173b5235cef4795ab19b2660761b8f",
+  "headAtCapture": "05caf9af22173b5235cef4795ab19b2660761b8f",
+  "ownerConfirmation": {
+    "recordedOn": "2026-10-27",
+    "eventStartDate": "2026-10-26",
+    "eventEndDate": "2026-11-04",
+    "preEventUncommittedChanges": false,
+    "exactOpeningTime": "not supplied"
+  },
+  "limitation": "Current content hashes only; event dates and clean pre-event working tree are owner-attested, not independently proven by this snapshot.",
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "031e9bf4f6e338c61aac250905dfb3cd334c3157fd2ca317db02bf4d43c4b390"
+    },
+    {
+      "path": "apps/api/src/common/search-deadline.spec.ts",
+      "sha256": "def74618090985a5d8295f60b24b4dc567de443dd3ea26a3ef1e1ebaa4175e71"
+    },
+    {
+      "path": "apps/api/src/common/search-deadline.ts",
+      "sha256": "8b3655fe5085051b48a29ed522b29707dd529adad9ef86353b79108a2919cf53"
+    },
+    {
+      "path": "apps/api/src/common/search-disconnect.spec.ts",
+      "sha256": "b62521fe840b929bfb5cf24676b0713282a5f6d5044c4ce4f4995051b6b5a958"
+    },
+    {
+      "path": "apps/api/src/common/search-disconnect.ts",
+      "sha256": "8bc7c6f74e4dea0386c1a8497f86943e846089c7222f9ea3ba56825836ad97e9"
+    },
+    {
+      "path": "apps/api/src/common/search-progress.ts",
+      "sha256": "3b58a1d33b16fbab6db9fb40c92b5cc1eca31785a829c44ac151170b5106e743"
+    },
+    {
+      "path": "apps/api/src/common/search-resources.spec.ts",
+      "sha256": "26563bfa1e3d476f1d24c521af4b632c64bf241ce09acc84daeed034358050fe"
+    },
+    {
+      "path": "apps/api/src/common/search-resources.ts",
+      "sha256": "39e8e3ce9b97d1fcc48f04b2aed2ca1eef7fe7e29ee4234915934cc7e1273c9b"
+    },
+    {
+      "path": "apps/api/src/modules/connector/google-drive-range-cancellation.spec.ts",
+      "sha256": "ce3410643b19bb9d4e76a9b14a1a5f9f2def1cc35d541cb6535e61d93e3fc358"
+    },
+    {
+      "path": "apps/api/src/modules/connector/google-drive.connector.ts",
+      "sha256": "7fda0bf9fa8bfd45d0ec6e92104fd0b593e9bafec2951601bcb4e5f46c7ff504"
+    },
+    {
+      "path": "apps/api/src/modules/connector/media-connector.interface.ts",
+      "sha256": "5f9cdca41dadef5903408ba22f9d0d00b9934b6480b2cbec886a36453db5f1d4"
+    },
+    {
+      "path": "apps/api/src/modules/database/database.service.ts",
+      "sha256": "96d6698697973727a043945b57f293e381c5bed2e868b6a8777de4ed9e2ec9b1"
+    },
+    {
+      "path": "apps/api/src/modules/media/cloud-inspection-source.spec.ts",
+      "sha256": "973ae815c0dddd35ba718f16aeb0f306eb183cd3d448018f8bec420963ac061f"
+    },
+    {
+      "path": "apps/api/src/modules/media/cloud-inspection-source.ts",
+      "sha256": "afb59073b1f04555e305127b2dceba9066864cd400279b2ce6c362e6f39337d0"
+    },
+    {
+      "path": "apps/api/src/modules/media/media.controller.ts",
+      "sha256": "952d1d46ee4ea2e102da47800825dd28fa1f7dcbbca98676ecd7870c9b572bab"
+    },
+    {
+      "path": "apps/api/src/modules/media/media.service.ts",
+      "sha256": "d1ec71fdbd5327b795ec9284edf490b512f6ac4a6855eda25e37146c8d89b4a8"
+    },
+    {
+      "path": "apps/api/src/modules/media/media.types.ts",
+      "sha256": "3afdac7b98d56d251ce6c889f6bcfa54719a1e25928147e1ea15c145796b0e4c"
+    },
+    {
+      "path": "apps/api/src/modules/media/verification-correctness.spec.ts",
+      "sha256": "c51d379539648d942fcae929a7a21f09a9139683e4744d0e3a558da9b9868213"
+    },
+    {
+      "path": "apps/api/src/modules/pipeline/ai-intelligence.service.spec.ts",
+      "sha256": "c7a7ad939d1b1a819b77473a652be53b6e59d00620d055ed895002389fd20c65"
+    },
+    {
+      "path": "apps/api/src/modules/pipeline/ai-intelligence.service.ts",
+      "sha256": "fa4fd501e3cc0dd6a7ecfffbb658fedeeccd4ef9f512dd3fa5b5d9f6ed5c3465"
+    },
+    {
+      "path": "apps/api/src/modules/pipeline/ai-provider.ts",
+      "sha256": "91e7525268429b9397ad2d45bb9f269a0b56996ca2b1198a4ce53cc64d27c3f5"
+    },
+    {
+      "path": "apps/api/src/modules/pipeline/ai-usage-ledger.spec.ts",
+      "sha256": "8cc13edf21b3a896bea19d769a48c8265dc1d9a9f5a33fe350935dc7f691d69d"
+    },
+    {
+      "path": "apps/api/src/modules/pipeline/ai-usage-ledger.ts",
+      "sha256": "8c031ef97decb947cb4797828f0bea814338dd28d2fc64adde6c5b66ada49c77"
+    },
+    {
+      "path": "apps/api/src/modules/pipeline/extract-clip.spec.ts",
+      "sha256": "e52dedb3d368e5e90a3b6349106bcb61916e2cfdb8da968772a73a21562b334b"
+    },
+    {
+      "path": "apps/api/src/modules/pipeline/ffmpeg-pipeline.service.ts",
+      "sha256": "7cacf8e691645c0545a2bd6b9e533919bdf74e00413cf0a0f1fd38b7a2e96bca"
+    },
+    {
+      "path": "apps/api/src/modules/pipeline/fixtures/embedding-worker.cjs",
+      "sha256": "9585f896aaa944b518340a091ebff94029a6887e3187811eb78b89c3e4a25913"
+    },
+    {
+      "path": "apps/api/src/modules/pipeline/gemini-intelligence.service.ts",
+      "deleted": true
+    },
+    {
+      "path": "apps/api/src/modules/pipeline/intelligence-merger.service.ts",
+      "sha256": "c3976f88f23fb36ca169be43fd6f068b3ea708e2c5365d3a54ee3de5bc53a5ad"
+    },
+    {
+      "path": "apps/api/src/modules/pipeline/local-embedding.service.ts",
+      "sha256": "a58fa1aa3459722b4ec68a953e15762711df2da01c9284bcd538dbf3f8db5aa3"
+    },
+    {
+      "path": "apps/api/src/modules/pipeline/local-embedding.spec.ts",
+      "sha256": "5d84abed1e99a3854f829303b1443b859c94f395ed7d37d791b9d1e680e92a83"
+    },
+    {
+      "path": "apps/api/src/modules/pipeline/pipeline.module.ts",
+      "sha256": "256a6cc862eb1aa39ffae00abd623e0370cb7271eb80e37caa14a8d23951f223"
+    },
+    {
+      "path": "apps/api/src/modules/pipeline/pipeline.types.ts",
+      "sha256": "0c219c78b52ede63e4e3e8575c62b0ac1ac70ef3bd072d25989d4e6254043076"
+    },
+    {
+      "path": "apps/api/src/modules/pipeline/providers/google-ai.provider.ts",
+      "sha256": "647551eeeec553fda4a3615d9efb0826ad9d16d18f66cab81362321a2d8880b1"
+    },
+    {
+      "path": "apps/api/src/modules/pipeline/search-evidence.service.ts",
+      "sha256": "0f7541da0fd26a01e5549f42a7f89139ecf25c0cbed5c554cbca32b17516de96"
+    },
+    {
+      "path": "apps/api/src/modules/pipeline/search-evidence.spec.ts",
+      "sha256": "c34906783a2a792975fb8ba6104e9b5c6e14c8d3584f41d80451547b78b6074a"
+    },
+    {
+      "path": "apps/api/src/modules/pipeline/verification-response.spec.ts",
+      "sha256": "341686b93e3d7616564189328c71753faae4867d19d4e3f8b6de9054d4453deb"
+    },
+    {
+      "path": "apps/api/src/modules/queue/indexing.processor.ts",
+      "sha256": "750401fa853fed3a6a44410d8c69e51fcab4ee070834f66c116ef4687dacd66b"
+    },
+    {
+      "path": "apps/api/src/modules/queue/indexing.service.ts",
+      "sha256": "8423dac1fdd154944743b4b67bf088313b5d27411680e64b26fcb7bd3e4b303f"
+    },
+    {
+      "path": "apps/api/src/modules/queue/ranged-access.spec.ts",
+      "sha256": "ca6bdcd690af3753e9cf5919391c8d89c0403ad6b813b302c487db5d84b71779"
+    },
+    {
+      "path": "apps/api/src/modules/queue/scheduler-processor.spec.ts",
+      "sha256": "c9ad20a3e73d3cee1fdff83d92245eb202ef395ee91b6a06bfe8ddf5d13d0fb7"
+    },
+    {
+      "path": "apps/web/src/App.tsx",
+      "sha256": "a93557f334f859dcb9c95aad5f601d0f38ca97f2c480fd368c0bf99c35ac2f63"
+    },
+    {
+      "path": "apps/web/src/components/MomentSearch.tsx",
+      "sha256": "3656fc96d14f4876875339f2fe0f62e5cd0e81441810a13ada6de9d97497fed8"
+    },
+    {
+      "path": "apps/web/src/types.ts",
+      "sha256": "44fa2db8cbc1c665e2951ba070c7142b4dd70dcedb483b1b7b54ea0d14864805"
+    },
+    {
+      "path": "docs/ai-budget-controls.md",
+      "sha256": "277256bb1019e4e66da8963e847e8ee1f452b1f142b7f4de854b34e01d2f3eef"
+    },
+    {
+      "path": "docs/hackathon-contributions.md",
+      "sha256": "bfe773a7491fa0d3496c4d7eb6255d98bea87b2c2d52e048359e9afbc4154ae2"
+    },
+    {
+      "path": "docs/hackathon-cost-accuracy-audit.md",
+      "sha256": "da09785226f1866d9b8ba61deec4aecc4090f2b3d604db2b2cc3d4edcd35455a"
+    },
+    {
+      "path": "docs/local-embeddings-and-deadlines.md",
+      "sha256": "3f19fadf5d6913091ab393c26a3cae03c3f04025932356ed173793386d4f6bde"
+    },
+    {
+      "path": "docs/search-evidence-inspection.md",
+      "sha256": "1b76ddf8819bbd5f92b3dc163c163eda10ce35fa2dd4e98c5e106261c5f788d0"
+    },
+    {
+      "path": "docs/search-recovery-ux.md",
+      "sha256": "c51d5972c7773d51c836f95b12d331b15858bcb811009c078341c65d6f76790a"
+    },
+    {
+      "path": "scripts/check-clip-timestamps.cjs",
+      "sha256": "a22d0806f0cb3ba6c621c5dacf4ed3576324863a218cefee205542313a8b2897"
+    },
+    {
+      "path": "scripts/check-search-integration.cjs",
+      "sha256": "588494f6c2bf91accd7b2d61d57cf7fdb2d13d8575afa627c6615414be956711"
+    },
+    {
+      "path": "scripts/snapshot-hackathon-work.cjs",
+      "sha256": "7b9dfa6ab29afc20d5067afafef837b551823f97e04c3357f4ca1b006e11d0b9"
+    },
+    {
+      "path": "scripts/summarize-ai-usage.cjs",
+      "sha256": "3646d901cabfbd60b3e0acc5e29873550fad42bce91e5558c6bf194b9c434b18"
+    },
+    {
+      "path": "services/whisper-transcriber/embed.py",
+      "sha256": "9304730af843b0c463fc89121390e0be00fffa86c76ed72928bbb25311884da8"
+    },
+    {
+      "path": "services/whisper-transcriber/test_embed_protocol.py",
+      "sha256": "da8de9e76f014e71f208375c794c1f0ca6ab166d129ed30a03ab592764083b30"
+    }
+  ]
+}

@@ -27,6 +27,8 @@ export class FactorySchedulerService {
   readonly globalMaxActiveJobs: number;
   readonly defaultUserSlots: number;
   readonly interactiveReservedSlots: number;
+  readonly ingestSlots:number;
+  readonly continuationSlots:number;
 
   constructor(
     private readonly db: DatabaseService,
@@ -41,12 +43,17 @@ export class FactorySchedulerService {
     this.interactiveReservedSlots = Number(
       this.configService.get('INTERACTIVE_RESERVED_SLOTS', 1),
     );
+    this.ingestSlots=Number(this.configService.get('FACTORY_INGEST_SLOTS',0));
+    this.continuationSlots=Number(this.configService.get('FACTORY_CONTINUATION_SLOTS',0));
+    if(![this.ingestSlots,this.continuationSlots].every(n=>Number.isInteger(n)&&n>=0&&n<=64)||
+      (this.ingestSlots>0)!==(this.continuationSlots>0)||this.ingestSlots+this.continuationSlots>this.globalMaxActiveJobs)throw new Error('Invalid Factory slot partition');
   }
 
   evaluateCounts(
-    rows: Array<{ user_id: string; count: string | number }>,
+    rows: Array<{ user_id: string; count: string | number;job_type?:string }>,
     userId: string,
     priority: JobPriority = 'normal',
+    jobType?:string,
   ): SlotDecision {
     let globalActive = 0;
     let userActive = 0;
@@ -71,6 +78,12 @@ export class FactorySchedulerService {
     if (globalActive >= this.globalMaxActiveJobs) {
       return { canRun: false, waitingReason: 'global_capacity' };
     }
+    if(this.ingestSlots>0){
+      const ingest=(type?:string)=>!type||['index_asset','plan_asset'].includes(type);
+      const requestedIngest=ingest(jobType);
+      const used=rows.filter(row=>ingest(row.job_type)===requestedIngest).reduce((n,row)=>n+Number(row.count),0);
+      if(used>=(requestedIngest?this.ingestSlots:this.continuationSlots))return {canRun:false,waitingReason:'global_capacity'};
+    }
 
     if (priority === 'batch') {
       const batchCapacityLimit = Math.max(
@@ -88,14 +101,15 @@ export class FactorySchedulerService {
   async checkSlotAvailability(
     userId: string,
     priority: JobPriority = 'normal',
+    jobType?:string,
   ): Promise<SlotDecision> {
-    const activeRes = await this.db.query<{ user_id: string; count: string }>(
-      `SELECT user_id, COUNT(*)::int AS count
+    const activeRes = await this.db.query<{ user_id: string; count: string;job_type:string }>(
+      `SELECT user_id,job_type, COUNT(*)::int AS count
        FROM indexing_jobs
        WHERE status = 'active'
-       GROUP BY user_id`,
+       GROUP BY user_id,job_type`,
     );
-    return this.evaluateCounts(activeRes.rows, userId, priority);
+    return this.evaluateCounts(activeRes.rows, userId, priority,jobType);
   }
 
   /**
@@ -107,9 +121,10 @@ export class FactorySchedulerService {
     assetId: string,
     userId: string,
     priority: JobPriority = 'normal',
+    jobType?:string,
   ): Promise<SlotDecision> {
     if (typeof this.db.getClient !== 'function') {
-      const peek = await this.checkSlotAvailability(userId, priority);
+      const peek = await this.checkSlotAvailability(userId, priority,jobType);
       if (!peek.canRun) return peek;
       const claimed = await this.db.query(
         `UPDATE indexing_jobs
@@ -145,13 +160,13 @@ export class FactorySchedulerService {
            AND COALESCE(last_heartbeat_at, started_at, created_at) < NOW() - INTERVAL '15 minutes'`,
       );
 
-      const refreshed = await client.query<{ user_id: string; count: string }>(
-        `SELECT user_id, COUNT(*)::int AS count
+      const refreshed = await client.query<{ user_id: string; count: string;job_type:string }>(
+        `SELECT user_id,job_type, COUNT(*)::int AS count
          FROM indexing_jobs
          WHERE status = 'active'
-         GROUP BY user_id`,
+         GROUP BY user_id,job_type`,
       );
-      const decision = this.evaluateCounts(refreshed.rows, userId, priority);
+      const decision = this.evaluateCounts(refreshed.rows, userId, priority,jobType);
       if (!decision.canRun) {
         await client.query('COMMIT');
         return decision;

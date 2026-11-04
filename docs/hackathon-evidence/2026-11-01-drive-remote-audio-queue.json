@@ -1,0 +1,25 @@
+{
+  "date": "2026-11-01",
+  "startedDate": "2026-11-01",
+  "status": "passed",
+  "checks": {
+    "selectedFolderAndOwner": true,
+    "realDriveRangeRead": true,
+    "localTranscription": true,
+    "completedCheckpointReplay": true,
+    "noInferenceLedgerChange": true
+  },
+  "scope": "Real Google Drive ranged source access and local speech through isolated production queue/services; paid inference blocked, no cloud writes or broad sync",
+  "limitations": [
+    "Remote audio/read/auth path only; forced token refresh, cloud-derived uploads and a full remote scene/video queue run are unverified.",
+    "Not an automatic sync or labelled speech accuracy test."
+  ],
+  "stage": "start worker",
+  "transcriptCues": 8,
+  "bytesRead": 4182700,
+  "cleanup": {
+    "isolatedQueueRemoved": true,
+    "temporaryAssetRemoved": true,
+    "privateDerivedMediaRemoved": true
+  }
+}

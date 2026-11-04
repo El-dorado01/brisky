@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Logger, OnModuleInit, UnauthorizedExce
 import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../database/database.service';
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'crypto';
+import { validateCredentials } from '../../common/request-validation';
 
 export interface AuthUser {
   id: string;
@@ -27,13 +28,21 @@ export class AuthService implements OnModuleInit {
     private readonly db: DatabaseService,
     private readonly configService: ConfigService,
   ) {
-    this.jwtSecret =
-      this.configService.get<string>('JWT_SECRET') ||
-      'brisky-development-secret-key-32-chars-long';
+    const secret = this.configService.get<string>('JWT_SECRET');
+    if (typeof secret !== 'string' || secret.trim().length < 32 ||
+        /^(brisky-development-secret|change[-_ ]?me|your[-_ ])/i.test(secret)) {
+      throw new Error('JWT_SECRET must be a private randomly generated secret of at least 32 characters');
+    }
+    this.jwtSecret = secret;
   }
 
   async onModuleInit() {
-    await this.seedDefaultUser();
+    if (this.configService.get('ENABLE_DEMO_ACCOUNT', 'false') === 'true') {
+      if (this.configService.get('NODE_ENV') !== 'development') throw new Error('Demo account seeding is only available in development');
+      const password = this.configService.get<string>('DEMO_ACCOUNT_PASSWORD');
+      validateCredentials('demo@brisky.local', password, true);
+      await this.seedDefaultUser(password!);
+    }
   }
 
   getDefaultUserId(): string {
@@ -75,23 +84,30 @@ export class AuthService implements OnModuleInit {
   }
 
   verifyToken(token: string): JwtPayload {
+    if (typeof token !== 'string' || token.length > 8192) throw new UnauthorizedException('Invalid token');
     const parts = token.split('.');
-    if (parts.length !== 3) throw new UnauthorizedException('Invalid token format');
+    if (parts.length !== 3 || parts.some((part) => !/^[A-Za-z0-9_-]+$/.test(part))) throw new UnauthorizedException('Invalid token format');
     const [header, payload, signature] = parts;
 
     const expectedSig = createHmac('sha256', this.jwtSecret)
       .update(`${header}.${payload}`)
       .digest('base64url');
 
-    if (signature !== expectedSig) {
+    if (signature.length !== expectedSig.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
       throw new UnauthorizedException('Invalid token signature');
     }
 
     try {
+      const decodedHeader = JSON.parse(Buffer.from(header, 'base64url').toString('utf8'));
+      if (decodedHeader?.alg !== 'HS256' || decodedHeader?.typ !== 'JWT' || decodedHeader.crit !== undefined) throw new Error('Invalid header');
       const decoded: JwtPayload = JSON.parse(
         Buffer.from(payload, 'base64url').toString('utf8'),
       );
-      if (decoded.exp < Math.floor(Date.now() / 1000)) {
+      const now = Math.floor(Date.now() / 1000);
+      if (!decoded || typeof decoded.sub !== 'string' || !decoded.sub.trim() || decoded.sub.length > 128 ||
+          typeof decoded.email !== 'string' || !decoded.email.trim() || decoded.email.length > 254 ||
+          !Number.isSafeInteger(decoded.iat) || decoded.iat < 0 || decoded.iat > now + 30 ||
+          !Number.isSafeInteger(decoded.exp) || decoded.exp <= decoded.iat || decoded.exp <= now) {
         throw new UnauthorizedException('Token expired');
       }
       return decoded;
@@ -101,6 +117,7 @@ export class AuthService implements OnModuleInit {
   }
 
   async register(email: string, password: string, name = ''): Promise<{ token: string; user: AuthUser }> {
+    validateCredentials(email, password, true, name);
     const normalized = email.trim().toLowerCase();
     const existing = await this.db.query('SELECT id FROM users WHERE email = $1', [normalized]);
     if (existing.rows.length > 0) {
@@ -120,6 +137,7 @@ export class AuthService implements OnModuleInit {
   }
 
   async login(email: string, password: string): Promise<{ token: string; user: AuthUser }> {
+    validateCredentials(email, password);
     const normalized = email.trim().toLowerCase();
     const res = await this.db.query<{
       id: string;
@@ -159,7 +177,7 @@ export class AuthService implements OnModuleInit {
     return res.rows[0] || null;
   }
 
-  private async seedDefaultUser() {
+  private async seedDefaultUser(password: string) {
     try {
       const defaultEmail = 'demo@brisky.local';
       const existing = await this.db.query<{ id: string }>(
@@ -172,7 +190,7 @@ export class AuthService implements OnModuleInit {
         return;
       }
 
-      const passwordHash = this.hashPassword('demopassword123');
+      const passwordHash = this.hashPassword(password);
       const res = await this.db.query<{ id: string }>(
         `INSERT INTO users (email, password_hash, name)
          VALUES ($1, $2, $3)

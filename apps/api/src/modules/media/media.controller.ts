@@ -11,6 +11,7 @@ import {
   ForbiddenException,
   UseGuards,
   Query,
+  HttpCode,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { FastifyRequest, FastifyReply } from "fastify";
@@ -20,6 +21,10 @@ import * as fs from "fs";
 import * as path from "path";
 
 import { FeedbackPayload } from "./media.types";
+import { withSearchDisconnect } from '../../common/search-disconnect';
+import { validateSearch, boundedText, invalidRequest, validateClip } from '../../common/request-validation';
+import { parsePage } from '../../common/pagination';
+import { peopleSearchOptions } from '../people/people-search';
 
 @Controller("media")
 @UseGuards(AuthGuard)
@@ -32,10 +37,9 @@ export class MediaController {
   ) {}
 
   @Get()
-  async listAssets(@Req() req: any) {
+  async listAssets(@Req() req: any, @Query('limit') limit?: string, @Query('cursor') cursor?: string) {
     const userId = req.user?.id;
-    const assets = await this.mediaService.listPublicAssets(userId);
-    return { count: assets.length, assets };
+    return this.mediaService.listAssetsPage(userId, parsePage(limit, cursor, 'assets', userId));
   }
 
   @Post("upload")
@@ -142,10 +146,14 @@ export class MediaController {
   }
 
   @Post("search")
+  @HttpCode(200)
   async searchMoments(
-    @Body() body: { query: string; assetId?: string },
+    @Body() body: { query: string; assetId?: string; phase?: 'retrieve' | 'verify'; people?: unknown },
     @Req() req: any,
+    @Res({ passthrough: true }) reply: FastifyReply,
   ) {
+    validateSearch(body?.query, body?.assetId, body?.phase);
+    const people=peopleSearchOptions(body.people);
     const userId = req.user?.id;
     if (!body?.query)
       return {
@@ -155,12 +163,15 @@ export class MediaController {
         hasExactMatch: false,
         queryIntent: "mixed",
       };
-    const searchRes = await this.mediaService.searchDetailed(
+    const searchRes = await withSearchDisconnect(req.raw, reply.raw, (signal) => this.mediaService.searchDetailed(
       body.query,
       body.assetId,
       15,
       userId,
-    );
+      body.phase === 'retrieve' ? 'retrieve' : 'verify',
+      signal,
+      people,
+    ));
     return { query: body.query, count: searchRes.results.length, ...searchRes };
   }
 
@@ -169,7 +180,9 @@ export class MediaController {
     @Query("q") q: string,
     @Query("assetId") assetId: string,
     @Req() req: any,
+    @Res({ passthrough: true }) reply: FastifyReply,
   ) {
+    validateSearch(q, assetId);
     const userId = req.user?.id;
     if (!q)
       return {
@@ -179,17 +192,24 @@ export class MediaController {
         hasExactMatch: false,
         queryIntent: "mixed",
       };
-    const searchRes = await this.mediaService.searchDetailed(
+    const searchRes = await withSearchDisconnect(req.raw, reply.raw, (signal) => this.mediaService.searchDetailed(
       q,
       assetId,
       15,
       userId,
-    );
+      'verify', signal,
+    ));
     return { query: q, count: searchRes.results.length, ...searchRes };
   }
 
   @Post("feedback")
   async recordFeedback(@Body() body: FeedbackPayload, @Req() req: any) {
+    validateSearch(body?.query, body?.assetId);
+    boundedText(body?.assetId, 'assetId', 128);
+    if (body?.feedback !== 'positive' && body?.feedback !== 'negative') invalidRequest('feedback must be positive or negative');
+    if (body.segmentId !== undefined) boundedText(body.segmentId, 'segmentId', 256);
+    if (body.notes !== undefined) boundedText(body.notes, 'notes', 2000, true);
+    if (body.timestampSec !== undefined && (typeof body.timestampSec !== 'number' || !Number.isFinite(body.timestampSec) || body.timestampSec < 0)) invalidRequest('timestampSec must be a non-negative finite number');
     const userId = req.user?.id;
     if (!body?.query || !body?.assetId || !body?.feedback) {
       throw new BadRequestException(
@@ -241,13 +261,15 @@ export class MediaController {
   }
 
   @Post(":id/extract-clip")
+  @HttpCode(202)
   async extractClip(
     @Param("id") id: string,
     @Body() body: { start_s: number; end_s: number; title?: string },
     @Req() req: any,
   ) {
+    validateClip(body);
     const userId = req.user?.id;
-    return this.mediaService.enqueueClipExtraction(id, body, userId);
+    return this.mediaService.enqueueClipExtraction(id, body, userId, req.headers?.['idempotency-key']);
   }
 
   @Get(":id/stream")

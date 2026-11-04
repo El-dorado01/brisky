@@ -1,13 +1,17 @@
-import { Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
+import { PageRequest, pageResult } from '../../common/pagination';
+import { Injectable, Logger, NotFoundException, Optional, BadRequestException, UnauthorizedException, OnModuleDestroy,ServiceUnavailableException } from '@nestjs/common';
+import { validateClip } from '../../common/request-validation';
 import { ConfigService } from '@nestjs/config';
+import { embeddingProviderForUser } from '../pipeline/embedding-provider';
 import { createHash, randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { DatabaseService } from '../database/database.service';
 import { IndexingService } from '../queue/indexing.service';
 import { FactoryJobEnvelope } from '../queue/indexing.types';
-import { GeminiIntelligenceService } from '../pipeline/gemini-intelligence.service';
+import { AiIntelligenceService } from '../pipeline/ai-intelligence.service';
 import { LocalEmbeddingService } from '../pipeline/local-embedding.service';
+import { SearchEvidence, SearchEvidenceService, evidenceMode } from '../pipeline/search-evidence.service';
 import { ProxyCacheService } from '../pipeline/proxy-cache.service';
 import { UploadConnector } from '../connector/upload.connector';
 import { ConnectorsService } from '../connector/connectors.service';
@@ -16,6 +20,7 @@ import {
   assertPathWithinRoot,
   resolveFromRepo,
   validateAssetId,
+  guessMime,
 } from '../../common/repo-paths';
 import { resolveStorageLocator, toStorageLocator } from '../../common/storage-paths';
 import {
@@ -23,6 +28,13 @@ import {
   getLibraryBenchmarkQueries,
 } from './benchmark-queries';
 import { parseSearchQuery } from './query-parse';
+import { PeopleSearchService } from '../people/people-search.service';
+import { ConversationVerifierService, wantsConversation } from '../people/conversation-verifier.service';
+import { peopleSearchOptions } from '../people/people-search';
+import { assertSearchActive, searchSignal, SearchDeadlineError, withSearchDeadline } from '../../common/search-deadline';
+import { acquireSearchResource, publishSearchResults, retrievalOnly, reserveCloudBytes, withSearchProgress } from '../../common/search-progress';
+import { stageCloudSource } from './cloud-inspection-source';
+import { openSeekableMediaSource } from '../pipeline/seekable-media-source';
 import {
   parseKeyframePaths,
   materializeKeyframeFiles,
@@ -56,7 +68,8 @@ export type {
 };
 
 @Injectable()
-export class MediaService {
+export class MediaService implements OnModuleDestroy {
+  private embeddingCleanupTimer?: ReturnType<typeof setInterval>;
   private readonly logger = new Logger(MediaService.name);
   private storageRoot: string;
   private proxyDir: string;
@@ -71,12 +84,15 @@ export class MediaService {
     private readonly configService: ConfigService,
     private readonly db: DatabaseService,
     private readonly indexingService: IndexingService,
-    private readonly geminiService: GeminiIntelligenceService,
+    private readonly aiService: AiIntelligenceService,
     private readonly localEmbeddingService: LocalEmbeddingService,
     private readonly uploadConnector: UploadConnector,
     @Optional() private readonly proxyCacheService?: ProxyCacheService,
     @Optional() private readonly connectorsService?: ConnectorsService,
     @Optional() private readonly connectorRegistry?: ConnectorRegistry,
+    @Optional() private readonly searchEvidenceService?: SearchEvidenceService,
+    @Optional() private readonly peopleSearchService?: PeopleSearchService,
+    @Optional() private readonly conversationVerifier?: ConversationVerifierService,
   ) {
     this.storageRoot = resolveFromRepo(
       this.configService.get<string>('STORAGE_ROOT', './storage'),
@@ -100,7 +116,7 @@ export class MediaService {
 
   private startEmbeddingCacheCleanup() {
     // Clean up expired cache entries every hour
-    setInterval(
+    this.embeddingCleanupTimer = setInterval(
       () => {
         const now = Date.now();
         let cleaned = 0;
@@ -118,16 +134,21 @@ export class MediaService {
       },
       60 * 60 * 1000,
     ); // Run every hour
+    this.embeddingCleanupTimer.unref();
   }
+
+  onModuleDestroy() { if (this.embeddingCleanupTimer) clearInterval(this.embeddingCleanupTimer); }
 
   private normalizeForCache(text: string): string {
     // Normalize: lowercase, trim, collapse whitespace
     return text.toLowerCase().trim().replace(/\s+/g, ' ');
   }
 
-  private async getCachedOrGenerateEmbedding(text: string): Promise<number[]> {
+  private async getCachedOrGenerateEmbedding(text: string, userId?:string): Promise<number[]> {
     const normalized = this.normalizeForCache(text);
-    const cacheKey = createHash('sha256').update(normalized).digest('hex');
+    const preferredProvider = embeddingProviderForUser(this.configService,userId);
+    const space=preferredProvider==='local'?this.configService.get('LOCAL_EMBEDDING_MODEL','sentence-transformers/all-MiniLM-L6-v2'):this.aiService.getEmbeddingModel?.()||this.configService.get('AI_EMBEDDING_MODEL','gemini-embedding-001');
+    const cacheKey = createHash('sha256').update(JSON.stringify([preferredProvider,space,normalized])).digest('hex');
 
     // Check cache first
     const cached = this.embeddingCache.get(cacheKey);
@@ -138,28 +159,14 @@ export class MediaService {
 
     // Generate new embedding
     let values: number[] = [];
-    const preferredProvider = this.configService.get<string>(
-      'EMBEDDING_PROVIDER',
-      'gemini',
-    );
 
-    if (
-      preferredProvider === 'local' &&
-      this.localEmbeddingService.isAvailable()
-    ) {
-      try {
-        const res =
-          await this.localEmbeddingService.generateEmbedding(normalized);
-        values = res.values;
-      } catch (localErr) {
-        this.logger.warn(`Local embedding failed, trying Gemini: ${localErr}`);
-        if (this.geminiService.isConfigured()) {
-          const res = await this.geminiService.generateEmbedding(normalized);
-          values = res.values;
-        }
-      }
-    } else if (this.geminiService.isConfigured()) {
-      const res = await this.geminiService.generateEmbedding(normalized);
+    if (preferredProvider === 'local') {
+      if (!this.localEmbeddingService.isAvailable()) throw new Error('Local embedding engine unavailable');
+      // A remote vector belongs to a different embedding space. Preserve lexical fallback instead.
+      const res = await this.localEmbeddingService.generateEmbedding(normalized);
+      values = res.values;
+    } else if (this.aiService.isConfigured()) {
+      const res = await this.aiService.generateEmbedding(normalized);
       values = res.values;
     }
 
@@ -346,21 +353,40 @@ export class MediaService {
   }
 
   async listPublicAssets(userId?: string): Promise<PublicAsset[]> {
+    return (await this.readPublicAssets(userId)).map((row) => this.mapPublicAsset(row));
+  }
+
+  async listAssetsPage(userId: string, page: PageRequest) {
+    if (!userId) throw new UnauthorizedException();
+    const result = pageResult(await this.readPublicAssets(userId, page), page, 'assets', userId, (row) => this.mapPublicAsset(row));
+    return { assets: result.items, count: result.count, hasMore: result.hasMore, nextCursor: result.nextCursor };
+  }
+
+  private async readPublicAssets(userId?: string, page?: PageRequest) {
     const userClause = userId ? 'WHERE a.user_id = $1' : '';
-    const params = userId ? [userId] : [];
+    const params: any[] = userId ? [userId] : [];
+    let cursorClause = '';
+    if (page?.after) {
+      params.push(page.after.createdAt, page.after.id);
+      cursorClause = 'AND (a.created_at,a.id) < ($2::timestamptz,$3::varchar)';
+    }
+    const limitClause = page ? `LIMIT $${params.push(page.limit + 1)}` : '';
 
     const res = await this.db.query(
-      `SELECT a.*, COUNT(s.id)::int AS segment_count,
+      `SELECT a.*, to_char(a.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_created_at,
+              (SELECT COUNT(*)::int FROM media_segments s WHERE s.asset_id=a.id) AS segment_count,
               (SELECT started_at FROM indexing_jobs WHERE asset_id = a.id ORDER BY (status = 'active') DESC, created_at DESC LIMIT 1) AS job_started_at
        FROM media_assets a
-       LEFT JOIN media_segments s ON s.asset_id = a.id
-       ${userClause}
-       GROUP BY a.id
-       ORDER BY a.created_at DESC`,
+       ${userClause} ${cursorClause}
+       ORDER BY a.created_at DESC, a.id DESC ${limitClause}`,
       params,
     );
 
-    return res.rows.map((row) => ({
+    return res.rows;
+  }
+
+  private mapPublicAsset(row: any): PublicAsset {
+    return {
       assetId: row.id,
       originalFilename: row.original_filename,
       checksum: row.checksum,
@@ -371,7 +397,7 @@ export class MediaService {
       status: row.status,
       stage: row.stage,
       progress: row.progress,
-      error: row.error,
+      error: row.error ? 'Processing failed; inspect job status to continue' : undefined,
       originalDeleted: row.original_deleted,
       duration: row.duration,
       resolution:
@@ -391,7 +417,7 @@ export class MediaService {
       phash: row.phash,
       proxyStatus: row.proxy_status,
       availability: row.availability,
-    }));
+    };
   }
 
   async getLineage(assetId: string, userId?: string): Promise<AssetLineage> {
@@ -491,6 +517,7 @@ export class MediaService {
   async getStreamInfo(
     assetId: string,
     userId?: string,
+    allowQueue = true,
   ): Promise<
     | { status: 'ready'; filePath: string }
     | { status: 'preparing'; proxyStatus: string; message: string }
@@ -572,6 +599,8 @@ export class MediaService {
       };
     }
 
+    // The SaaS playback bridge reports readiness without starting background work.
+    if(!allowQueue)return {status:'preparing',proxyStatus:asset.proxy_status||'pending',message:'Preview is not ready yet.'};
     // 4. On-demand trigger: enqueue generate_proxy job with interactive priority
     const envelope: FactoryJobEnvelope = {
       job_id: `proxy_${validId}_${Date.now()}`,
@@ -601,6 +630,33 @@ export class MediaService {
       proxyStatus: 'queued',
       message: 'Preview generation requested. Please retry shortly.',
     };
+  }
+
+  async getRemotePlaybackSource(assetId:string,userId:string,signal:AbortSignal){
+    const found=await this.db.query(`SELECT a.source_type,a.external_file_id,a.connector_account_id,a.file_size,a.checksum,
+      a.original_filename,u.metadata->>'sourceVersion' AS source_version
+      FROM media_assets a JOIN connector_accounts c ON c.id=a.connector_account_id AND c.user_id=a.user_id AND c.status='connected'
+      LEFT JOIN media_processing_units u ON u.asset_id=a.id AND u.unit_id='source_preparation'
+      WHERE a.id=$1 AND a.user_id=$2`,[validateAssetId(assetId),userId]);
+    const asset=found.rows[0];
+    if(!asset||!asset.external_file_id||!this.connectorsService||!this.connectorRegistry)return null;
+    const connector=this.connectorRegistry.get(asset.source_type==='drive'?'google_drive':asset.source_type);
+    if(!connector.openReadSession)return null;
+    const auth=await this.connectorsService.getAuthContext(asset.connector_account_id,userId);
+    const session=await connector.openReadSession(auth,asset.external_file_id,signal);
+    if(session.size!==Number(asset.file_size))
+      throw new ServiceUnavailableException('The source changed since indexing; sync it again before playback');
+    if(!asset.source_version||session.version!==asset.source_version){
+      // Drive versions include metadata/permission edits, not just content changes.
+      // Accept those only when the stored content checksum still matches.
+      if(!/^[a-f0-9]{32}$/i.test(asset.checksum||''))throw new ServiceUnavailableException('Cannot confirm the indexed source identity');
+      const metadata=await connector.getAsset(auth,asset.external_file_id);
+      if(metadata.md5Checksum?.toLowerCase()!==asset.checksum.toLowerCase()||metadata.size!==session.size)
+        throw new ServiceUnavailableException('The source changed since indexing; sync it again before playback');
+    }
+    const mime=guessMime(asset.original_filename);
+    if(!['video/mp4','video/webm','video/quicktime'].includes(mime))return null;
+    return {...session,mime};
   }
 
   private defaultPlayablePath(assetId: string, parentAssetId?: string | null): string {
@@ -673,18 +729,25 @@ export class MediaService {
     assetId: string,
     params: { start_s: number; end_s: number; title?: string },
     userId?: string,
+    idempotencyKey?: string,
   ): Promise<{ job_id: string; status: string; message: string }> {
+    if (!userId) throw new UnauthorizedException();
+    validateClip(params);
     const validId = validateAssetId(assetId);
     const userClause = userId ? 'AND user_id = $2' : '';
     const res = await this.db.query(
       `SELECT id, user_id, original_path, original_filename, source_type,
-              external_file_id, connector_account_id, checksum, file_size
+              external_file_id, connector_account_id, checksum, file_size, duration
        FROM media_assets WHERE id = $1 ${userClause}`,
       userId ? [validId, userId] : [validId],
     );
     const asset = res.rows[0];
     if (!asset) {
       throw new NotFoundException(`Asset ${validId} not found`);
+    }
+
+    if (Number(asset.duration) > 0 && params.end_s > Number(asset.duration)) {
+      throw new BadRequestException('Clip end_s exceeds the source duration');
     }
 
     const envelope: FactoryJobEnvelope = {
@@ -702,18 +765,13 @@ export class MediaService {
         fileSize: asset.file_size || 0,
       },
       segment: {
-        start_s: Number(params.start_s) || 0,
-        end_s: Number(params.end_s) || (Number(params.start_s) + 10),
+        start_s: params.start_s,
+        end_s: params.end_s,
       },
       priority: 'interactive',
     };
 
-    const jobId = await this.indexingService.enqueueAsset(envelope);
-    return {
-      job_id: jobId,
-      status: 'queued',
-      message: `Clip extraction queued for [${envelope.segment?.start_s}s - ${envelope.segment?.end_s}s]`,
-    };
+    return this.indexingService.enqueueClip(envelope, idempotencyKey, params.title);
   }
 
   async getThumbnailPath(assetId: string, userId?: string): Promise<string> {
@@ -875,6 +933,12 @@ export class MediaService {
   }
 
   async getUnderstoodQuery(trimmed: string): Promise<UnderstoodQuery> {
+    // A literal spoken quote needs no remote paraphrase; retain it before cached
+    // understanding/fallback can strip the defining words from retrieval.
+    const literal=parseSearchQuery(trimmed);
+    if(literal.intent==='spoken'&&/["\u201c\u201d]/.test(trimmed)&&literal.phrases.length){
+      return {rawQuery:trimmed,cleanSearchPhrase:trimmed,coreSubject:literal.cleaned,aliases:[],isCompound:false,subQueries:[{topic:literal.cleaned,searchPhrase:trimmed}]};
+    }
     const queryHash = createHash('sha256')
       .update(trimmed.toLowerCase().trim())
       .digest('hex');
@@ -932,16 +996,9 @@ export class MediaService {
     }
 
     // 3. AI Understanding Pipeline
-    if (this.geminiService.isConfigured()) {
+    if (this.aiService.isConfigured()) {
       try {
-        const understoodPromise = this.geminiService.understandQuery(trimmed);
-        const timeoutPromise = new Promise<null>((resolve) =>
-          setTimeout(() => resolve(null), 3500),
-        );
-        const understood = await Promise.race([
-          understoodPromise,
-          timeoutPromise,
-        ]);
+        const understood = await withSearchDeadline(3500, () => this.aiService.understandQuery(trimmed));
         if (understood) {
           this.cacheUnderstoodQuery(queryHash, understood).catch(
             () => undefined,
@@ -1004,6 +1061,52 @@ export class MediaService {
   }
 
   async searchDetailed(
+    query: string, assetIdFilter?: string, limit = 15, userId?: string,
+    phase: 'retrieve' | 'verify' = 'verify',
+    signal?: AbortSignal,
+    people?: {references?:string[];selections?:Array<{reference:string;personId:string}>},
+  ): Promise<SearchResponse> {
+    const identityOptions=peopleSearchOptions(people);
+    const retained = new Map<string, SearchResult>();
+    const publish = (hits: SearchResult[]) => {
+      for (const hit of hits) retained.set(`${hit.assetId}:${hit.segmentId}`, hit);
+    };
+    const configured = Number(this.configService?.get('SEARCH_DEADLINE_MS', 30000) ?? 30000);
+    const timeout = Number.isSafeInteger(configured) && configured > 0 && configured <= 240000 ? configured : 30000;
+    try {
+      const response = await withSearchProgress(phase === 'retrieve', publish,
+        () => withSearchDeadline(timeout, async () => {
+          const identities = userId && this.peopleSearchService
+            ? await this.peopleSearchService.search(userId, { query, assetId: assetIdFilter, limit, ...identityOptions }, true) : null;
+          if (identities) {
+            if (phase==='verify' && userId && wantsConversation(query) && this.conversationVerifier) {
+              return this.conversationVerifier.verify(identities,userId,c=>this.prepareSearchEvidence(c,'sequence',userId));
+            }
+            return identities;
+          }
+          return this.searchWithinDeadline(query, assetIdFilter, limit, userId);
+        }, signal));
+      if (response.identitySearch) return response;
+      if (phase === 'retrieve') return { ...response, searchStatus: response.results.length ? 'refining' : 'complete',
+        canContinue: response.results.length > 0, missingTerms: undefined,
+        explanation: response.results.length ? 'Likely matches are ready. Checking the closest matches next.' : response.explanation };
+      const incomplete = response.results.some((hit) => ['error', 'insufficient_evidence', 'pending'].includes(hit.verificationStatus || ''));
+      const budgetBlocked = response.results.some((hit) => hit.verificationIssue === 'budget');
+      return { ...response, searchStatus: incomplete ? 'incomplete' : 'complete', canContinue: incomplete && !budgetBlocked,
+        missingTerms: incomplete ? undefined : response.missingTerms,
+        explanation: budgetBlocked ? 'AI checking is paused. Your available results are still ready to browse.' :
+          incomplete ? 'Some matches have not been checked yet. You can keep browsing these results.' : response.explanation };
+    } catch (err) {
+      if (!(err instanceof SearchDeadlineError)) throw err;
+      const results = [...retained.values()].sort((a, b) => Number(!!b.stage2Verified) - Number(!!a.stage2Verified) || b.score - a.score).slice(0, limit);
+      return { results, hasExactMatch: results.some((hit) => hit.stage2Verified), queryIntent: 'mixed',
+        searchStatus: 'incomplete', canContinue: true,
+        explanation: results.length ? 'Some matches have not been checked yet. Your available results are kept below.' :
+          'This search is taking longer than expected. Try again; this does not establish that the moment is absent.' };
+    }
+  }
+
+  private async searchWithinDeadline(
     query: string,
     assetIdFilter?: string,
     limit = 15,
@@ -1019,6 +1122,7 @@ export class MediaService {
     }
 
     const understood = await this.getUnderstoodQuery(trimmed);
+    assertSearchActive();
     const searchTarget = understood.cleanSearchPhrase || trimmed;
     const targetEntity = understood.targetEntity || understood.coreSubject;
     const parsed = parseSearchQuery(searchTarget, targetEntity);
@@ -1031,7 +1135,7 @@ export class MediaService {
           .join(' | ')}`,
       );
       results = await this.searchCompoundMultiTopic(
-        searchTarget,
+        trimmed,
         understood.subQueries,
         assetIdFilter,
         limit,
@@ -1046,6 +1150,7 @@ export class MediaService {
         undefined,
         understood.aliases,
         targetEntity,
+        trimmed,
       );
     }
 
@@ -1080,8 +1185,11 @@ export class MediaService {
     topicLabel?: string,
     aliases: string[] = [],
     targetEntity?: string,
+    evidenceQuery?: string,
   ): Promise<SearchResult[]> {
     const parsed = parseSearchQuery(query, targetEntity);
+    const verificationParsed = { ...parsed, cleaned: evidenceQuery || parsed.cleaned };
+    const candidateLimit = Math.min(60, Math.max(limit, 30));
 
     // Parallel execution: run direct phrase matching and hybrid segment search concurrently
     const [phraseHits, segmentHits] = await Promise.all([
@@ -1089,10 +1197,10 @@ export class MediaService {
         parsed,
         assetIdFilter,
         userId,
-        limit,
+        candidateLimit,
         aliases,
       ),
-      this.searchSegments(parsed, assetIdFilter, userId, limit + 10, aliases),
+      this.searchSegments(parsed, assetIdFilter, userId, candidateLimit, aliases),
     ]);
 
     const seen = new Set<string>();
@@ -1135,28 +1243,34 @@ export class MediaService {
     }
 
     // Combine direct and related matches
-    let merged = [...directHits, ...relatedHits].slice(0, limit);
+    let merged = [...directHits, ...relatedHits].slice(0, candidateLimit);
+    const provisional = merged.map((hit): SearchResult => ({ ...hit, matchQuality: 'related',
+      stage2Verified: false, verificationStatus: 'pending' }));
+    publishSearchResults(provisional);
+    if (retrievalOnly()) return provisional.slice(0, limit);
 
     // Stage-2 Deep Verification on candidates if needed
     // SMART VERIFICATION GATING: Only verify when uncertain
-    if (this.geminiService.isConfigured() && merged.length > 0) {
+    if (this.aiService.isConfigured() && merged.length > 0) {
       const topScore = merged[0]?.score || 0;
       const secondScore = merged[1]?.score || 0;
       const confidenceGap = topScore - secondScore;
       const hasDetailModifier =
         /\b(wearing|holding|carrying|background|small|tiny|brief|fleeting|sitting|standing|running|walking|red|blue|green|black|white|silver|gold|micro|detail)\b/i.test(
-          parsed.cleaned,
+          verificationParsed.cleaned,
         );
 
-      // Optimization: Skip verification for high-confidence or low-confidence results
-      const skipVerification =
-        topScore > 0.85 || // High confidence in top result, no need to verify
-        (merged.length > 0 && merged.every((r) => r.score < 0.6)); // All results too low, verification won't help
+      // Visual constraints require evidence regardless of retrieval score.
+      const hasSequenceConstraint = evidenceMode(verificationParsed.cleaned, false) === 'sequence';
+      const requiresVisualEvidence = parsed.intent === 'visual' || hasDetailModifier || hasSequenceConstraint;
+      const skipVerification = !requiresVisualEvidence && (
+        topScore > 0.85 ||
+        (merged.length > 0 && merged.every((r) => r.score < 0.6)));
 
-      // Only verify if score is in "uncertain zone" (0.60-0.85) or detail modifier detected
+      // Other requests retain the existing score-based uncertainty policy.
       const needsVerification =
         !skipVerification &&
-        (parsed.intent === 'visual' ||
+        (hasSequenceConstraint || parsed.intent === 'visual' ||
           (merged.length > 0 &&
             merged.some((r) => 0.6 < r.score && r.score < 0.85)) ||
           hasDetailModifier ||
@@ -1164,21 +1278,9 @@ export class MediaService {
 
       if (needsVerification) {
         if (hasDetailModifier) {
-          // LAZY DETAIL VERIFICATION: Only trigger if standard results don't have high-confidence match
-          const hasHighConfidenceResult = merged.some((r) => r.score > 0.75);
-          if (!hasHighConfidenceResult) {
-            merged = await this.applyDetailedVerification(
-              merged,
-              parsed,
-              userId,
-            );
-          } else {
-            this.logger.debug(
-              `Skipping detail verification: high-confidence result found (${topScore})`,
-            );
-          }
+          merged = await this.applyDetailedVerification(merged, verificationParsed, userId);
         } else {
-          merged = await this.applyStage2Verification(merged, parsed, userId);
+          merged = await this.applyStage2Verification(merged, verificationParsed, userId);
         }
       } else {
         this.logger.debug(
@@ -1195,118 +1297,7 @@ export class MediaService {
     parsed: ReturnType<typeof parseSearchQuery>,
     userId?: string,
   ): Promise<SearchResult[]> {
-    const queryHash = createHash('sha256').update(parsed.cleaned).digest('hex');
-    // Verify more candidates (up to 5) for broader coverage
-    const candidatesToVerify = results.slice(0, Math.min(5, results.length));
-
-    const verifiedHits = await Promise.all(
-      candidatesToVerify.map(async (candidate) => {
-        try {
-          // 1. Check verified_queries cache in DB
-          const cached = await this.db.query<{
-            is_verified: boolean;
-            confidence: number;
-            explanation: string;
-          }>(
-            `SELECT is_verified, confidence, explanation FROM verified_queries
-             WHERE query_hash = $1 AND segment_id = $2`,
-            [queryHash, candidate.segmentId],
-          );
-
-          if (cached.rows.length > 0) {
-            const row = cached.rows[0];
-            return this.enrichVerifiedHit(
-              candidate,
-              row.is_verified,
-              row.confidence,
-              row.explanation,
-              undefined,
-            );
-          }
-
-          // 2. Locate this candidate's own keyframes (not the whole asset's frame directory)
-          let frames: { timestamp: number; path: string }[] = [];
-          let usedThumbnailFallback = false;
-          const segRow = await this.db.query<{ keyframe_paths: unknown }>(
-            `SELECT keyframe_paths FROM media_segments WHERE id = $1`,
-            [candidate.segmentId],
-          );
-          if (segRow.rows.length > 0) {
-            const kfScratch = path.join(this.scratchDir, 'stage2', candidate.segmentId);
-            frames = materializeKeyframeFiles(
-              parseKeyframePaths(segRow.rows[0].keyframe_paths),
-              this.storageRoot,
-              kfScratch,
-            );
-          }
-          if (frames.length === 0) {
-            const thumb = path.join(
-              this.thumbnailDir,
-              `${candidate.assetId}.jpg`,
-            );
-            if (fs.existsSync(thumb)) {
-              frames = [{ timestamp: candidate.startTime, path: thumb }];
-              usedThumbnailFallback = true;
-            }
-          }
-
-          if (frames.length === 0) return candidate;
-
-          // 3. Call Gemini VLM verification with standard prompt
-          const ver = await this.geminiService.verifyCandidate(
-            frames,
-            parsed.cleaned,
-            candidate.transcriptSnippet,
-            false, // not detail mode
-          );
-
-          // Save to cache
-          await this.db.query(
-            `INSERT INTO verified_queries (query_hash, asset_id, segment_id, is_verified, confidence, explanation)
-             VALUES ($1, $2, $3, $4, $5, $6)
-             ON CONFLICT (query_hash, segment_id) DO UPDATE
-             SET is_verified = EXCLUDED.is_verified, confidence = EXCLUDED.confidence, explanation = EXCLUDED.explanation`,
-            [
-              queryHash,
-              candidate.assetId,
-              candidate.segmentId,
-              ver.matched,
-              ver.confidence,
-              ver.explanation,
-            ],
-          );
-
-          return this.enrichVerifiedHit(
-            candidate,
-            ver.matched,
-            ver.confidence,
-            ver.explanation,
-            usedThumbnailFallback ? undefined : ver.matchedTimestamp,
-          );
-        } catch (err) {
-          this.logger.warn(
-            `Stage-2 verification error for ${candidate.segmentId}: ${err}`,
-          );
-          return candidate;
-        }
-      }),
-    );
-
-    const verifiedKeys = new Set(
-      candidatesToVerify.map((c) => `${c.assetId}:${c.startTime.toFixed(1)}`),
-    );
-    const remaining = results.filter(
-      (r) => !verifiedKeys.has(`${r.assetId}:${r.startTime.toFixed(1)}`),
-    );
-    const all = [...verifiedHits, ...remaining];
-
-    all.sort((a, b) => {
-      if (a.matchQuality === 'direct' && b.matchQuality !== 'direct') return -1;
-      if (b.matchQuality === 'direct' && a.matchQuality !== 'direct') return 1;
-      return b.score - a.score;
-    });
-
-    return all;
+    return this.verifySceneResults(results, parsed, false, userId);
   }
 
   private async applyDetailedVerification(
@@ -1314,208 +1305,252 @@ export class MediaService {
     parsed: ReturnType<typeof parseSearchQuery>,
     userId?: string,
   ): Promise<SearchResult[]> {
-    // Deep inspection for needle-in-haystack queries
-    // Verify more candidates (up to 8) and use detailed prompting for micro-details
-    const queryHash = createHash('sha256')
-      .update(`detail_${parsed.cleaned}`)
-      .digest('hex');
-    const candidatesToVerify = results.slice(0, Math.min(8, results.length));
+    return this.verifySceneResults(results, parsed, true, userId);
+  }
 
-    const verifiedHits = await Promise.all(
-      candidatesToVerify.map(async (candidate) => {
+  private async prepareSearchEvidence(candidate: SearchResult, mode: 'detail' | 'sequence',
+    userId?: string): Promise<SearchEvidence | null> {
+    if (!userId || !this.searchEvidenceService) return null;
+    const source = await this.db.query<{ original_path: string; proxy_path: string;
+      source_type: string; connector_account_id: string; external_file_id: string; file_size: string }>(
+      `SELECT original_path, proxy_path, source_type, connector_account_id, external_file_id, file_size
+       FROM media_assets WHERE id = $1 AND user_id = $2`,
+      [candidate.assetId, userId],
+    );
+    const asset = source.rows[0];
+    if (!asset) return null;
+    const original = this.existingPlayableFile(this.safeLocalMediaPath(asset.original_path));
+    const preview = this.existingPlayableFile(this.safeLocalMediaPath(asset.proxy_path));
+    const sourcePath = original || preview;
+    if (sourcePath) return this.searchEvidenceService.prepare(sourcePath, original ? 'original' : 'preview',
+      candidate.startTime, candidate.endTime, mode);
+    const limitMb = Number(this.configService.get('SEARCH_CLOUD_SOURCE_MAX_MB', 16));
+    const bytes = Number(asset.file_size);
+    if (!Number.isFinite(limitMb) || limitMb <= 0 || limitMb > 64 || !Number.isFinite(bytes) ||
+      !Number.isSafeInteger(bytes) || bytes <= 0 || !asset.external_file_id ||
+      !asset.connector_account_id || !this.connectorRegistry || !this.connectorsService) return null;
+    assertSearchActive();
+    const connector = this.connectorRegistry.get(asset.source_type === 'drive' ? 'google_drive' : asset.source_type);
+    const totalMb = Number(this.configService.get('SEARCH_CLOUD_TOTAL_MB', 32));
+    if (!Number.isFinite(totalMb) || totalMb <= 0 || totalMb > 128) return null;
+    if (bytes > limitMb * 1024 * 1024 && connector.openReadSession) {
+      const key = JSON.stringify(['seekable', this.storageRoot, userId, candidate.assetId,
+        asset.connector_account_id, asset.external_file_id, bytes]);
+      const lease = await acquireSearchResource(key, async () => {
+        assertSearchActive();
+        const auth = await this.connectorsService!.getAuthContext(asset.connector_account_id, userId);
+        const session = await connector.openReadSession!(auth, asset.external_file_id, searchSignal());
+        if (session.size !== bytes) throw new Error('Cloud source size changed since indexing');
+        const reader = await openSeekableMediaSource(session, { maxBytes: Math.floor(totalMb * 1024 * 1024),
+          signal: searchSignal(), reserve: (length) => reserveCloudBytes(length, totalMb * 1024 * 1024) });
+        return { reader, cleanup: () => { void reader.close().catch((error) => this.logger.warn(`Source cleanup failed: ${error.message}`)); } };
+      });
+      if (!lease) return null;
+      try {
+        const evidence = await this.searchEvidenceService.prepareRemote(lease.value.reader,
+          candidate.startTime, candidate.endTime, mode);
+        if (!evidence) { lease.release(); return null; }
+        return { ...evidence, cleanup: () => { try { evidence.cleanup(); } finally { lease.release(); } } };
+      } catch (error) { lease.release(); throw error; }
+    }
+    if (!connector.getByteRange || bytes > limitMb * 1024 * 1024) return null;
+    const key = JSON.stringify([this.storageRoot, userId, candidate.assetId, asset.source_type,
+      asset.connector_account_id, asset.external_file_id, bytes]);
+    const lease = await acquireSearchResource(key, async () => {
+      assertSearchActive();
+      if (!reserveCloudBytes(bytes, totalMb * 1024 * 1024)) return null;
+      const auth = await this.connectorsService!.getAuthContext(asset.connector_account_id, userId);
+      return stageCloudSource(this.storageRoot, Math.min(bytes, limitMb * 1024 * 1024),
+        () => connector.getByteRange!(auth, asset.external_file_id, 0, bytes, searchSignal()), bytes);
+    });
+    if (!lease) return null;
+    const staged = lease.value;
+    try {
+      const evidence = await this.searchEvidenceService.prepare(staged.path, 'original',
+        candidate.startTime, candidate.endTime, mode);
+      if (!evidence) { lease.release(); return null; }
+      return { ...evidence, cleanup: () => { try { evidence.cleanup(); } finally { lease.release(); } } };
+    } catch (error) { lease.release(); throw error; }
+  }
+
+  private async verifySceneResults(
+    results: SearchResult[],
+    parsed: ReturnType<typeof parseSearchQuery>,
+    detailMode: boolean,
+    userId?: string,
+    remainingBudget = 15,
+  ): Promise<SearchResult[]> {
+    const count = Math.min(detailMode ? 8 : 5, remainingBudget, results.length);
+    const inspect = async (candidate:SearchResult): Promise<SearchResult> => {
+      assertSearchActive();
+      const unavailable = (status: 'error' | 'insufficient_evidence', explanation: string,
+        issue: SearchResult['verificationIssue'] = status === 'insufficient_evidence' ? 'source' : 'temporary'): SearchResult => {
+        const hit: SearchResult = {
+        ...candidate,
+        matchQuality: 'related',
+        stage2Verified: false,
+        verificationStatus: status,
+        verificationIssue: issue,
+        verificationExplanation: explanation,
+        whyPicked: explanation,
+        };
+        publishSearchResults([hit]);
+        return hit;
+      };
+      let expanded: SearchEvidence | null = null;
+      try {
+        const segRow = await this.db.query<{ keyframe_paths: unknown }>(
+          `SELECT keyframe_paths FROM media_segments WHERE id = $1`,
+          [candidate.segmentId],
+        );
+        const scratch = path.join(this.scratchDir, 'stage2', candidate.segmentId);
+        let frames = materializeKeyframeFiles(
+          parseKeyframePaths(segRow.rows[0]?.keyframe_paths), this.storageRoot, scratch,
+        ).filter((f) => Number.isFinite(f.timestamp) &&
+          f.timestamp >= candidate.startTime && f.timestamp <= candidate.endTime &&
+          fs.existsSync(f.path));
+        if(frames.length>12)frames=Array.from({length:12},(_,i)=>frames[Math.round(i*(frames.length-1)/11)]);
+        const mode = evidenceMode(parsed.cleaned, detailMode);
+        if(mode==='sequence'){
+          const maxSeconds=Number(this.configService?.get('SEARCH_INSPECTION_MAX_SECONDS',20)??20);
+          if(candidate.endTime-candidate.startTime>maxSeconds){
+            // Still frames cannot establish a moving action. Inspect bounded
+            // beginning/middle/end excerpts, returning only a positively checked
+            // interval. Missing/cross-window actions remain incomplete.
+            const starts=[...new Set([candidate.startTime,
+              candidate.startTime+(candidate.endTime-candidate.startTime-maxSeconds)/2,
+              candidate.endTime-maxSeconds])];
+            for(const start of starts){
+              const checked=await inspect({...candidate,startTime:start,endTime:start+maxSeconds});
+              if(checked.stage2Verified)return checked;
+              if(checked.verificationStatus==='error')return unavailable('error',checked.verificationExplanation||'Video inspection failed');
+            }
+            return unavailable('insufficient_evidence','The action was not established in bounded excerpts; this does not rule it out across the entire scene');
+          }
+        }
+        if (mode !== 'frames') {
+          expanded = await this.prepareSearchEvidence(candidate, mode, userId);
+          if (!expanded) return unavailable('insufficient_evidence',
+            'Closer inspection needs an available source within the inspection limits');
+          frames = expanded.frames;
+        }
+        const clipPath = expanded?.clipPath;
+        if (!frames.length && !clipPath) return unavailable('insufficient_evidence', 'Scene evidence unavailable');
+
+        // The existing explanation column stores a versioned JSON envelope. No migration required.
+        // Hash actual evidence bytes so replaced frames cannot reuse stale verification.
+        const queryHash = createHash('sha256').update(JSON.stringify({
+          version: 'scene-verification-v3', query: parsed.cleaned, mode,
+          evidenceKind: expanded?.kind || 'stored_frames',
+          clipHash: clipPath ? createHash('sha256').update(fs.readFileSync(clipPath)).digest('hex') : undefined,
+          models: this.aiService.getModelCascade(),
+          start: candidate.startTime, end: candidate.endTime,
+          transcript: candidate.transcriptSnippet,
+          frames: frames.map((f) => ({ timestamp: f.timestamp,
+            sha256: createHash('sha256').update(fs.readFileSync(f.path)).digest('hex') })),
+        })).digest('hex');
+        let cached: any;
         try {
-          // Check detailed verification cache
-          const cached = await this.db.query<{
-            is_verified: boolean;
-            confidence: number;
-            explanation: string;
-          }>(
-            `SELECT is_verified, confidence, explanation FROM verified_queries
-             WHERE query_hash = $1 AND segment_id = $2`,
+          const rows = await this.db.query<{ explanation: string }>(
+            `SELECT explanation FROM verified_queries WHERE query_hash = $1 AND segment_id = $2`,
             [queryHash, candidate.segmentId],
           );
-
-          if (cached.rows.length > 0) {
-            const row = cached.rows[0];
-            return this.enrichDetailedVerifiedHit(
-              candidate,
-              row.is_verified,
-              row.confidence,
-              row.explanation,
+          if (rows.rows[0]) cached = JSON.parse(rows.rows[0].explanation);
+        } catch (err) { this.logger.warn(`Verification cache read failed: ${err}`); }
+        const valid = (v: any) => v?.status === 'evaluated' &&
+          typeof v.matched === 'boolean' && typeof v.confidence === 'number' &&
+          Number.isFinite(v.confidence) && v.confidence >= 0 && v.confidence <= 1 &&
+          typeof v.explanation === 'string' && v.explanation.trim().length > 0 &&
+          (!clipPath || !v.matched || v.matchedTimestamp != null) &&
+          (v.matchedTimestamp == null || (typeof v.matchedTimestamp === 'number' &&
+            Number.isFinite(v.matchedTimestamp) && (clipPath ?
+              v.matchedTimestamp >= candidate.startTime && v.matchedTimestamp <= candidate.endTime :
+              frames.some((f) => Math.abs(f.timestamp - v.matchedTimestamp) <= 0.011))));
+        const ver = valid(cached) ? cached : clipPath ?
+          await this.aiService.verifyClip(clipPath, parsed.cleaned, candidate.startTime,
+            candidate.endTime, candidate.transcriptSnippet) :
+          await this.aiService.verifyCandidate(frames, parsed.cleaned, candidate.transcriptSnippet,
+            detailMode, expanded ? 12 : 3);
+        if (!valid(ver)) return unavailable(
+          ver.status === 'insufficient_evidence' ? 'insufficient_evidence' : 'error',
+          ver.explanation || 'Scene verification failed; no conclusion available',
+          ver.issue,
+        );
+        if (!valid(cached)) {
+          try {
+            await this.db.query(
+              `INSERT INTO verified_queries (query_hash, asset_id, segment_id, is_verified, confidence, explanation)
+               VALUES ($1, $2, $3, $4, $5, $6)
+               ON CONFLICT (query_hash, segment_id) DO UPDATE SET
+                 is_verified = EXCLUDED.is_verified, confidence = EXCLUDED.confidence, explanation = EXCLUDED.explanation`,
+              [queryHash, candidate.assetId, candidate.segmentId, ver.matched,
+                ver.confidence, JSON.stringify({ status: ver.status, matched: ver.matched,
+                  confidence: ver.confidence, explanation: ver.explanation,
+                  matchedTimestamp: ver.matchedTimestamp })],
             );
-          }
-
-          // Locate keyframes
-          let frames: { timestamp: number; path: string }[] = [];
-          const segRow = await this.db.query<{ keyframe_paths: unknown }>(
-            `SELECT keyframe_paths FROM media_segments WHERE id = $1`,
-            [candidate.segmentId],
-          );
-          if (segRow.rows.length > 0) {
-            const kfScratch = path.join(this.scratchDir, 'stage2', candidate.segmentId);
-            frames = materializeKeyframeFiles(
-              parseKeyframePaths(segRow.rows[0].keyframe_paths),
-              this.storageRoot,
-              kfScratch,
-            );
-          }
-          if (frames.length === 0) {
-            const thumb = path.join(
-              this.thumbnailDir,
-              `${candidate.assetId}.jpg`,
-            );
-            if (fs.existsSync(thumb)) {
-              frames = [{ timestamp: candidate.startTime, path: thumb }];
-            }
-          }
-
-          if (frames.length === 0) return candidate;
-
-          // Call Gemini with DETAIL MODE for micro-objects and background elements
-          const ver = await this.geminiService.verifyCandidate(
-            frames,
-            parsed.cleaned,
-            candidate.transcriptSnippet,
-            true, // detail mode: look for micro-details, background objects, fleeting actions
-          );
-
-          // Cache with detail query hash
-          await this.db.query(
-            `INSERT INTO verified_queries (query_hash, asset_id, segment_id, is_verified, confidence, explanation)
-             VALUES ($1, $2, $3, $4, $5, $6)
-             ON CONFLICT (query_hash, segment_id) DO UPDATE
-             SET is_verified = EXCLUDED.is_verified, confidence = EXCLUDED.confidence, explanation = EXCLUDED.explanation`,
-            [
-              queryHash,
-              candidate.assetId,
-              candidate.segmentId,
-              ver.matched,
-              ver.confidence,
-              ver.explanation,
-            ],
-          );
-
-          return this.enrichDetailedVerifiedHit(
-            candidate,
-            ver.matched,
-            ver.confidence,
-            ver.explanation,
-          );
-        } catch (err) {
-          this.logger.warn(
-            `Detailed verification error for ${candidate.segmentId}: ${err}`,
-          );
-          return candidate;
+          } catch (err) { this.logger.warn(`Verification cache write failed: ${err}`); }
         }
-      }),
-    );
-
-    const verifiedKeys = new Set(
-      candidatesToVerify.map((c) => `${c.assetId}:${c.startTime.toFixed(1)}`),
-    );
-    const remaining = results.filter(
-      (r) => !verifiedKeys.has(`${r.assetId}:${r.startTime.toFixed(1)}`),
-    );
-    const all = [...verifiedHits, ...remaining];
-
-    // Sort: verified direct matches first, then by score
-    all.sort((a, b) => {
-      const aVerified = a.stage2Verified ? 0 : 1;
-      const bVerified = b.stage2Verified ? 0 : 1;
-      if (aVerified !== bVerified) return aVerified - bVerified;
-      if (a.matchQuality === 'direct' && b.matchQuality !== 'direct') return -1;
-      if (b.matchQuality === 'direct' && a.matchQuality !== 'direct') return 1;
+        const confirmed = ver.matched && ver.confidence >= 0.5;
+        const window = confirmed && mode !== 'sequence' ? narrowResultWindow(candidate.startTime, candidate.endTime,
+          ver.matchedTimestamp) : { startTime: candidate.startTime, endTime: candidate.endTime };
+        const hit: SearchResult = {
+          ...candidate, ...window,
+          // Preserve retrieval score; a model's self-reported confidence is not a calibrated score.
+          matchQuality: confirmed ? 'direct' as const : 'related' as const,
+          stage2Verified: confirmed,
+          verificationStatus: confirmed ? 'matched' as const :
+            ver.matched ? 'uncertain' as const : 'not_matched' as const,
+          verificationConfidence: ver.confidence,
+          verificationEvidenceKind: expanded?.kind || 'stored_frames',
+          verificationMethod: clipPath ? 'video' : 'frames',
+          verificationExplanation: ver.explanation,
+          whyPicked: confirmed ? 'Scene verification confirmed' : 'Scene match not confirmed',
+          queryRelation: ver.explanation,
+        };
+        publishSearchResults([hit]);
+        // A verified timestamp is an anchor, not event boundaries. Recheck a
+        // shorter actual clip before replacing its wider containing interval.
+        if(confirmed&&mode==='sequence'&&clipPath&&Number.isFinite(ver.matchedTimestamp)&&
+          candidate.endTime-candidate.startTime>10&&
+          !/\b(before|after|then|until|while|sequence|without|except|not)\b/i.test(parsed.cleaned)){
+          const start=Math.max(candidate.startTime,Math.min(candidate.endTime-8,ver.matchedTimestamp!-3));
+          try{
+            const focused=await inspect({...candidate,startTime:Number(start.toFixed(2)),endTime:Number((start+8).toFixed(2))});
+            if(focused.stage2Verified)return focused;
+          }catch{ /* Keep the already checked wider match if refinement cannot finish. */ }
+          publishSearchResults([hit]);
+        }
+        return hit;
+      } catch (err) {
+        this.logger.warn(`Scene verification failed for ${candidate.segmentId}: ${err}`);
+        return unavailable('error', 'Scene verification failed; no conclusion available');
+      } finally {
+        try { expanded?.cleanup(); }
+        catch (err) { this.logger.warn(`Search evidence cleanup failed: ${err}`); }
+      }
+    };
+    const inspected:SearchResult[]=[];
+    const multiple=/\b(all|every|moments|clips|examples)\b/i.test(parsed.cleaned);
+    for(const candidate of results.slice(0,count)){
+      const hit=await inspect(candidate);inspected.push(hit);
+      if(hit.stage2Verified&&!multiple)break;
+    }
+    let remaining = results.slice(inspected.length);
+    // Broaden only when no inspected scene confirmed the request. Errors stop expansion;
+    // missing source evidence may be candidate-specific, so other candidates can still help.
+    if (remaining.length && remainingBudget > inspected.length &&
+      !inspected.some((hit) => hit.stage2Verified || hit.verificationStatus === 'error')) {
+      remaining = await this.verifySceneResults(remaining, parsed, detailMode, userId, remainingBudget - inspected.length);
+    } else {
+      remaining = remaining.map((hit) => ({ ...hit, matchQuality: 'related' as const,
+        stage2Verified: false, verificationStatus: 'insufficient_evidence' as const,
+        whyPicked: 'Candidate not inspected within this search budget' }));
+    }
+    return [...inspected, ...remaining].sort((a, b) => {
+      if (!!a.stage2Verified !== !!b.stage2Verified) return a.stage2Verified ? -1 : 1;
+      if (a.matchQuality !== b.matchQuality) return a.matchQuality === 'direct' ? -1 : 1;
       return b.score - a.score;
     });
-
-    return all;
-  }
-
-  private enrichDetailedVerifiedHit(
-    candidate: SearchResult,
-    isVerified: boolean,
-    confidence: number,
-    explanation: string,
-  ): SearchResult {
-    if (isVerified && confidence >= 0.5) {
-      return {
-        ...candidate,
-        score: Number(
-          Math.max(candidate.score, 0.9 + confidence * 0.08).toFixed(3),
-        ),
-        matchQuality: 'direct',
-        winningPath: 'visual',
-        stage2Verified: true,
-        verificationConfidence: confidence,
-        verificationExplanation: explanation,
-        whyPicked: 'Deep detail verification confirmed (micro-details found)',
-        queryRelation: explanation || candidate.queryRelation,
-      };
-    } else if (isVerified && confidence >= 0.3) {
-      // Partial match on details
-      return {
-        ...candidate,
-        score: Number(
-          Math.max(candidate.score, 0.7 + confidence * 0.15).toFixed(3),
-        ),
-        matchQuality: 'related',
-        stage2Verified: true,
-        verificationConfidence: confidence,
-        whyPicked: 'Partial detail match detected',
-        queryRelation: explanation || candidate.queryRelation,
-      };
-    } else if (!isVerified) {
-      return {
-        ...candidate,
-        score: Number(Math.min(candidate.score, 0.45).toFixed(3)),
-        matchQuality: 'related',
-        stage2Verified: true,
-        whyPicked: 'Detail inspection: micro-details not found',
-        queryRelation: explanation || candidate.queryRelation,
-      };
-    }
-    return candidate;
-  }
-
-  private enrichVerifiedHit(
-    candidate: SearchResult,
-    isVerified: boolean,
-    confidence: number,
-    explanation: string,
-    matchedTimestamp?: number,
-  ): SearchResult {
-    if (isVerified && confidence >= 0.5) {
-      const narrowed = narrowResultWindow(
-        candidate.startTime,
-        candidate.endTime,
-        matchedTimestamp,
-      );
-      return {
-        ...candidate,
-        startTime: narrowed.startTime,
-        endTime: narrowed.endTime,
-        score: Number(
-          Math.max(candidate.score, 0.88 + confidence * 0.1).toFixed(3),
-        ),
-        matchQuality: 'direct',
-        winningPath: 'visual',
-        stage2Verified: true,
-        verificationConfidence: confidence,
-        verificationExplanation: explanation,
-        whyPicked: 'Stage-2 visual verification confirmed',
-        queryRelation: explanation || candidate.queryRelation,
-      };
-    } else if (!isVerified) {
-      return {
-        ...candidate,
-        score: Number(Math.min(candidate.score, 0.52).toFixed(3)),
-        matchQuality: 'related',
-        stage2Verified: true,
-        whyPicked: 'Stage-2 visual inspection: unverified scene',
-        queryRelation: explanation || candidate.queryRelation,
-      };
-    }
-    return candidate;
   }
 
   async saveFeedback(
@@ -1558,6 +1593,9 @@ export class MediaService {
           limit,
           userId,
           sq.topic,
+          [],
+          undefined,
+          originalQuery,
         ),
       ),
     );
@@ -1837,7 +1875,12 @@ export class MediaService {
     }
 
     // Use cached embedding to avoid regenerating for repeated queries
-    queryEmbedding = await this.getCachedOrGenerateEmbedding(embedSource);
+    try {
+      queryEmbedding = await this.getCachedOrGenerateEmbedding(embedSource,userId);
+    } catch (err) {
+      // Budget denial or provider failure must not disable local lexical retrieval.
+      this.logger.warn(`Semantic retrieval unavailable; using lexical retrieval: ${err}`);
+    }
 
     const hasEmbedding = queryEmbedding.length > 0;
     const queryDim = queryEmbedding.length;
@@ -2430,6 +2473,7 @@ export class MediaService {
   }
 
   async getUnitEconomics(userId?: string): Promise<UnitEconomicsSummary> {
+    if (!userId) throw new UnauthorizedException();
     const userClause = userId ? 'WHERE user_id = $1' : '';
     const params = userId ? [userId] : [];
 
@@ -2456,19 +2500,16 @@ export class MediaService {
     const totalFramesAnalyzed = Number(row?.total_frames || 0);
     const totalAssetsIndexed = Number(row?.asset_count || 0);
     const costPerSourceMinuteUsd =
-      totalSourceMinutes > 0
-        ? Number((totalCostUsd / totalSourceMinutes).toFixed(6))
+      totalDurationSec > 0
+        ? Number((totalCostUsd / (totalDurationSec / 60)).toFixed(6))
         : 0;
 
     // Verified queries stats
     const vlmStats = await this.db.query<{ count: string }>(
-      `SELECT COUNT(*)::text AS count FROM verified_queries`,
+      `SELECT COUNT(*)::text AS count FROM verified_queries v
+       JOIN media_assets a ON a.id=v.asset_id WHERE a.user_id=$1`, [userId],
     );
     const totalQueriesVerified = Number(vlmStats.rows[0]?.count || 0);
-    const costPerQueryUsd = 0.00015;
-    const estimatedCostUsd = Number(
-      (totalQueriesVerified * costPerQueryUsd).toFixed(5),
-    );
 
     // Search feedback stats
     const fbStats = await this.db.query<{ feedback: string; count: string }>(
@@ -2486,10 +2527,11 @@ export class MediaService {
     }
     const totalFb = positiveCount + negativeCount;
     const positiveRatio =
-      totalFb > 0 ? Number((positiveCount / totalFb).toFixed(2)) : 1.0;
+      totalFb > 0 ? Number((positiveCount / totalFb).toFixed(2)) : null;
 
     return {
       stage1Ingestion: {
+        costBasis: 'legacy_asset_estimates',
         totalCostUsd: Number(totalCostUsd.toFixed(4)),
         totalSourceMinutes,
         costPerSourceMinuteUsd,
@@ -2498,9 +2540,11 @@ export class MediaService {
       },
       stage2Verification: {
         totalQueriesVerified,
-        estimatedCostUsd,
-        costPerQueryUsd,
-        cacheHitRate: totalQueriesVerified > 0 ? 0.85 : 0,
+        cachedEvaluations: totalQueriesVerified,
+        measurementStatus: 'not_measured',
+        estimatedCostUsd: null,
+        costPerQueryUsd: null,
+        cacheHitRate: null,
       },
       searchFeedback: {
         positiveCount,

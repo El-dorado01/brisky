@@ -1,0 +1,17 @@
+{
+  "date": "2026-10-31",
+  "scope": "Authorized live key/policy smoke test; text only, no footage, no embeddings, no indexing",
+  "model": "gemini-3.5-flash-lite",
+  "pricingSource": "https://ai.google.dev/gemini-api/docs/pricing",
+  "pricingUsdPerMillion": {
+    "input": 0.3,
+    "outputIncludingThinking": 2.5
+  },
+  "perAttemptReservationUsd": 0.05,
+  "budgetUsd": 3,
+  "status": "failed",
+  "error": {
+    "category": "RESOURCE_EXHAUSTED",
+    "status": 402
+  }
+}

@@ -1,0 +1,1 @@
+My revised recommendation is to build the workspace around three actions: find moments, connect them, and make something from the collection. We can support several kinds of users through that same foundation, without trying to build a separate app for every audience.

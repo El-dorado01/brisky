@@ -1,9 +1,29 @@
 import { FactorySchedulerService } from './factory-scheduler.service';
 import { DatabaseService } from '../database/database.service';
 import { ConfigService } from '@nestjs/config';
-import { priorityToBullNumber } from './indexing.types';
+import { priorityToBullNumber,pipelineQueuePriority } from './indexing.types';
 
 describe('FactorySchedulerService (Phase F5)', () => {
+  it('reserves two preparation slots and three continuation slots under the same global cap',()=>{
+    const values={GLOBAL_MAX_ACTIVE_JOBS:5,DEFAULT_USER_SLOTS:5,FACTORY_INGEST_SLOTS:2,FACTORY_CONTINUATION_SLOTS:3};
+    const lanes=new FactorySchedulerService({} as any,{get:(key:string,fallback:unknown)=>(values as any)[key]??fallback} as any);
+    const ingest=[{user_id:'owner',job_type:'plan_asset',count:2}];
+    expect(lanes.evaluateCounts(ingest,'owner','normal','plan_asset').canRun).toBe(false);
+    expect(lanes.evaluateCounts(ingest,'owner','normal','transcribe').canRun).toBe(true);
+    const continuation=[{user_id:'owner',job_type:'transcribe',count:1},{user_id:'owner',job_type:'analyze_frames',count:2}];
+    expect(lanes.evaluateCounts(continuation,'owner','normal','embed').canRun).toBe(false);
+    expect(lanes.evaluateCounts(continuation,'owner','normal','plan_asset').canRun).toBe(true);
+    expect(lanes.evaluateCounts([...ingest,...continuation],'owner','interactive','transcribe').canRun).toBe(false);
+  });
+  it('prioritizes prerequisites and continuations without elevating batch over normal work',()=>{
+    const env=(job_type:string,priority='normal',fileSize=1)=>({job_type,priority,source:{fileSize}} as any);
+    expect(pipelineQueuePriority(env('transcribe'))).toBeLessThan(pipelineQueuePriority(env('plan_asset')));
+    expect(pipelineQueuePriority(env('gemini_video'))).toBeLessThan(pipelineQueuePriority(env('embed')));
+    expect(pipelineQueuePriority(env('embed'))).toBeLessThan(pipelineQueuePriority(env('finalize_asset')));
+    expect(pipelineQueuePriority(env('finalize_asset','normal',1e9))).toBeLessThan(pipelineQueuePriority(env('plan_asset','normal',1)));
+    expect(pipelineQueuePriority(env('plan_asset','interactive'))).toBe(1);
+    expect(pipelineQueuePriority(env('plan_asset','normal',1e9))).toBeLessThan(pipelineQueuePriority(env('transcribe','batch')));
+  });
   let scheduler: FactorySchedulerService;
   let mockDb: jest.Mocked<DatabaseService>;
   let mockConfig: jest.Mocked<ConfigService>;

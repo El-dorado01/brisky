@@ -1,5 +1,8 @@
 import { IndexingProcessor } from '../queue/indexing.processor';
 import { FactoryJobEnvelope } from '../queue/indexing.types';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 describe('Clip Extraction Seam (Phase F3)', () => {
   let processor: IndexingProcessor;
@@ -12,8 +15,10 @@ describe('Clip Extraction Seam (Phase F3)', () => {
   let mockRegistry: any;
   let mockConnectors: any;
   let mockUnitsService: any;
+  let root: string;
 
   beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'brisky-clip-seam-'));
     mockDb = {
       query: jest.fn().mockImplementation(async (sql: string) => {
         if (sql.includes('FROM media_assets WHERE id =')) {
@@ -34,13 +39,13 @@ describe('Clip Extraction Seam (Phase F3)', () => {
       generateThumbnail: jest.fn(),
       extractAudio: jest.fn(),
       generateProxy: jest.fn(),
-      extractClip: jest.fn().mockResolvedValue(undefined),
+      extractClip: jest.fn(async (_source: string, output: string) => { fs.writeFileSync(output, 'fixture clip'); }),
     };
     mockGemini = {};
     mockWhisper = {};
     mockMerger = {};
     mockConfig = {
-      get: jest.fn((key: string, fallback: any) => fallback),
+      get: jest.fn((key: string, fallback: any) => key === 'STORAGE_ROOT' ? root : fallback),
     };
     mockRegistry = {
       get: jest.fn(),
@@ -61,6 +66,23 @@ describe('Clip Extraction Seam (Phase F3)', () => {
       mockConnectors,
       mockUnitsService,
     );
+  });
+  afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  it('uses the reserved result identity and skips decoding on a published operation replay', async () => {
+    let completed = false;
+    const operations = { isClipPublished: jest.fn(async () => completed),
+      publishClip: jest.fn(async (_id, _user, _output, _job, publish) => { await publish(mockDb); completed = true; return true; }) };
+    (processor as any).indexingService = operations;
+    const envelope: FactoryJobEnvelope = { job_id: 'durable-clip-job', job_type: 'extract_clip', asset_id: 'master', user_id: 'owner',
+      source: { provider: 'upload', sourcePath: __filename, originalFilename: 'source.mp4' },
+      segment: { start_s: 0, end_s: 5 }, priority: 'interactive',
+      processing_config: { clipOperationId: 'operation', clipAssetId: 'clip-reserved' } };
+    await (processor as any).executeExtractClip({ id: envelope.job_id }, envelope);
+    await (processor as any).executeExtractClip({ id: envelope.job_id }, envelope);
+    expect(mockFfmpeg.extractClip).toHaveBeenCalledTimes(1);
+    expect(mockFfmpeg.extractClip.mock.calls[0][1]).toContain('clip-reserved.mp4');
+    expect(operations.publishClip).toHaveBeenCalledTimes(1);
   });
 
   it('processes extract_clip job, cuts subclip with ffmpeg, and links derived_from relationship in DB', async () => {

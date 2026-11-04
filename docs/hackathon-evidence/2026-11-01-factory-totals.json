@@ -1,0 +1,10 @@
+{
+  "date": "2026-11-01",
+  "status": "passed",
+  "checks": {
+    "ownerDatabaseCountsMatch": true,
+    "mobileAndDesktopBounds": true,
+    "indexedExcludesPartial": true
+  },
+  "scope": "Actual Factory UI at 390/1280 pixels; temporary session removed, no sync or AI actions."
+}

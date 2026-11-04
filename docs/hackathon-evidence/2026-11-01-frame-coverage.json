@@ -1,0 +1,54 @@
+{
+  "date": "2026-11-01",
+  "status": "coverage_gap_reproduced",
+  "scope": "Diagnostic run before strict required-frame guard; local and real ranged Drive decoding attempted 32 samples. The old streamed timeout silently skipped nine. Not an accuracy pass.",
+  "inferenceCalls": 0,
+  "sources": {
+    "local": {
+      "duration": 53.057596,
+      "windows": [
+        {
+          "start": 0,
+          "end": 0.1,
+          "frames": 2
+        },
+        {
+          "start": 0.1,
+          "end": 53.06,
+          "frames": 30
+        }
+      ],
+      "attempts": 32,
+      "failedTimestamps": [],
+      "frames": 32
+    },
+    "remote": {
+      "duration": 53.057596,
+      "windows": [
+        {
+          "start": 0,
+          "end": 0.1,
+          "frames": 1
+        },
+        {
+          "start": 0.1,
+          "end": 53.06,
+          "frames": 22
+        }
+      ],
+      "attempts": 32,
+      "failedTimestamps": [
+        0.05,
+        8.1,
+        10.1,
+        18.1,
+        22.1,
+        28.1,
+        39.82,
+        40.1,
+        48.1
+      ],
+      "frames": 23
+    }
+  }
+}

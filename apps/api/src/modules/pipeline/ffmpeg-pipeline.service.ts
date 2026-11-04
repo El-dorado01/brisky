@@ -7,9 +7,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { assertSearchActive, searchSignal, SearchDeadlineError } from '../../common/search-deadline';
 import { SceneBoundary, VideoMetadata } from './pipeline.types';
 import { computeAdaptiveProxyTarget } from './proxy-scaling';
-import { framesPerWindow, computeFrameTimestamps } from './scene-sampling';
+import { framesPerWindow, computeFrameTimestamps,plannedSceneFrames } from './scene-sampling';
 
 const execAsync = promisify(exec);
 
@@ -29,9 +30,14 @@ export class FfmpegPipelineService {
     onSuccess: () => T | Promise<T>,
     onError?: (err: Error, timedOut: boolean) => T | Promise<T> | void,
   ): Promise<T> {
+    assertSearchActive();
     return new Promise((resolve, reject) => {
       let timedOut = false;
       let settled = false;
+      let cancelled = false;
+      const signal = searchSignal();
+      const abort = () => { cancelled = true; try { cmd.kill('SIGKILL'); } catch { /* process may already have exited */ } };
+      signal?.addEventListener('abort', abort, { once: true });
 
       const timer = setTimeout(() => {
         timedOut = true;
@@ -50,6 +56,8 @@ export class FfmpegPipelineService {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
+          signal?.removeEventListener('abort', abort);
+          if (cancelled) return reject(new SearchDeadlineError());
           if (timedOut) {
             return reject(
               new Error(
@@ -67,6 +75,8 @@ export class FfmpegPipelineService {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
+          signal?.removeEventListener('abort', abort);
+          if (cancelled) return reject(new SearchDeadlineError());
           if (timedOut) {
             return reject(
               new Error(
@@ -187,6 +197,20 @@ export class FfmpegPipelineService {
         return false;
       },
     );
+  }
+
+  async extractAudioWindow(videoPath: string, output: string, start: number, end: number): Promise<void> {
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || end - start > 320) {
+      throw new Error('Invalid audio extraction interval');
+    }
+    fs.mkdirSync(path.dirname(output), { recursive: true });
+    const command = ffmpeg(videoPath).setStartTime(start).setDuration(end - start).noVideo()
+      .audioCodec('pcm_s16le').audioChannels(1).audioFrequency(16000).output(output);
+    await this.executeFfmpegWithTimeout(command, 120000, 'extract audio window', () => {
+      if (!fs.existsSync(output) || fs.statSync(output).size <= 44 || fs.statSync(output).size > 11 * 1024 * 1024) {
+        throw new Error('Audio window is empty or exceeds output allowance');
+      }
+    });
   }
 
   async generateProxy(
@@ -339,8 +363,12 @@ export class FfmpegPipelineService {
     videoPath: string,
     duration: number,
     framesOutputDir: string,
-    onProgress?: (current: number, total: number) => void,
+    onProgress?: (current: number, total: number) => void|Promise<void>,
+    sourceStart?: number,
   ): Promise<SceneBoundary[]> {
+    if (sourceStart !== undefined && (!Number.isFinite(sourceStart) || sourceStart < 0 || !Number.isFinite(duration) || duration <= 0 || duration > 320)) {
+      throw new Error('Invalid bounded scene interval');
+    }
     if (!fs.existsSync(framesOutputDir)) {
       fs.mkdirSync(framesOutputDir, { recursive: true });
     }
@@ -351,7 +379,7 @@ export class FfmpegPipelineService {
     );
     const maxScenes = this.calculateMaxScenes(duration);
 
-    const cuts = await this.detectSceneCuts(videoPath, duration, threshold);
+    const cuts = await this.detectSceneCuts(videoPath, duration, threshold, sourceStart);
     const windows = this.buildSceneWindows(
       cuts,
       duration,
@@ -364,34 +392,17 @@ export class FfmpegPipelineService {
     );
 
     const scenes: SceneBoundary[] = [];
+    const totalFrames=windows.reduce((sum,window)=>sum+plannedSceneFrames(window.startTime+(sourceStart||0),window.endTime+(sourceStart||0),maxFramesPerScene).all.length,0);
+    let completedFrames=0;
+    if(onProgress)await onProgress(0,totalFrames);
     for (let i = 0; i < windows.length; i++) {
-      if (onProgress) {
-        onProgress(i + 1, windows.length);
-      }
-      const { startTime, endTime } = windows[i];
+      const startTime = windows[i].startTime + (sourceStart || 0);
+      const endTime = windows[i].endTime + (sourceStart || 0);
       const representativeTimestamp = Number(
         ((startTime + endTime) / 2).toFixed(2),
       );
 
-      const windowLength = endTime - startTime;
-      const frameCount = framesPerWindow(windowLength, maxFramesPerScene);
-      const frameTimestamps =
-        frameCount === 1
-          ? [representativeTimestamp]
-          : computeFrameTimestamps(startTime, endTime, frameCount);
-
-      // MICRO-KEYFRAMES: Extract additional frames at 2-second intervals for fleeting action detection
-      const microKeyframeInterval = 2; // Extract a frame every 2 seconds
-      const microFrameTimestamps: number[] = [];
-      for (let t = startTime; t <= endTime; t += microKeyframeInterval) {
-        const ts = Number(t.toFixed(2));
-        if (!frameTimestamps.includes(ts)) {
-          microFrameTimestamps.push(ts);
-        }
-      }
-      const allTimestamps = [...frameTimestamps, ...microFrameTimestamps].sort(
-        (a, b) => a - b,
-      );
+      const {primary:frameTimestamps,all:allTimestamps}=plannedSceneFrames(startTime,endTime,maxFramesPerScene);
 
       const keyframes: { timestamp: number; path: string }[] = [];
       for (let f = 0; f < allTimestamps.length; f++) {
@@ -401,15 +412,42 @@ export class FfmpegPipelineService {
           isMicroFrame ? '_micro' : ''
         }.jpg`;
         const keyframePath = path.join(framesOutputDir, keyframeFile);
-        try {
-          await this.extractFrame(videoPath, keyframePath, ts, '640x?');
-          keyframes.push({ timestamp: ts, path: keyframePath });
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          this.logger.warn(
-            `Failed extracting keyframe ${f + 1}/${allTimestamps.length} for scene ${i + 1}: ${message}`,
-          );
+        const streamed = videoPath.startsWith('http://127.0.0.1:');
+        const attempts = streamed ? 2 : 1;
+        let extracted = false;
+        let extractedTimestamp = ts;
+        let missingFrame = false;
+        // Container/audio tails can outlast the last video frame. Recover only a
+        // successful empty decode near the scene end, never a timeout/network error.
+        const candidates = [ts, ...(endTime-ts<=0.25
+          ? [ts-0.05,ts-0.15].map(t=>Number(t.toFixed(3))).filter(t=>t>=startTime)
+          : [])];
+        for (const candidate of candidates) {
+          if(candidate!==ts && !missingFrame)break;
+          for (let attempt = 0; attempt < attempts; attempt++) {
+            assertSearchActive();
+            missingFrame = false;
+            try {
+              await this.extractFrame(videoPath, keyframePath, candidate, '640x?', streamed ? 60000 : 15000);
+              if (!fs.existsSync(keyframePath) || fs.statSync(keyframePath).size === 0) {
+                missingFrame = true;
+                throw new Error('Decoder produced no frame');
+              }
+              extracted = true;
+              extractedTimestamp = candidate;
+              break;
+            } catch {
+              assertSearchActive();
+              if (fs.existsSync(keyframePath)) fs.unlinkSync(keyframePath);
+            }
+          }
+          if(extracted)break;
         }
+        if (!extracted) throw new Error(`Required keyframe missing for scene ${i + 1} at ${ts}s`);
+        if(extractedTimestamp!==ts)this.logger.warn(`Recovered scene ${i+1} tail frame at ${extractedTimestamp}s (requested ${ts}s)`);
+        keyframes.push({ timestamp: extractedTimestamp, path: keyframePath });
+        completedFrames++;
+        if(onProgress)await onProgress(completedFrames,totalFrames);
       }
 
       scenes.push({
@@ -426,6 +464,23 @@ export class FfmpegPipelineService {
       `Scene detection produced ${scenes.length} windows (threshold=${threshold}) for ${videoPath}`,
     );
     return scenes;
+  }
+
+  async extractSceneContext(videoPath: string, start: number, end: number, output: string, sceneId: number): Promise<SceneBoundary> {
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || end - start > 20) {
+      throw new Error('Invalid scene boundary context');
+    }
+    fs.mkdirSync(output, { recursive: true });
+    const keyframes: { timestamp: number; path: string }[] = [];
+    for (const timestamp of computeFrameTimestamps(start, end, 5)) {
+      assertSearchActive();
+      const file = path.join(output, `context-${keyframes.length}.jpg`);
+      await this.extractFrame(videoPath, file, timestamp, '640x?');
+      if (!fs.existsSync(file) || fs.statSync(file).size === 0) throw new Error('Scene boundary frame is missing');
+      keyframes.push({ timestamp, path: file });
+    }
+    return { sceneId, startTime: start, endTime: end, representativeTimestamp: (start + end) / 2,
+      keyframePath: keyframes[0].path, keyframes };
   }
 
   calculateMaxScenes(duration: number): number {
@@ -451,6 +506,7 @@ export class FfmpegPipelineService {
     videoPath: string,
     duration: number,
     threshold: number,
+    sourceStart?: number,
   ): Promise<number[]> {
     const ffmpegBin = this.ffmpegService.getFfmpegPath();
     if (!ffmpegBin) {
@@ -465,6 +521,7 @@ export class FfmpegPipelineService {
       this.quote(ffmpegBin),
       '-hide_banner',
       '-loglevel info',
+      ...(sourceStart === undefined ? [] : ['-ss', String(sourceStart), '-t', String(duration)]),
       '-i',
       this.quote(videoPath),
       '-an',
@@ -491,6 +548,9 @@ export class FfmpegPipelineService {
         message?: string;
       };
       stderr = `${execErr.stdout || ''}\n${execErr.stderr || ''}\n${execErr.message || ''}`;
+      if (sourceStart !== undefined || videoPath.startsWith('http://127.0.0.1:')) {
+        throw new Error('Streamed scene detection did not complete successfully');
+      }
       this.logger.warn(
         `Scene-detect ffmpeg exited non-zero; parsing stderr anyway`,
       );
@@ -592,11 +652,15 @@ export class FfmpegPipelineService {
     return windows;
   }
 
+  extractInspectionFrame(videoPath: string, outputPath: string, timestamp: number): Promise<string> {
+    return this.extractFrame(videoPath, outputPath, timestamp);
+  }
+
   private extractFrame(
     videoPath: string,
     outputPath: string,
     timestamp: number,
-    size: string,
+    size?: string,
     timeoutMs = 15000,
   ): Promise<string> {
     const folder = path.dirname(outputPath);
@@ -604,9 +668,9 @@ export class FfmpegPipelineService {
 
     const cmd = ffmpeg(videoPath)
       .seekInput(Math.max(0, timestamp))
-      .frames(1)
-      .size(size)
-      .output(outputPath);
+      .frames(1);
+    if (size) cmd.size(size);
+    cmd.output(outputPath);
 
     return this.executeFfmpegWithTimeout<string>(
       cmd,

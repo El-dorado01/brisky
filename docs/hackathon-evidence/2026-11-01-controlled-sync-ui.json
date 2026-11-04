@@ -1,0 +1,13 @@
+{
+  "date": "2026-11-01",
+  "status": "passed",
+  "checks": {
+    "realSessionFactory": true,
+    "confirmedAccountManage": true,
+    "uiManualSync": true,
+    "discoveryAndQueueFeedback": true
+  },
+  "discovered": 1,
+  "queued": 0,
+  "scope": "Actual Next.js Factory UI to owner-scoped engine and real selected Drive folder; temporary session/browser removed; no folder selection changed."
+}

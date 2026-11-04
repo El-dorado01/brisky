@@ -2,12 +2,13 @@ import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job, DelayedError } from 'bullmq';
 import { ConfigService } from '@nestjs/config';
+import { recordFactoryStep,updateFactoryProgress } from './factory-telemetry';
 import { randomBytes, createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { DatabaseService } from '../database/database.service';
 import { FfmpegPipelineService } from '../pipeline/ffmpeg-pipeline.service';
-import { GeminiIntelligenceService } from '../pipeline/gemini-intelligence.service';
+import { AiIntelligenceService } from '../pipeline/ai-intelligence.service';
 import { IntelligenceMergerService } from '../pipeline/intelligence-merger.service';
 import { WhisperTranscriptionService } from '../pipeline/whisper-transcription.service';
 import {
@@ -21,7 +22,7 @@ import { IndexingService } from './indexing.service';
 import {
   ANALYSIS_VERSION,
   FrameObservation,
-  GeminiVideoAnalysis,
+  VideoAnalysis,
   ModelUsage,
   SceneBoundary,
   StageTiming,
@@ -33,9 +34,16 @@ import { materializeKeyframeFiles } from '../pipeline/scene-sampling';
 import { ConnectorRegistry } from '../connector/connector.registry';
 import { ConnectorsService } from '../connector/connectors.service';
 import { persistDurableKeyframes } from '../pipeline/durable-keyframes';
+import { planSceneWindows, sceneWindowId, ownWindowScenes, boundaryContext, hasSceneEvidence } from '../pipeline/scene-windows';
 import { ProcessingUnitsService } from '../pipeline/processing-units.service';
 import { ProxyCacheService } from '../pipeline/proxy-cache.service';
 import { FactorySchedulerService } from './factory-scheduler.service';
+import { openSeekableMediaSource, SeekableMediaSource } from '../pipeline/seekable-media-source';
+import { planAudioWindows, processAudioWindows, audioWindowId } from '../pipeline/audio-windows';
+import { withSearchDeadline } from '../../common/search-deadline';
+import { AiBudgetError, AiUsageLedger, withAiBudgetPlan } from '../pipeline/ai-usage-ledger';
+
+class AudioWindowCancelled extends Error {}
 
 const workerConcurrency = Number(process.env.GLOBAL_MAX_ACTIVE_JOBS || 2);
 
@@ -52,7 +60,7 @@ export class IndexingProcessor extends WorkerHost {
   constructor(
     private readonly db: DatabaseService,
     private readonly ffmpegPipeline: FfmpegPipelineService,
-    private readonly geminiService: GeminiIntelligenceService,
+    private readonly aiService: AiIntelligenceService,
     private readonly whisperService: WhisperTranscriptionService,
     private readonly mergerService: IntelligenceMergerService,
     private readonly configService: ConfigService,
@@ -89,14 +97,13 @@ export class IndexingProcessor extends WorkerHost {
     return toStorageLocator(absPath, this.storageRoot);
   }
 
-  private cleanupJobScratch(scratch: string): void {
-    if (scratch && fs.existsSync(scratch)) {
-      try {
-        fs.rmSync(scratch, { recursive: true, force: true });
-      } catch {
-        /* ignore */
-      }
-    }
+  private async cleanupJobScratch(scratch: string, job?: Job, envelope?: FactoryJobEnvelope): Promise<void> {
+    if (!scratch || !fs.existsSync(scratch)) return;
+    const remove=async()=>{fs.rmSync(scratch,{recursive:true,force:true});};
+    try {
+      if(job && envelope) await recordFactoryStep(this.db,job,envelope,'cleanup_scratch',remove);
+      else await remove();
+    } catch { this.logger.warn('Temporary scratch cleanup did not complete'); }
   }
 
   private sweepStaleScratch(): void {
@@ -198,9 +205,61 @@ export class IndexingProcessor extends WorkerHost {
   }
 
   async process(job: Job<IndexingJobData | FactoryJobEnvelope>): Promise<void> {
+    if (this.configService.get('INDEX_BUDGET_PLAN_ENABLED', 'false') !== 'true') return this.processScoped(job);
     const envelope = normalizeJobEnvelope(job.data);
+    const key = `${envelope.user_id}/${envelope.asset_id}`;
+    const allowed = String(this.configService.get('INDEX_ALLOWED_CONNECTOR_ACCOUNT_IDS', '')).split(/[,\s]+/);
+    const rejection = !envelope.source.connectorAccountId || !allowed.includes(envelope.source.connectorAccountId)
+      ? 'Source is outside controlled indexing scope'
+      : !Number.isFinite(envelope.source.fileSize) || Number(envelope.source.fileSize) <= 0 || Number(envelope.source.fileSize) > 32 * 1024 * 1024
+        ? 'Controlled indexing requires a known source size of at most 32 MiB' : '';
+    if (rejection) {
+      await this.db.query("UPDATE indexing_jobs SET status='failed',stage='blocked',error=$1,finished_at=NOW() WHERE bull_job_id=$2 AND user_id=$3",[rejection,job.id,envelope.user_id]);
+      await this.db.query("UPDATE media_assets SET status=CASE WHEN status='indexed' THEN status ELSE 'failed' END,error=$1,updated_at=NOW() WHERE id=$2 AND user_id=$3",[rejection,envelope.asset_id,envelope.user_id]);
+      throw new AiBudgetError(rejection);
+    }
+    return withAiBudgetPlan(key, async () => {
+      try { await this.processScoped(job); }
+      catch (error) {
+        if (!(error instanceof DelayedError) && (job.attemptsMade || 0) + 1 >= (job.opts?.attempts || 1)) {
+          new AiUsageLedger(this.configService).releasePlan(key);
+        }
+        throw error;
+      }
+    });
+  }
+
+  private async processScoped(job: Job<IndexingJobData | FactoryJobEnvelope>): Promise<void> {
+    const envelope = normalizeJobEnvelope(job.data);
+    if (envelope.job_type === 'extract_clip' && envelope.processing_config?.clipOperationId) {
+      const state = await this.db.query('SELECT status,cancel_requested FROM indexing_jobs WHERE bull_job_id=$1 AND user_id=$2', [job.id,envelope.user_id]);
+      if (state.rows[0]?.status === 'completed') return;
+      if (state.rows[0]?.status === 'cancelled' || state.rows[0]?.cancel_requested) {
+        await this.db.query("UPDATE indexing_jobs SET status='cancelled',stage='cancelled',finished_at=NOW(),updated_at=NOW() WHERE bull_job_id=$1 AND status<>'completed'", [job.id]);
+        await this.db.query('UPDATE clip_operations SET dispatch_pending=FALSE,updated_at=NOW() WHERE id=$1 AND user_id=$2', [envelope.processing_config.clipOperationId,envelope.user_id]);
+        return;
+      }
+    }
     const assetId = envelope.asset_id;
     const originalFilename = envelope.source.originalFilename || 'unnamed';
+
+    // Dependency waits are not useful work and must not claim scarce processing slots.
+    let blocked=false;
+    if(envelope.job_type==='finalize_asset') blocked=await this.unitsService.pendingSiblingUnits(assetId,'finalize')>0;
+    if(envelope.job_type==='embed'){
+      const unitId=envelope.processing_config?.unitId||'embed';
+      const unit=await this.unitsService.getUnit(assetId,unitId);
+      if(unit && unit.status!=='completed'){
+        const sceneId=Number(unit.metadata?.sceneId??String(unitId).replace('embed_scene_',''));
+        const [scene,audio,video]=await Promise.all([this.unitsService.getUnit(assetId,`scene_${sceneId}`),this.unitsService.getUnit(assetId,'audio_transcribe'),this.unitsService.getUnit(assetId,'gemini_video')]);
+        blocked=scene?.status!=='completed'||[audio,video].some(dependency=>dependency&&['waiting','active'].includes(dependency.status));
+      }
+    }
+    if(blocked){
+      await this.db.query(`UPDATE indexing_jobs SET stage='waiting_dependencies',updated_at=NOW() WHERE bull_job_id=$1 AND user_id=$2 AND status='waiting'`,[job.id,envelope.user_id]);
+      if(typeof job.moveToDelayed==='function')await job.moveToDelayed(Date.now()+4000,job.token);
+      throw new DelayedError();
+    }
 
     // Phase F5: atomically claim a slot (advisory lock + mark active) so two
     // worker containers cannot both pass GLOBAL_MAX_ACTIVE_JOBS.
@@ -210,6 +269,7 @@ export class IndexingProcessor extends WorkerHost {
         assetId,
         envelope.user_id,
         envelope.priority,
+        envelope.job_type,
       );
       if (!slotCheck.canRun) {
         this.logger.log(
@@ -234,7 +294,7 @@ export class IndexingProcessor extends WorkerHost {
     const bullJobId = String(job.id || '');
     const gotAssetLock = await this.claimAssetLock(assetId, bullJobId);
     if (!gotAssetLock) {
-      if (isIndexUnitJob(envelope.job_type) || envelope.job_type === 'plan_asset') {
+      if (isIndexUnitJob(envelope.job_type) || envelope.job_type === 'plan_asset' || envelope.job_type === 'extract_clip') {
         this.logger.log(
           `[F2] Asset ${assetId} already has an active unit; delaying job ${job.id} (${envelope.job_type})`,
         );
@@ -271,6 +331,9 @@ export class IndexingProcessor extends WorkerHost {
     }
 
     try {
+      const checkpointId=envelope.processing_config?.unitId;
+      const reused=checkpointId && (await this.unitsService.getUnit?.(assetId,checkpointId))?.status==='completed';
+      await recordFactoryStep(this.db,job,envelope,(reused?'reused_':'')+envelope.job_type,async()=>{
       if (envelope.job_type === 'generate_proxy') {
         await this.executeGenerateProxy(job, envelope);
       } else if (envelope.job_type === 'extract_clip') {
@@ -288,10 +351,25 @@ export class IndexingProcessor extends WorkerHost {
       } else {
         await this.executeProcessing(job, envelope);
       }
+      });
     } catch (err: any) {
+      if (err instanceof DelayedError) {
+        await this.scheduler?.releaseSlot?.(bullJobId).catch(()=>undefined);
+        throw err;
+      }
       this.logger.error(`Unhandled error during worker job execution for ${assetId}: ${err?.message || err}`);
+      const retrying=(job.attemptsMade||0)+1<(job.opts?.attempts||1);
       if (this.scheduler?.releaseSlot) {
-        await this.scheduler.releaseSlot(bullJobId, true, err?.message || String(err)).catch(() => undefined);
+        await this.scheduler.releaseSlot(bullJobId, !retrying, err?.message || String(err)).catch(() => undefined);
+      }
+      if(retrying) await this.db.query(`UPDATE indexing_jobs SET status='waiting',stage='retrying',finished_at=NULL,updated_at=NOW()
+        WHERE bull_job_id=$1 AND user_id=$2 AND status NOT IN ('completed','cancelled') AND NOT cancel_requested`,[bullJobId,envelope.user_id]);
+      if (envelope.job_type === 'extract_clip') {
+        const retrying = (job.attemptsMade || 0) + 1 < (job.opts?.attempts || 1);
+        await this.db.query(`UPDATE indexing_jobs SET status=$2,stage=$3,error=$4,
+          finished_at=CASE WHEN $2='waiting' THEN NULL ELSE NOW() END,updated_at=NOW()
+          WHERE bull_job_id=$1 AND status NOT IN ('completed','cancelled') AND NOT cancel_requested`,
+          [bullJobId, retrying ? 'waiting' : 'failed', retrying ? 'retrying' : 'failed', String(err)]);
       }
       throw err;
     } finally {
@@ -429,7 +507,7 @@ export class IndexingProcessor extends WorkerHost {
       );
       throw err;
     } finally {
-      this.cleanupJobScratch(scratch);
+      await this.cleanupJobScratch(scratch,job,envelope);
     }
   }
 
@@ -452,6 +530,7 @@ export class IndexingProcessor extends WorkerHost {
 
     const existingUnit = await this.unitsService.getUnit?.(assetId, 'audio_transcribe');
     if (existingUnit?.status === 'completed') {
+      await this.cleanupJobScratch(scratch,job,envelope);
       await this.db.query(
         `UPDATE indexing_jobs SET status = 'completed', stage = 'completed', progress = 100, finished_at = NOW() WHERE bull_job_id = $1`,
         [job.id],
@@ -463,28 +542,54 @@ export class IndexingProcessor extends WorkerHost {
     const isRemoteMaster = provider !== 'upload' && Boolean(remoteId);
     let bytesRead = 0;
     let accessMode = 'local';
+    let streamedSource: SeekableMediaSource | undefined;
+    let sourceVersion: string | undefined;
 
     try {
       if (isRemoteMaster) {
-        this.checkScratchCapacity(scratch, fileSize, 'full_download');
         const sourceExt = path.extname(originalFilename) || '.mp4';
         effectiveSourcePath = path.join(scratch, `source${sourceExt}`);
         const normalizedProvider = provider === 'drive' ? 'google_drive' : provider;
         const connector = this.connectorRegistry.get(normalizedProvider);
         const auth = await this.connectorsService.getAuthContext(connectorAccountId!, userId);
-        await connector.downloadAsset(auth, remoteId!, effectiveSourcePath);
-        bytesRead = fs.existsSync(effectiveSourcePath)
-          ? fs.statSync(effectiveSourcePath).size
-          : fileSize;
-        accessMode = 'full_download';
+        if (connector.openReadSession && this.configService.get('STREAM_INDEX_SOURCE', 'true') === 'true') {
+          const session = await connector.openReadSession(auth, remoteId!);
+          sourceVersion = session.version;
+          if (fileSize > 0 && session.size !== fileSize) throw new Error('Cloud source size changed since indexing');
+          const prepared = await this.unitsService.getUnit?.(assetId, 'source_preparation');
+          if (prepared?.metadata?.sourceVersion && prepared.metadata.sourceVersion !== session.version) {
+            throw new Error('Cloud source changed since scene preparation');
+          }
+          streamedSource = await openSeekableMediaSource(session, this.indexReaderOptions());
+          effectiveSourcePath = streamedSource.url;
+          accessMode = 'range_read';
+        } else {
+          if (!this.useAiTranscription() && this.configService.get('WINDOWED_TRANSCRIPTION', 'false') === 'true') {
+            throw new Error('Windowed cloud transcription requires streamed, versioned source access');
+          }
+          this.checkScratchCapacity(scratch, fileSize, 'full_download');
+          await connector.downloadAsset(auth, remoteId!, effectiveSourcePath);
+          bytesRead = fs.existsSync(effectiveSourcePath) ? fs.statSync(effectiveSourcePath).size : fileSize;
+          accessMode = 'full_download';
+        }
       } else if (!fs.existsSync(sourcePath)) {
         throw new Error(`Source video file not found on disk: ${sourcePath}`);
       } else {
         bytesRead = fs.statSync(sourcePath).size;
       }
 
-      const audioPath = path.join(scratch, 'audio.wav');
-      await this.ffmpegPipeline.extractAudio(effectiveSourcePath, audioPath);
+      if (!this.useAiTranscription() && this.configService.get('WINDOWED_TRANSCRIPTION', 'false') === 'true') {
+        await this.executeTranscriptWindows(job, envelope, effectiveSourcePath, scratch, streamedSource, sourceVersion);
+        return;
+      }
+      const audioPath = path.join(scratch, this.useAiTranscription() ? 'audio.mp3' : 'audio.wav');
+      const extracted = await this.ffmpegPipeline.extractAudio(effectiveSourcePath, audioPath);
+      if (extracted === false) throw new Error('Audio extraction did not complete');
+      if (streamedSource) {
+        await streamedSource.validate();
+        bytesRead = streamedSource.bytesRead;
+        await streamedSource.close();
+      }
 
       // Phase F4: Purge master video immediately from scratch after audio extraction!
       if (isRemoteMaster && fs.existsSync(effectiveSourcePath)) {
@@ -499,22 +604,28 @@ export class IndexingProcessor extends WorkerHost {
       }
 
       let transcriptCues: TranscriptCue[] = [];
-      if (this.whisperService.isAvailable()) {
+      let transcriptionUsage: ModelUsage|undefined;
+      if (this.useAiTranscription()) {
+        const result=await this.aiService.transcribeAudio(audioPath);
+        transcriptCues=result.transcript||[];transcriptionUsage=result.usage;
+      } else if (this.whisperService.isAvailable()) {
         try {
           const result = await this.whisperService.transcribeAudio(audioPath);
           transcriptCues = result.transcript || [];
         } catch {
-          const result = await this.geminiService.transcribeAudio(audioPath);
+          const result = await this.aiService.transcribeAudio(audioPath);
           transcriptCues = result.transcript || [];
         }
       } else {
-        const result = await this.geminiService.transcribeAudio(audioPath);
+        const result = await this.aiService.transcribeAudio(audioPath);
         transcriptCues = result.transcript || [];
       }
 
       await this.persistTranscriptObservations(assetId, userId, transcriptCues);
       await this.unitsService.markUnitCompleted?.(assetId, 'audio_transcribe', {
         transcript: transcriptCues,
+        transcriptionProvider: this.useAiTranscription() ? 'ai' : 'whisper',
+        usage: transcriptionUsage,
       });
 
       if (fs.existsSync(audioPath)) {
@@ -533,6 +644,10 @@ export class IndexingProcessor extends WorkerHost {
         `[Phase F4] Finished transcribe-only job for asset ${assetId} without retaining master tape`,
       );
     } catch (err) {
+      if (!this.useAiTranscription() && this.configService.get('WINDOWED_TRANSCRIPTION', 'false') === 'true') {
+        await this.unitsService.failTranscriptWindows(assetId, err instanceof Error ? err.message : String(err));
+      }
+      if (err instanceof AudioWindowCancelled) return;
       this.logger.error(`Failed transcribe-only job for asset ${assetId}: ${err}`);
       await this.db.query(
         `UPDATE indexing_jobs SET status = 'failed', stage = 'failed', error = $1, finished_at = NOW() WHERE bull_job_id = $2`,
@@ -540,7 +655,148 @@ export class IndexingProcessor extends WorkerHost {
       );
       throw err;
     } finally {
-      this.cleanupJobScratch(scratch);
+      await streamedSource?.close();
+      await this.cleanupJobScratch(scratch,job,envelope);
+    }
+  }
+
+  private async executeTranscriptWindows(job: Job, envelope: FactoryJobEnvelope, source: string, scratch: string,
+    reader?: SeekableMediaSource, version?: string): Promise<void> {
+    const assetId = envelope.asset_id;
+    if (!this.whisperService.isAvailable()) throw new Error('Windowed transcription requires local Whisper');
+    const metadata = await this.ffmpegPipeline.probeMetadata(source);
+    if (!metadata.hasAudio) throw new Error('Source has no audio track');
+    const seconds = Number(this.configService.get('AUDIO_WINDOW_SECONDS', 60));
+    const overlap = Number(this.configService.get('AUDIO_WINDOW_OVERLAP_SECONDS', 2));
+    const windows = planAudioWindows(metadata.duration, seconds, overlap);
+    const localIdentity = reader ? version : [fs.statSync(source).size, fs.statSync(source).mtimeMs];
+    const fingerprint = createHash('sha256').update(JSON.stringify(['audio-windows-v1',
+      envelope.source.provider, envelope.source.connectorAccountId, envelope.source.remoteId, reader ? null : path.resolve(source),
+      localIdentity, metadata.duration, seconds, overlap,
+      ...Object.entries({ WHISPER_MODEL: 'base', WHISPER_DEVICE: 'cpu', WHISPER_COMPUTE_TYPE: 'int8',
+        WHISPER_TASK: 'transcribe', WHISPER_LANGUAGE: '' }).map(([key, fallback]) => [key, this.configService.get(key, fallback)])])).digest('hex');
+    const validateSource = async () => {
+      if (reader) await reader.validate();
+      else if (JSON.stringify(localIdentity) !== JSON.stringify([fs.statSync(source).size, fs.statSync(source).mtimeMs])) {
+        throw new Error('Local audio source changed during transcription');
+      }
+    };
+    let session: ReturnType<WhisperTranscriptionService['createSession']> | undefined;
+    try {
+      await validateSource();
+      await this.unitsService.beginTranscriptWindows(assetId, envelope.user_id, fingerprint);
+      session = this.whisperService.createSession();
+      const checkpoints = await this.unitsService.getCompletedTranscriptWindows(assetId);
+      const completed = new Set<number>();
+      let execution: Record<string, unknown> | undefined;
+      for (const [id, checkpoint] of checkpoints) {
+        if (checkpoint.fingerprint !== fingerprint || !Number.isInteger(checkpoint.index) ||
+          !windows[checkpoint.index] || id !== audioWindowId(checkpoint.index)) throw new Error('Invalid audio resume checkpoint');
+        completed.add(checkpoint.index);
+      }
+      await processAudioWindows({ windows, completed,
+        assertActive: async () => {
+          if (await this.checkCancelled(String(job.id || ''), assetId, scratch)) throw new AudioWindowCancelled();
+        },
+        prepare: async (window, signal) => {
+          const directory = fs.mkdtempSync(path.join(scratch, 'audio-window-'));
+          const cleanup = () => fs.promises.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+          const audio = path.join(directory, 'audio.wav');
+          try {
+            await withSearchDeadline(this.indexReaderOptions().timeoutMs,
+              () => this.ffmpegPipeline.extractAudioWindow(source, audio, window.readStart, window.readEnd), signal);
+            return { path: audio, cleanup };
+          } catch (error) { await cleanup(); throw error; }
+        },
+        transcribe: async (audio, signal) => {
+          const result = await session!.transcribeAudio(audio, signal);
+          execution = result.usage ? { provider: result.usage.provider, model: result.usage.model,
+            durationMs: result.usage.durationMs, apiEstimatedUsd: result.usage.estimatedUsd, language: result.language } : undefined;
+          return result.transcript;
+        },
+        publish: async (window, cues) => {
+          await validateSource();
+          await this.unitsService.publishTranscriptWindow(assetId, envelope.user_id, fingerprint, window, cues, execution);
+          completed.add(window.index);
+          const progress = Math.floor(100 * completed.size / windows.length);
+          if (typeof job.updateProgress === 'function') await job.updateProgress(progress);
+          await this.db.query(`UPDATE indexing_jobs SET stage='transcribing_windows',progress=$1 WHERE bull_job_id=$2`, [progress, job.id]);
+          await updateFactoryProgress(this.db,String(job.id||''),envelope.user_id,'transcribe',completed.size,windows.length).catch(()=>undefined);
+        },
+      });
+      await validateSource();
+      await this.unitsService.finishTranscriptWindows(assetId, fingerprint);
+      await this.db.query(`UPDATE indexing_jobs SET status='completed',stage='completed',progress=100,
+        access_mode=$1,bytes_read=$2,finished_at=NOW() WHERE bull_job_id=$3`, [reader ? 'range_read' : 'local', reader?.bytesRead || 0, job.id]);
+    } finally { await session?.close(); }
+  }
+
+  private indexReaderOptions() {
+    const maxBytes = Math.floor(Number(this.configService.get('INDEX_RANGE_MAX_MB', this.fullDownloadMaxBytes / (1024 * 1024))) * 1024 * 1024);
+    const timeoutMs = Number(this.configService.get('INDEX_RANGE_TIMEOUT_MS', 900000));
+    const smallFileCacheBytes = Math.floor(Number(this.configService.get('INDEX_SMALL_FILE_CACHE_MB', 8)) * 1024 * 1024);
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > 64 * 1024 * 1024 * 1024 ||
+        !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 3600000 ||
+        !Number.isSafeInteger(smallFileCacheBytes) || smallFileCacheBytes < 0 || smallFileCacheBytes > 64 * 1024 * 1024) throw new Error('Invalid indexing range limits');
+    return { maxBytes, timeoutMs, smallFileCacheBytes,
+      maxReads: Math.min(65536, Math.ceil(maxBytes / (1024 * 1024)) + 16), maxRequests: 65536 };
+  }
+
+  private preparationPolicy() {
+    const policy: unknown[] = ['streamed-prepare-v2-required-frames', ANALYSIS_VERSION,
+      ...['SCENE_THRESHOLD', 'SCENE_MIN_SECONDS', 'SCENE_TARGET_SECONDS', 'SCENE_MIN_COUNT',
+        'SCENE_MAX_COUNT', 'SCENE_MAX_FRAMES', 'MAX_FRAMES_PER_SCENE'].map((key) => [key, this.configService.get(key)])];
+    if (this.configService.get('WINDOWED_SCENE_PREPARATION', 'false') === 'true') {
+      policy.push('scene-windows-v1', Number(this.configService.get('SCENE_WINDOW_SECONDS', 60)),
+        Number(this.configService.get('SCENE_WINDOW_CONTEXT_SECONDS', 2)));
+    }
+    return policy;
+  }
+
+  private async prepareSceneWindows(assetId: string, userId: string, fingerprint: string, source: string,
+    duration: number, framesDir: string, validate: () => Promise<void>, assertActive: () => Promise<void>): Promise<SceneBoundary[]> {
+    const seconds = Number(this.configService.get('SCENE_WINDOW_SECONDS', 60));
+    const context = Number(this.configService.get('SCENE_WINDOW_CONTEXT_SECONDS', 2));
+    const maxScenes = Number(this.configService.get('SCENE_WINDOW_MAX_SCENES', 1000));
+    if (!Number.isInteger(maxScenes) || maxScenes < 1 || maxScenes > 5000) throw new Error('Invalid scene window evidence limit');
+    const windows = planSceneWindows(duration, seconds, context);
+    await this.unitsService.saveSceneWindow(assetId, userId, fingerprint);
+    const scenes: SceneBoundary[] = [];
+    try {
+      for (const window of windows) {
+        await assertActive();
+        const id = sceneWindowId(window.index);
+        const cached = await this.unitsService.getUnit(assetId, id);
+        let prepared: SceneBoundary[] | undefined = cached?.status === 'completed' && cached.metadata?.fingerprint === fingerprint
+          ? cached.metadata.scenes : undefined;
+        if (!Array.isArray(prepared) || !hasSceneEvidence(prepared, (file) => {
+          const resolved = resolveStorageLocator(file, this.storageRoot);
+          return !!resolved && fs.existsSync(resolved) && fs.statSync(resolved).size > 0;
+        })) {
+          const output = path.join(framesDir, id);
+          prepared = ownWindowScenes(window, await this.ffmpegPipeline.detectScenesAndExtractFrames(
+            source, window.readEnd - window.readStart, output, undefined, window.readStart));
+          const boundary = boundaryContext(window, duration, context);
+          if (boundary) prepared.push(await this.ffmpegPipeline.extractSceneContext(source, boundary.start, boundary.end,
+            path.join(output, 'boundary'), boundary.sceneId));
+          if (!prepared.length) throw new Error('Scene window produced no evidence');
+          if (scenes.length + prepared.length > maxScenes) throw new Error('Scene window evidence limit exceeded; completed windows retained');
+          await validate();
+          for (const scene of prepared) {
+            scene.keyframes = persistDurableKeyframes(assetId, this.storageRoot, scene.keyframes);
+            scene.keyframePath = scene.keyframes[0].path;
+          }
+          await this.unitsService.saveSceneWindow(assetId, userId, fingerprint, id, prepared);
+        }
+        if (scenes.length + prepared.length > maxScenes) throw new Error('Scene window evidence limit exceeded; completed windows retained');
+        scenes.push(...prepared);
+      }
+      await validate();
+      await this.unitsService.saveSceneWindow(assetId, userId, fingerprint, 'scene_windows', undefined, true);
+      return scenes;
+    } catch (error) {
+      await this.unitsService.markUnitFailed(assetId, 'scene_windows', String(error));
+      throw error;
     }
   }
 
@@ -557,11 +813,16 @@ export class IndexingProcessor extends WorkerHost {
     const originalFilename = envelope.source.originalFilename || 'source.mp4';
     const jobId = envelope.job_id || job.id || parentAssetId;
     const scratch = path.join(this.scratchDir, String(jobId));
+    const operationId = envelope.processing_config?.clipOperationId;
+    if (operationId) {
+      if (!this.indexingService) throw new Error('Clip operation service unavailable');
+      if (await this.indexingService.isClipPublished(operationId, userId)) return;
+    }
 
     const startS = envelope.segment?.start_s || 0;
     const endS = envelope.segment?.end_s || (startS + 10);
     const duration = Math.max(0.1, endS - startS);
-    const clipAssetId = `clip_${randomBytes(8).toString('hex')}`;
+    const clipAssetId = envelope.processing_config?.clipAssetId || `clip_${createHash('sha256').update(String(jobId)).digest('hex').slice(0, 32)}`;
     const clipFilename = `clip_${path.parse(originalFilename).name}_${Math.round(startS)}s_${Math.round(endS)}s.mp4`;
     const clipPath = path.join(this.clipsDir, `${clipAssetId}.mp4`);
 
@@ -589,96 +850,47 @@ export class IndexingProcessor extends WorkerHost {
           `SELECT duration, file_size FROM media_assets WHERE id = $1`,
           [parentAssetId],
         );
-        const parentDuration = Number(assetRes.rows[0]?.duration || 0);
         const parentFileSize = Number(
           assetRes.rows[0]?.file_size || envelope.source.fileSize || 0,
         );
         const normalizedProvider = provider === 'drive' ? 'google_drive' : provider;
         const connector = this.connectorRegistry.get(normalizedProvider);
-        const auth = await this.connectorsService.getAuthContext(connectorAccountId!, userId);
         const sourceExt = path.extname(originalFilename) || '.mp4';
         effectiveSourcePath = path.join(scratch, `source${sourceExt}`);
 
-        let usedRanged = false;
-        if (
-          connector.capabilities?.can_range_read &&
-          typeof connector.getByteRange === 'function' &&
-          parentDuration > 0 &&
-          parentFileSize > 0
-        ) {
-          const byteRate = parentFileSize / parentDuration;
-          const padBefore = Math.max(0, startS - 5);
-          const padAfter = Math.min(parentDuration, endS + 5);
-          const startByte = Math.max(0, Math.floor(padBefore * byteRate));
-          const endByte = Math.min(parentFileSize, Math.ceil(padAfter * byteRate));
-          const length = Math.max(1, endByte - startByte);
-          this.checkScratchCapacity(scratch, length, 'working');
-
-          const rangedSlicePath = path.join(scratch, `ranged_slice${sourceExt}`);
-          try {
-            this.logger.log(
-              `[Phase F4] Attempting ranged clip extraction for asset ${parentAssetId} (bytes ${startByte}-${endByte}, ${(length / 1024).toFixed(1)} KB vs total ${(parentFileSize / (1024 * 1024)).toFixed(1)} MB)`,
-            );
-            const stream = await connector.getByteRange(auth, remoteId!, startByte, length);
-            await new Promise<void>((resolve, reject) => {
-              const out = fs.createWriteStream(rangedSlicePath);
-              stream.pipe(out);
-              stream.on('error', reject);
-              out.on('finish', resolve);
-              out.on('error', reject);
-            });
-
-            const actualRangedBytes = fs.existsSync(rangedSlicePath)
-              ? fs.statSync(rangedSlicePath).size
-              : length;
-            const sliceStartOffset = Math.max(0, startS - padBefore);
-            const sliceEndOffset = sliceStartOffset + duration;
-            await this.ffmpegPipeline.extractClip(
-              rangedSlicePath,
-              clipPath,
-              sliceStartOffset,
-              sliceEndOffset,
-            );
-
-            if (fs.existsSync(clipPath) && fs.statSync(clipPath).size === 0) {
-              throw new Error('Ranged extraction produced 0-byte clip');
-            }
-
-            usedRanged = true;
-            accessMode = 'range_read';
-            bytesRead = actualRangedBytes;
-            this.logger.log(
-              `[Phase F4] Ranged clip extraction succeeded for ${parentAssetId}: read ${(actualRangedBytes / (1024 * 1024)).toFixed(2)} MB`,
-            );
-          } catch (rangeErr: any) {
-            this.logger.warn(
-              `[Phase F4] Ranged clip extraction failed for ${parentAssetId} (${rangeErr?.message || rangeErr}); falling back to full download`,
-            );
-            if (fs.existsSync(clipPath)) {
-              try {
-                fs.unlinkSync(clipPath);
-              } catch {
-                /* ignore */
-              }
-            }
-          } finally {
-            if (fs.existsSync(rangedSlicePath)) {
-              try {
-                fs.unlinkSync(rangedSlicePath);
-              } catch {
-                /* ignore */
-              }
-            }
-          }
+        // The decoder seeks through a validated read session when available.
+        // Other connectors use complete sources within the download allowance.
+        if (!Number.isSafeInteger(parentFileSize) || parentFileSize <= 0) {
+          throw new Error('Cannot extract cloud clip without a known positive source size');
         }
-
-        if (!usedRanged) {
+        const clipSourceLimit = Number(this.configService.get('WORKER_CLIP_SOURCE_MAX_MB', 256)) * 1024 * 1024;
+        if (!Number.isFinite(clipSourceLimit) || clipSourceLimit <= 0) throw new Error('Invalid WORKER_CLIP_SOURCE_MAX_MB');
+        const transferLimit = Math.floor(Math.min(clipSourceLimit, this.fullDownloadMaxBytes));
+        if (!connector.openReadSession && parentFileSize > transferLimit) {
+          throw new Error('Cloud clip requires seekable source access or a cached preview: source exceeds clip download limit');
+        }
+        const auth = await this.connectorsService.getAuthContext(connectorAccountId!, userId);
+        if (connector.openReadSession) {
+          const session = await connector.openReadSession(auth, remoteId!);
+          if (session.size !== parentFileSize) throw new Error('Cloud source size changed since indexing');
+          const source = await openSeekableMediaSource(session, { maxBytes: transferLimit });
+          try {
+            await this.ffmpegPipeline.extractClip(source.url, clipPath, startS, endS);
+            await source.validate();
+            accessMode = 'range_read';
+            bytesRead = source.bytesRead;
+          } catch (error) {
+            if (fs.existsSync(clipPath)) fs.unlinkSync(clipPath);
+            throw error;
+          } finally { await source.close(); }
+        } else {
           accessMode = 'full_download';
           this.checkScratchCapacity(scratch, parentFileSize, 'full_download');
           await connector.downloadAsset(auth, remoteId!, effectiveSourcePath);
-          bytesRead = fs.existsSync(effectiveSourcePath)
-            ? fs.statSync(effectiveSourcePath).size
-            : parentFileSize;
+          if (!fs.existsSync(effectiveSourcePath) || fs.statSync(effectiveSourcePath).size !== parentFileSize) {
+            throw new Error('Cloud source download is incomplete or changed');
+          }
+          bytesRead = fs.statSync(effectiveSourcePath).size;
           await this.ffmpegPipeline.extractClip(effectiveSourcePath, clipPath, startS, endS);
           if (fs.existsSync(effectiveSourcePath)) {
             try {
@@ -699,6 +911,9 @@ export class IndexingProcessor extends WorkerHost {
         await this.ffmpegPipeline.extractClip(sourcePath, clipPath, startS, endS);
       }
 
+      if (!fs.existsSync(clipPath) || fs.statSync(clipPath).size === 0) {
+        throw new Error('Clip extraction did not produce a media file');
+      }
       const clipThumbPath = path.join(this.thumbnailDir, `${clipAssetId}.jpg`);
       let clipThumbData: string | null = null;
       try {
@@ -720,47 +935,60 @@ export class IndexingProcessor extends WorkerHost {
         clipChecksum = createHash('sha256').update(`${clipAssetId}-${Date.now()}`).digest('hex');
       }
 
-      // Register derived asset in media_assets
-      await this.db.query(
-        `INSERT INTO media_assets (
-           id, user_id, original_filename, original_path, source_type,
-           status, stage, progress, duration, proxy_status, proxy_path,
-           parent_asset_id, relationship_type, file_size, availability,
-           thumbnail_path, thumbnail_data, connector_account_id, checksum, created_at, updated_at
-         )
-         VALUES ($1, $2, $3, $4, $5, 'indexed', 'completed', 100, $6, 'ready', $7, $8, 'derived_from', $9, 'online', $10, $11, $12, $13, NOW(), NOW())`,
-        [
-          clipAssetId,
-          userId,
-          clipFilename,
-          this.locator(clipPath),
-          isRemoteMaster ? (provider === 'drive' ? 'google_drive' : provider) : 'upload',
-          duration,
-          this.locator(clipPath),
-          parentAssetId,
-          clipSize,
-          fs.existsSync(clipThumbPath) ? this.locator(clipThumbPath) : null,
-          clipThumbData,
-          connectorAccountId || null,
-          clipChecksum,
-        ],
-      );
+      const publish = async (writer: Pick<DatabaseService, 'query'>) => {
+        // Register derived asset in media_assets
+        await writer.query(
+          `INSERT INTO media_assets (
+             id, user_id, original_filename, original_path, source_type,
+             status, stage, progress, duration, proxy_status, proxy_path,
+             parent_asset_id, relationship_type, file_size, availability,
+             thumbnail_path, thumbnail_data, connector_account_id, checksum, created_at, updated_at
+           )
+           VALUES ($1, $2, $3, $4, $5, 'indexed', 'completed', 100, $6, 'ready', $7, $8, 'derived_from', $9, 'online', $10, $11, $12, $13, NOW(), NOW())`,
+          [
+            clipAssetId,
+            userId,
+            clipFilename,
+            this.locator(clipPath),
+            isRemoteMaster ? (provider === 'drive' ? 'google_drive' : provider) : 'upload',
+            duration,
+            this.locator(clipPath),
+            parentAssetId,
+            clipSize,
+            fs.existsSync(clipThumbPath) ? this.locator(clipThumbPath) : null,
+            clipThumbData,
+            connectorAccountId || null,
+            clipChecksum,
+          ],
+        );
 
-      // Register lineage in asset_relationships table
-      await this.db.query(
-        `INSERT INTO asset_relationships (source_asset_id, target_asset_id, relationship_type, metadata)
-         VALUES ($1, $2, 'derived_from', $3)`,
-        [
-          parentAssetId,
-          clipAssetId,
-          JSON.stringify({ start_s: startS, end_s: endS, duration }),
-        ],
-      );
+        // Register lineage in asset_relationships table
+        await writer.query(
+          `INSERT INTO asset_relationships (source_asset_id, target_asset_id, relationship_type, metadata)
+           VALUES ($1, $2, 'derived_from', $3)`,
+          [
+            parentAssetId,
+            clipAssetId,
+            JSON.stringify({ start_s: startS, end_s: endS, duration }),
+          ],
+        );
 
-      await this.db.query(
-        `UPDATE indexing_jobs SET status = 'completed', stage = 'completed', progress = 100, access_mode = $1, bytes_read = $2, finished_at = NOW() WHERE bull_job_id = $3`,
-        [accessMode, bytesRead, job.id],
-      );
+        await writer.query(
+          `UPDATE indexing_jobs SET status = 'completed', stage = 'completed', progress = 100, access_mode = $1, bytes_read = $2, finished_at = NOW() WHERE bull_job_id = $3`,
+          [accessMode, bytesRead, job.id],
+        );
+
+      };
+      if (operationId) {
+        const published = await this.indexingService!.publishClip(operationId, userId, clipAssetId, String(jobId), publish);
+        if (!published) {
+          if (fs.existsSync(clipPath)) fs.unlinkSync(clipPath);
+          if (fs.existsSync(clipThumbPath)) fs.unlinkSync(clipThumbPath);
+          return;
+        }
+      } else {
+        await publish(this.db);
+      }
 
       if (isRemoteMaster && connectorAccountId) {
         try {
@@ -800,12 +1028,12 @@ export class IndexingProcessor extends WorkerHost {
     } catch (err) {
       this.logger.error(`Failed to extract clip for asset ${parentAssetId}: ${err}`);
       await this.db.query(
-        `UPDATE indexing_jobs SET status = 'failed', stage = 'failed', error = $1, finished_at = NOW() WHERE bull_job_id = $2`,
+        `UPDATE indexing_jobs SET status = 'failed', stage = 'failed', error = $1, finished_at = NOW() WHERE bull_job_id = $2 AND status <> 'completed'`,
         [String(err), job.id],
       );
       throw err;
     } finally {
-      this.cleanupJobScratch(scratch);
+      await this.cleanupJobScratch(scratch,job,envelope);
     }
   }
 
@@ -827,9 +1055,10 @@ export class IndexingProcessor extends WorkerHost {
       assetRes.rows[0]?.availability === 'offline' || assetRes.rows[0]?.status === 'cancelled';
 
     if (isJobCancelled || isAssetGone) {
+      if (this.configService.get('INDEX_BUDGET_PLAN_ENABLED', 'false') === 'true') new AiUsageLedger(this.configService).releasePlan();
       const reason = isAssetGone ? 'Source deleted or marked offline' : 'Cancelled by user';
       this.logger.log(`Job ${jobId} for asset ${assetId} halted mid-job (${reason}); cleaning scratch.`);
-      this.cleanupJobScratch(scratchDir);
+      await this.cleanupJobScratch(scratchDir);
       if (res.rows.length > 0) {
         await this.db.query(
           `UPDATE indexing_jobs SET status = 'cancelled', stage = 'cancelled', error = $1, finished_at = NOW() WHERE bull_job_id = $2`,
@@ -864,6 +1093,8 @@ export class IndexingProcessor extends WorkerHost {
     const jobId = envelope.job_id || job.id || assetId;
     const scratch = path.join(this.scratchDir, String(jobId));
 
+    let streamedSource: SeekableMediaSource | undefined;
+    let streamedVersion: string | undefined;
     const indexStartedAt = Date.now();
     const timings: StageTiming[] = [];
 
@@ -919,7 +1150,7 @@ export class IndexingProcessor extends WorkerHost {
     const mark = async <T>(stage: string, progress: number, fn: () => Promise<T>): Promise<T> => {
       const t0 = Date.now();
       await setStage(stage, progress, true);
-      const result = await fn();
+      const result = await recordFactoryStep(this.db,job,envelope,stage,fn);
       updatePeakScratch();
       timings.push({ stage, durationMs: Date.now() - t0 });
       return result;
@@ -974,7 +1205,7 @@ export class IndexingProcessor extends WorkerHost {
 
       if (donorId) {
         this.logger.log(`Asset ${assetId} is duplicate of ${donorId}; cloning intelligence`);
-        await this.cloneExistingAsset(donorId, assetId, userId);
+        await recordFactoryStep(this.db,job,envelope,'reused_index',()=>this.cloneExistingAsset(donorId!,assetId,userId));
         await setStage('completed', 100, true);
         await this.db.query(
           `UPDATE media_assets SET status = 'indexed', updated_at = NOW() WHERE id = $1`,
@@ -995,7 +1226,25 @@ export class IndexingProcessor extends WorkerHost {
 
       let effectiveSourcePath = sourcePath;
 
-      if (isRemoteMaster) {
+      if (forceReindex && (job.attemptsMade || 0) === 0) await this.unitsService.resetAssetUnits(assetId);
+
+      if (isRemoteMaster && this.configService.get('STREAM_INDEX_SOURCE', 'true') === 'true') {
+        const connector = this.connectorRegistry.get(provider === 'drive' ? 'google_drive' : provider);
+        if (connector.openReadSession) {
+          await mark('reading_from_connector',5,async()=>{
+          if (!connectorAccountId) throw new Error('Missing connector account for streamed indexing');
+          const auth = await this.connectorsService.getAuthContext(connectorAccountId, userId);
+          const session = await connector.openReadSession!(auth, remoteId!);
+          if (fileSize > 0 && session.size !== fileSize) throw new Error('Cloud source size changed since indexing');
+          streamedVersion = session.version;
+          streamedSource = await openSeekableMediaSource(session, this.indexReaderOptions());
+          effectiveSourcePath = streamedSource.url;
+          await setStage('reading_from_connector', 5, true);
+          });
+        }
+      }
+
+      if (isRemoteMaster && !streamedSource) {
         const sourceExt = path.extname(originalFilename) || '.mp4';
         effectiveSourcePath = path.join(scratch, `source${sourceExt}`);
         await setStage('downloading_from_connector', 2, true);
@@ -1053,7 +1302,7 @@ export class IndexingProcessor extends WorkerHost {
             [bytesDownloaded, job.id],
           ).catch(() => undefined);
         }
-      } else {
+      } else if (!isRemoteMaster) {
         if (!fs.existsSync(sourcePath)) {
           throw new Error(`Source video file not found on disk: ${sourcePath}`);
         }
@@ -1088,20 +1337,43 @@ export class IndexingProcessor extends WorkerHost {
 
       // Stage 2: Scene Detection & Keyframe Extraction
       const framesDir = path.join(scratch, 'frames');
-      const scenes = await mark('scene_detection', 14, () =>
-        this.ffmpegPipeline.detectScenesAndExtractFrames(
+      const policy = this.preparationPolicy();
+      const fingerprint = createHash('sha256').update(JSON.stringify([provider, remoteId, connectorAccountId,
+        streamedVersion, fileSize, metadata.duration, policy])).digest('hex');
+      const preparation = streamedSource ? await this.unitsService.getUnit(assetId, 'source_preparation') : null;
+      if (preparation && preparation.metadata?.fingerprint !== fingerprint) {
+        throw new Error('Source or preparation settings changed; reindex is required before reusing checkpoints');
+      }
+      const cachedScenes = preparation?.status === 'completed' && Array.isArray(preparation.metadata?.scenes)
+        ? preparation.metadata.scenes as SceneBoundary[] : null;
+      const usableScenes = !!cachedScenes?.length && cachedScenes.every((scene) => scene.keyframes?.length && scene.keyframes.every((frame) =>
+        !!(frame as { data?: string }).data || !!resolveStorageLocator(frame.path, this.storageRoot) &&
+        fs.existsSync(resolveStorageLocator(frame.path, this.storageRoot)!) &&
+        fs.statSync(resolveStorageLocator(frame.path, this.storageRoot)!).size > 0));
+      const windowedScenes = this.configService.get('WINDOWED_SCENE_PREPARATION', 'false') === 'true';
+      if (windowedScenes && !streamedSource) throw new Error('Windowed scene preparation requires a versioned streamed source');
+      const scenes: SceneBoundary[] = usableScenes ? cachedScenes! : await mark('scene_detection', 14, () =>
+        windowedScenes ? this.prepareSceneWindows(assetId, userId, fingerprint, effectiveSourcePath, metadata.duration, framesDir,
+          () => streamedSource!.validate(), async () => {
+            if (await this.checkCancelled(job.id || '', assetId, scratch)) throw new Error('Scene preparation cancelled');
+          }) : this.ffmpegPipeline.detectScenesAndExtractFrames(
           effectiveSourcePath,
           metadata.duration,
           framesDir,
-          (current, total) => {
+          async (current, total) => {
             const pct = 14 + Math.round((current / Math.max(1, total)) * 14);
-            setStage('extracting_keyframes', pct).catch(() => undefined);
+            await setStage('extracting_keyframes', pct).catch(() => undefined);
+            await updateFactoryProgress(this.db,String(job.id||''),userId,'scenes',current,total).catch(()=>undefined);
           },
         ),
       );
+      if (streamedSource) {
+        await streamedSource.validate();
+        if (scenes.some((scene) => !scene.keyframes?.length)) throw new Error('Streamed scene preparation is missing scene evidence');
+      }
 
       // Persist durable keyframes into storage/keyframes/{assetId}/ so Stage-2 search can inspect them after scratch purge
-      for (const scene of scenes) {
+      for (const scene of usableScenes || windowedScenes ? [] : scenes) {
         if (scene.keyframes && scene.keyframes.length > 0) {
           scene.keyframes = persistDurableKeyframes(assetId, this.storageRoot, scene.keyframes);
           if (scene.keyframePath && scene.keyframes[0]) {
@@ -1109,10 +1381,28 @@ export class IndexingProcessor extends WorkerHost {
           }
         }
       }
+      if (streamedSource && !usableScenes) await this.unitsService.saveSourcePreparation(assetId, { fingerprint,
+        sourceVersion: streamedVersion, scenes });
 
       // Checkpoint Planning (Phase F2)
-      if (forceReindex) {
-        await this.unitsService.resetAssetUnits(assetId);
+      if (this.configService.get('INDEX_BUDGET_PLAN_ENABLED', 'false') === 'true') {
+        const localOwner = String(this.configService.get('LOCAL_EMBEDDING_USER_IDS', '')).split(/[,\s]+/).includes(userId);
+        const provider=this.configService.get<string>('AI_PROVIDER');
+        if (!['baseten','meta','google'].includes(provider || '') ||
+            (this.configService.get('EMBEDDING_PROVIDER') !== 'local' && !localOwner) ||
+            (metadata.hasAudio && !this.useAiTranscription() && !this.whisperService.isAvailable())) {
+          throw new AiBudgetError('Controlled indexing requires a supported AI provider, local embeddings and the configured speech runtime');
+        }
+        const multiplier = Number(this.configService.get('INDEX_PLAN_ATTEMPTS_PER_CALL', 2));
+        if (!Number.isInteger(multiplier) || multiplier < 1 || multiplier > 3) throw new AiBudgetError('Invalid indexing retry allowance');
+        const chunkSeconds=Number(this.configService.get(provider==='google'?'TRANSCRIPT_CHUNK_SECONDS':provider==='baseten'?'BASETEN_TRANSCRIPT_CHUNK_SECONDS':'META_TRANSCRIPT_CHUNK_SECONDS',provider==='google'?150:90));
+        if(this.useAiTranscription()&&(!Number.isSafeInteger(chunkSeconds)||chunkSeconds<=0||chunkSeconds>300))throw new AiBudgetError('Invalid AI transcription chunk size');
+        // One extra chunk covers encoding padding at exact chunk boundaries.
+        const speechCalls=metadata.hasAudio&&this.useAiTranscription()?Math.ceil(metadata.duration/chunkSeconds)+1:0;
+        const calls = scenes.reduce((sum, scene) => sum + Math.ceil((scene.keyframes?.length || 1) / 4), 0) + 1 + speechCalls;
+        const models=provider==='meta'?[this.aiService.getPrimaryModel(),String(this.configService.get('META_VIDEO_MODEL','')),
+          ...(speechCalls?[String(this.configService.get('META_AUDIO_MODEL',''))]:[])]:provider==='google'?(this.aiService.getModelCascade?.()||[this.aiService.getPrimaryModel()]):[this.aiService.getPrimaryModel()];
+        new AiUsageLedger(this.configService).reservePlan(provider!, this.aiService.getPrimaryModel(), calls * multiplier, `${userId}/${assetId}`,models);
       }
       await this.unitsService.planUnits(assetId, scenes, metadata.hasAudio);
       const completedUnitsMap = (await this.unitsService.getCompletedUnits?.(assetId)) || new Map();
@@ -1200,6 +1490,12 @@ export class IndexingProcessor extends WorkerHost {
       // Check cooperative cancellation after thumbnail
       if (await this.checkCancelled(job.id || '', assetId, scratch)) return;
 
+      if (streamedSource) {
+        await streamedSource.validate();
+        await this.db.query(`UPDATE indexing_jobs SET bytes_read = $1, access_mode = 'range_read' WHERE bull_job_id = $2`,
+          [streamedSource.bytesRead, job.id]);
+      }
+
       await this.dispatchChildUnitJobs(envelope, completedUnits);
       await setStage('planned', 40, true);
       await this.db.query(
@@ -1208,7 +1504,7 @@ export class IndexingProcessor extends WorkerHost {
          WHERE bull_job_id = $1`,
         [job.id],
       );
-      this.cleanupJobScratch(scratch);
+      await this.cleanupJobScratch(scratch,job,envelope);
       this.logger.log(`[F2] Planned child unit jobs for asset ${assetId}`);
       return;
     } catch (err: unknown) {
@@ -1270,11 +1566,13 @@ export class IndexingProcessor extends WorkerHost {
         );
       }
 
-      this.cleanupJobScratch(path.join(this.scratchDir, String(jobId)));
+      await this.cleanupJobScratch(path.join(this.scratchDir, String(jobId)),job,envelope);
 
       // CRITICAL: Rethrow error so BullMQ registers the failure, triggers backoff retries,
       // and properly transitions the job to failed / dead-letter status.
       throw err;
+    } finally {
+      await streamedSource?.close();
     }
   }
 
@@ -1338,7 +1636,7 @@ export class IndexingProcessor extends WorkerHost {
     }
     const units = (await this.unitsService.getUnits?.(envelope.asset_id)) || [];
     for (const unit of units) {
-      if (completedUnits.has(unit.unit_id) || unit.status === 'completed') continue;
+      if (['source_preparation', 'transcript_window', 'scene_window'].includes(unit.unit_type) || completedUnits.has(unit.unit_id) || unit.status === 'completed') continue;
       await this.indexingService.enqueueAsset({
         job_type: unitTypeToJobType(unit.unit_type),
         asset_id: envelope.asset_id,
@@ -1392,7 +1690,7 @@ export class IndexingProcessor extends WorkerHost {
     try {
       const frames = materializeKeyframeFiles(scene.keyframes || [], this.storageRoot, scratch);
       const analysisScene = { ...scene, keyframes: frames };
-      const res = await this.geminiService.analyzeFrames([analysisScene]);
+      const res = await this.aiService.analyzeFrames([analysisScene]);
       const observations = (res.observations || []).filter(
         (obs) =>
           obs.timestamp >= scene.startTime - 0.05 && obs.timestamp <= scene.endTime + 0.05,
@@ -1408,7 +1706,7 @@ export class IndexingProcessor extends WorkerHost {
       await this.failUnitJob(job, envelope, sceneUnitId, err);
       throw err;
     } finally {
-      this.cleanupJobScratch(scratch);
+      await this.cleanupJobScratch(scratch,job,envelope);
     }
   }
 
@@ -1444,11 +1742,23 @@ export class IndexingProcessor extends WorkerHost {
           connectorAccountId!,
           envelope.user_id,
         );
+        const session = connector.openReadSession ? await connector.openReadSession(auth, remoteId!) : undefined;
+        const prepared = session ? await this.unitsService.getUnit(assetId, 'source_preparation') : null;
+        if (prepared?.metadata?.sourceVersion && prepared.metadata.sourceVersion !== session?.version) {
+          throw new Error('Cloud source changed since scene preparation');
+        }
+        if (session) this.checkScratchCapacity(scratch, session.size, 'full_download');
         await connector.downloadAsset(auth, remoteId!, effectiveSourcePath);
+        if (session) {
+          if (!fs.existsSync(effectiveSourcePath) || fs.statSync(effectiveSourcePath).size !== session.size) {
+            throw new Error('Cloud source download is incomplete or changed');
+          }
+          await session.validate(new AbortController().signal);
+        }
       } else if (!fs.existsSync(sourcePath)) {
         throw new Error(`Source video file not found on disk: ${sourcePath}`);
       }
-      const res = await this.geminiService.analyzeVideo(effectiveSourcePath);
+      const res = await this.aiService.analyzeVideo(effectiveSourcePath);
       const analysis = res.analysis || { video_summary: '', key_themes: [], segments: [] };
       if (analysis.segments) {
         for (const gSeg of analysis.segments) {
@@ -1465,7 +1775,7 @@ export class IndexingProcessor extends WorkerHost {
       await this.failUnitJob(job, envelope, 'gemini_video', err);
       throw err;
     } finally {
-      this.cleanupJobScratch(scratch);
+      await this.cleanupJobScratch(scratch,job,envelope);
     }
   }
 
@@ -1485,6 +1795,15 @@ export class IndexingProcessor extends WorkerHost {
     if (!sceneUnit || sceneUnit.status !== 'completed') {
       await this.delayJob(job);
     }
+    // Queue order is not a dependency guarantee. Wait for speech and native video
+    // before freezing this scene's text/vector; failed stages remain partial evidence.
+    const [audioUnit,videoUnit]=await Promise.all([
+      this.unitsService.getUnit(assetId,'audio_transcribe'),
+      this.unitsService.getUnit(assetId,'gemini_video'),
+    ]);
+    if([audioUnit,videoUnit].some(unit=>unit && ['waiting','active'].includes(unit.status))) {
+      await this.delayJob(job);
+    }
     const start = Number(unit?.start_s ?? envelope.segment?.start_s ?? 0);
     const end = Number(unit?.end_s ?? envelope.segment?.end_s ?? 0);
     const segId = `${assetId}_seg_${String(sceneId + 1).padStart(3, '0')}`;
@@ -1495,28 +1814,35 @@ export class IndexingProcessor extends WorkerHost {
       actions: string[];
       transcript_text: string;
       on_screen_text: string[];
+      sources: string[];
     }>(
-      `SELECT title, description, visual_objects, actions, transcript_text, on_screen_text
-       FROM media_segments WHERE id = $1`,
-      [segId],
+      `SELECT title, description, visual_objects, actions, transcript_text, on_screen_text, sources
+       FROM media_segments WHERE id = $1 AND user_id=$2`,
+      [segId,envelope.user_id],
     );
     const row = segRes.rows[0];
     const transRes = await this.db.query<{ raw_data: any }>(
       `SELECT raw_data FROM media_observations
        WHERE asset_id = $1 AND observation_type = 'transcript'
-         AND timestamp_start < $3 AND timestamp_end > $2`,
-      [assetId, start, end],
+         AND timestamp_start < $3 AND timestamp_end > $2 AND user_id=$4`,
+      [assetId, start, end,envelope.user_id],
     );
     const transcript = transRes.rows
       .map((r) => (typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data))
       .map((c) => (c?.text || '').trim())
       .filter(Boolean)
       .join(' ');
+    const nativeSegments:VideoAnalysis['segments']=videoUnit?.status==='completed' && Array.isArray(videoUnit.metadata?.analysis?.segments)
+      ? videoUnit.metadata.analysis.segments.filter((segment:VideoAnalysis['segments'][number])=>segment.start_time<end&&segment.end_time>start) : [];
+    const description=[...new Set([row?.description,...nativeSegments.map(s=>s.description)].filter(Boolean))].join(' ');
+    const objects=[...new Set([...(row?.visual_objects||[]),...nativeSegments.flatMap(s=>s.visual_objects||[])])];
+    const actions=[...new Set([...(row?.actions||[]),...nativeSegments.flatMap(s=>s.actions||[])])];
+    const sources=[...new Set([...(row?.sources||[]),...(nativeSegments.length?['video']:[]),...(transcript?['transcript']:[])])];
     const embeddingText = [
       row?.title,
-      row?.description,
-      (row?.visual_objects || []).join(', '),
-      (row?.actions || []).join(', '),
+      description,
+      objects.join(', '),
+      actions.join(', '),
       transcript || row?.transcript_text,
       (row?.on_screen_text || []).join(' '),
     ]
@@ -1524,7 +1850,7 @@ export class IndexingProcessor extends WorkerHost {
       .join('. ');
     try {
       const embedded = await this.mergerService.generateEmbeddingForText(
-        embeddingText || `Scene ${sceneId} ${start}s-${end}s`,
+        embeddingText || `Scene ${sceneId} ${start}s-${end}s`,envelope.user_id,
       );
       const dim = embedded.values.length;
       const embeddingStr = `[${embedded.values.join(',')}]`;
@@ -1534,9 +1860,10 @@ export class IndexingProcessor extends WorkerHost {
            SET embedding = CASE WHEN $2 = 3072 THEN $1::vector ELSE embedding END,
                embedding_384 = CASE WHEN $2 = 384 THEN $1::vector ELSE embedding_384 END,
                embedding_dim = $2,
-               transcript_text = COALESCE(NULLIF($3, ''), transcript_text)
-           WHERE id = $4`,
-          [embeddingStr, dim, transcript, segId],
+               transcript_text = COALESCE(NULLIF($3, ''), transcript_text),
+               description=$5,visual_objects=$6,actions=$7,sources=$8
+           WHERE id = $4 AND user_id=$9`,
+          [embeddingStr, dim, transcript, segId,description,objects,actions,sources,envelope.user_id],
         );
       }
       await this.unitsService.markUnitCompleted(assetId, unitId, {
@@ -1569,6 +1896,9 @@ export class IndexingProcessor extends WorkerHost {
       [assetId],
     );
     await this.unitsService.markUnitCompleted(assetId, 'finalize');
+    if (this.configService.get('INDEX_BUDGET_PLAN_ENABLED', 'false') === 'true') {
+      new AiUsageLedger(this.configService).releasePlan(`${envelope.user_id}/${assetId}`);
+    }
     await this.db.query(
       `UPDATE media_assets
        SET status = $1, stage = $2, progress = 100,
@@ -1586,6 +1916,12 @@ export class IndexingProcessor extends WorkerHost {
     );
     await this.completeUnitJob(job);
     this.logger.log(`[F2] Finalized asset ${assetId} as ${finalStatus}`);
+  }
+
+  private useAiTranscription():boolean {
+    const provider=this.configService.get('TRANSCRIPTION_PROVIDER','whisper');
+    if(!['whisper','ai'].includes(provider))throw new Error('TRANSCRIPTION_PROVIDER must be whisper or ai');
+    return provider==='ai';
   }
 
   private async persistTranscriptObservations(
@@ -1628,11 +1964,11 @@ export class IndexingProcessor extends WorkerHost {
       `INSERT INTO media_segments (
          id, asset_id, user_id, start_time, end_time, title, description,
          visual_objects, actions, transcript_text, on_screen_text,
-         keyframe_path, sources, analysis_version, keyframe_paths
+         keyframe_path, sources, analysis_version, keyframe_paths, provider, model
        ) VALUES (
          $1, $2, $3, $4, $5, $6, $7,
          $8, $9, $10, $11,
-         $12, $13, $14, $15::jsonb
+         $12, $13, $14, $15::jsonb, $16, $17
        )
        ON CONFLICT (id) DO UPDATE SET
          description = EXCLUDED.description,
@@ -1640,7 +1976,8 @@ export class IndexingProcessor extends WorkerHost {
          actions = EXCLUDED.actions,
          on_screen_text = EXCLUDED.on_screen_text,
          keyframe_path = EXCLUDED.keyframe_path,
-         keyframe_paths = EXCLUDED.keyframe_paths`,
+         keyframe_paths = EXCLUDED.keyframe_paths,
+         provider = EXCLUDED.provider, model = EXCLUDED.model`,
       [
         segmentId,
         assetId,
@@ -1663,6 +2000,8 @@ export class IndexingProcessor extends WorkerHost {
             data: (kf as { data?: string }).data,
           })),
         ),
+        primary?.provider || 'unknown',
+        primary?.model || 'unknown',
       ],
     );
 
@@ -1919,7 +2258,7 @@ export class IndexingProcessor extends WorkerHost {
           s.transcript_text,
           s.on_screen_text,
           s.keyframe_path,
-          s.keyframe_paths,
+          typeof s.keyframe_paths==='string'?s.keyframe_paths:JSON.stringify(s.keyframe_paths||[]),
           s.sources,
           s.provider,
           s.model,

@@ -1,0 +1,14 @@
+{
+  "date": "2026-11-01",
+  "status": "passed",
+  "checks": {
+    "forcedOAuthRefreshPersisted": true,
+    "realTimerTriggeredDiscovery": true,
+    "incrementalPollDoesNotDuplicateEnqueue": true
+  },
+  "scope": "Real OAuth refresh and 10-second production poller timer on one temporary cloned connector; enqueue captured, no worker/inference or Google writes",
+  "limitations": [
+    "Single-account smoke test; not multi-account load, queue throughput or production deployment validation."
+  ],
+  "cleanup": "Temporary connector and discovered asset rows removed; production polling remains disabled."
+}

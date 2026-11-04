@@ -98,6 +98,16 @@ describe('Drive Sync Correctness Seam (Phase F0)', () => {
     expect(mockIndexingService.enqueueAsset).not.toHaveBeenCalled();
   });
 
+  it('retries a failed asset on manual sync even when its checksum is unchanged', async () => {
+    mockDb.query.mockResolvedValue({rows:[]});
+    mockDb.query.mockResolvedValueOnce({rows:[{provider:'google_drive',selected_folders:[{id:'f_1',name:'Videos'}]}]})
+      .mockResolvedValueOnce({rows:[{provider:'google_drive',encrypted_tokens:'encrypted'}]})
+      .mockResolvedValueOnce({rows:[{id:'failed_asset',status:'failed',checksum:'same',original_filename:'video.mp4',original_path:'f_1'}]});
+    mockRegistry.get().listAssets.mockResolvedValueOnce({assets:[{remoteId:'file',name:'video.mp4',size:1000,md5Checksum:'same',path:'f_1'}]});
+    const result=await service.syncAccount('account','owner');
+    expect(result.queued).toBe(1);expect(mockIndexingService.enqueueAsset).toHaveBeenCalledWith(expect.objectContaining({assetId:'failed_asset',forceReindex:true}));
+  });
+
   it('updates filename/path when asset is renamed/moved without re-indexing', async () => {
     mockDb.query
       // 1. Account info
@@ -222,5 +232,18 @@ describe('Drive Sync Correctness Seam (Phase F0)', () => {
       call[0]?.includes('FROM media_assets') && call[0]?.includes("availability != 'offline'"),
     );
     expect(missingAssetsQuery[0]).not.toContain('original_path = ANY');
+  });
+  it('invalidates old preparation/analysis checkpoints when a full sync finds changed content', async () => {
+    mockDb.query.mockResolvedValue({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ provider: 'google_drive', selected_folders: [{ id: 'folder' }] }] })
+      .mockResolvedValueOnce({ rows: [{ provider: 'google_drive', encrypted_tokens: 'encrypted' }] })
+      .mockResolvedValueOnce({ rows: [{ id: 'asset', status: 'indexed', checksum: 'old-checksum',
+        original_filename: 'video.mp4', original_path: 'folder', drive_modified_time: new Date('2026-01-01T00:00:00Z') }] });
+    mockRegistry.get().listAssets.mockResolvedValueOnce({ assets: [{ remoteId: 'file', name: 'video.mp4',
+      path: 'folder', size: 1000, md5Checksum: 'new-checksum', modifiedTime: new Date('2026-06-01T00:00:00Z') }] });
+    await service.syncAccount('account', 'owner');
+    expect(mockIndexingService.enqueueAsset).toHaveBeenCalledWith(expect.objectContaining({
+      assetId: 'asset', forceReindex: true, checksum: 'new-checksum',
+    }));
   });
 });

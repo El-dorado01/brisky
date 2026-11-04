@@ -8,10 +8,12 @@ import { ConnectorsService } from './connectors.service';
 import { ConnectorsController } from './connectors.controller';
 import { ConnectorRegistry } from './connector.registry';
 import { ConnectorPollerService } from './connector-poller.service';
+import { SaasConnectorsController } from './saas-connectors.controller';
+import { SaasSessionGuard } from '../conversation/saas-session.guard';
 
 @Module({
   imports: [DatabaseModule, forwardRef(() => QueueModule)],
-  controllers: [ConnectorsController],
+  controllers: [ConnectorsController,SaasConnectorsController],
   providers: [
     ConnectorRegistry,
     UploadConnector,
@@ -19,6 +21,7 @@ import { ConnectorPollerService } from './connector-poller.service';
     TokenCryptoService,
     ConnectorsService,
     ConnectorPollerService,
+    SaasSessionGuard,
   ],
   exports: [
     ConnectorRegistry,

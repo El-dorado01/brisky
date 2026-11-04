@@ -1,0 +1,29 @@
+{
+  "date": "2026-11-01",
+  "contribution": "Space manual tagging modal presentation and interaction refinement",
+  "status": "isolated_component_browser_checks_passed",
+  "webTypeScript": "passed",
+  "targetedLint": "passed",
+  "viewports": ["1280x844", "390x844", "375x667"],
+  "frameAspects": ["landscape", "portrait"],
+  "checks": [
+    "Header and action footer remain inside viewport",
+    "No horizontal overflow",
+    "Selection surface matches displayed image dimensions",
+    "Pointer drawing, manual save and undo",
+    "Suggested box acceptance creates no tag before a second Teach action",
+    "Saved coordinates equal accepted box",
+    "Feedback scrolls above pinned footer on small phones",
+    "Success confirmation and undo remain available"
+  ],
+  "fixture": "Actual TagPerson and ConnectorDialog components in a temporary Next.js preview; generated vector frame placeholders and intercepted API responses",
+  "limitations": [
+    "Full Space integration encountered session lookup timeouts during cold local compilation and was not revalidated for this redesign.",
+    "Screenshots use temporary local font fallback rather than verifying Google font delivery.",
+    "No real-face recognition, physical-device touch or accuracy evaluation is claimed.",
+    "Backend behavior was not changed by this redesign."
+  ],
+  "temporaryPreviewRouteRemoved": true,
+  "paidInferenceCalls": 0,
+  "personalMediaUsed": false
+}

@@ -11,7 +11,7 @@ export class AuthController {
     if (!body?.email || !body?.password) {
       throw new BadRequestException('Email and password are required');
     }
-    return this.authService.register(body.email, body.password, body.name || '');
+    return this.authService.register(body.email, body.password, body.name ?? '');
   }
 
   @Post('login')

@@ -1,0 +1,25 @@
+{
+  "date": "2026-11-01",
+  "status": "passed",
+  "scope": "Actual Next/engine/PostgreSQL with isolated temporary users and generated blue MP4, no recognition, personal footage or model calls",
+  "checks": [
+    "Button-label hover animates Hugeicon without touching icon",
+    "Empty directory without sample profiles",
+    "Create person and aliases through UI",
+    "Profile survives reload",
+    "Draw face box on paused frame",
+    "Save correct frame, range and normalized box",
+    "Undo tag",
+    "Review and remove saved tag",
+    "Confirm profile deletion",
+    "Mobile drawer and desktop modal bounds",
+    "Unauthenticated request denied",
+    "Cross-owner deletion denied",
+    "Cross-origin mutation denied"
+  ],
+  "screenshots": [
+    390,
+    1280
+  ],
+  "cleanup": "Temporary users and generated clip removed"
+}

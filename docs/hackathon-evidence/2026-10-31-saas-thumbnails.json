@@ -1,0 +1,26 @@
+{
+  "date": "2026-10-31",
+  "scope": "Actual Next.js/engine/PostgreSQL and local Chrome with generated red/blue MP4; no inference, workers, cloud media or personal footage",
+  "status": "passed",
+  "checks": [
+    "HEAD metadata with no body",
+    "Exact 32-byte range and 416 handling",
+    "Wrong Space/moment association denied",
+    "Unauthenticated engine and SaaS requests denied",
+    "Other authenticated owner denied by both SaaS and engine",
+    "Citation opens source inspector",
+    "Distinct red/blue thumbnails from separate ranges of the same source",
+    "640x440 JPEG and object-cover in the existing 16:11 card",
+    "Cached thumbnail bytes reused",
+    "Thumbnail denies cross-owner and unauthenticated access",
+    "Video seeks to 10 seconds",
+    "Playback pauses at 12 seconds",
+    "Seeking before saved range clamps to 10 seconds"
+  ],
+  "stoppedAtS": 12,
+  "screenshots": [
+    390,
+    1280
+  ],
+  "cleanup": "Temporary user cascades and generated MP4 removed in finally"
+}
