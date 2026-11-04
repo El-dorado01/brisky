@@ -42,6 +42,16 @@ describe('AI budget ledger', () => {
     ledger.releasePlan('asset');
     expect(()=>ledger.restorePlanForRetry('asset')).toThrow('complete file plan');
   });
+  it('reserves only the measured remaining calls on a video-only retry',()=>{
+    config.set('AI_BUDGET_USD',0.6);
+    const ledger=new AiUsageLedger(config);
+    ledger.reservePlan('google','test-model',6,'asset');
+    withAiBudgetPlan('asset',()=>ledger.reserve('google','test-model','frame','unknown'));
+    ledger.releasePlan('asset');
+    config.set('AI_BUDGET_USD',0.3);
+    expect(ledger.restorePlanForRetry('asset',2)).toBe(true);
+    expect(read(file).filter(e=>e.event==='plan_reserved').at(-1).attempt.reservedUsd).toBeCloseTo(.2);
+  });
 
   it('shares reservations across service instances and restarts', () => {
     new AiUsageLedger(config).reserve('google', 'test-model', 'search', 'one');

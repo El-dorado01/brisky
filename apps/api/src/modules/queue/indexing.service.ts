@@ -24,6 +24,7 @@ import { DatabaseService } from '../database/database.service';
 import { FactorySchedulerService } from './factory-scheduler.service';
 import { ProcessingUnitsService } from '../pipeline/processing-units.service';
 import { AiUsageLedger } from '../pipeline/ai-usage-ledger';
+import { planVideoChunks } from '../pipeline/video-chunks';
 import {
   FactoryJobEnvelope,
   IndexingJobData,
@@ -581,11 +582,12 @@ export class IndexingService implements OnApplicationBootstrap, OnModuleDestroy 
       original_filename: string;
       checksum: string;
       file_size: number;
+      duration?: number;
       source_type?: string;
       connector_account_id?: string;
       external_file_id?: string;
     }>(
-      `SELECT id, original_path, original_filename, checksum, file_size, source_type, connector_account_id, external_file_id
+      `SELECT id, original_path, original_filename, checksum, file_size, duration, source_type, connector_account_id, external_file_id
        FROM media_assets
        WHERE id = $1 AND user_id = $2`,
       [assetId, userId],
@@ -616,12 +618,22 @@ export class IndexingService implements OnApplicationBootstrap, OnModuleDestroy 
       }
     }
 
+    const failedUnits = this.unitsService ? await this.unitsService.getFailedUnits(assetId) : [];
     let retryPlanReady = true;
     if (this.configService.get('INDEX_BUDGET_PLAN_ENABLED', 'false') === 'true') {
       const live = await this.db.query(`SELECT 1 FROM indexing_jobs WHERE asset_id=$1 AND user_id=$2
         AND (status='active' OR (status='waiting' AND job_type NOT IN ('embed','finalize_asset'))) LIMIT 1`, [assetId,userId]);
       if (live.rows.length) throw new ConflictException('This file still has queued or active work. Wait for it to finish before retrying.');
-      retryPlanReady = new AiUsageLedger(this.configService).restorePlanForRetry(`${userId}/${assetId}`);
+      const ledger = new AiUsageLedger(this.configService);
+      if (failedUnits.length===1 && failedUnits[0].unit_type==='gemini_video' && Number(row.duration)>0) {
+        const provider=this.configService.get('AI_PROVIDER','google');
+        const calls=provider==='google'?1:planVideoChunks(Number(row.duration),Number(row.file_size),
+          Number(this.configService.get(provider==='baseten'?'BASETEN_MAX_MEDIA_BYTES':'META_MAX_MEDIA_BYTES',provider==='baseten'?70*1024*1024:50_000_000)),
+          Number(this.configService.get('AI_VIDEO_CHUNK_SECONDS',90))).length;
+        const multiplier=Number(this.configService.get('INDEX_PLAN_ATTEMPTS_PER_CALL',2));
+        if(!Number.isInteger(multiplier)||multiplier<1||multiplier>3)throw new BadRequestException('Invalid indexing retry allowance');
+        retryPlanReady=ledger.restorePlanForRetry(`${userId}/${assetId}`,calls*multiplier);
+      } else retryPlanReady=ledger.restorePlanForRetry(`${userId}/${assetId}`);
     }
 
     await this.db.query(
@@ -640,10 +652,6 @@ export class IndexingService implements OnApplicationBootstrap, OnModuleDestroy 
       checksum: row.checksum,
       fileSize: Number(row.file_size || 0),
     };
-
-    const failedUnits = this.unitsService
-      ? await this.unitsService.getFailedUnits(assetId)
-      : [];
 
     if (failedUnits.length > 0 && this.unitsService) {
       await this.unitsService.resetFailedUnits(assetId);
@@ -683,7 +691,9 @@ export class IndexingService implements OnApplicationBootstrap, OnModuleDestroy 
       return true;
     }
 
-    if (this.unitsService) {
+    const prepared = await this.unitsService?.getUnit?.(assetId,'source_preparation');
+    const preservePreparation = prepared?.status === 'completed';
+    if (this.unitsService && !preservePreparation) {
       await this.unitsService.resetAssetUnits(assetId);
     }
 
@@ -693,7 +703,7 @@ export class IndexingService implements OnApplicationBootstrap, OnModuleDestroy 
       user_id: userId,
       source,
       priority: 'normal',
-      processing_config: { forceReindex: true },
+      processing_config: { forceReindex: !preservePreparation },
     });
 
     return true;

@@ -1352,9 +1352,17 @@ export class IndexingProcessor extends WorkerHost {
       };
 
       // Stage 1: Probe Metadata
-      const metadata = await mark('probe_metadata', 8, () =>
-        this.recoverStreamedScenes(() => this.ffmpegPipeline.probeMetadata(effectiveSourcePath), downloadRecoverySource, Boolean(streamedSource)),
-      );
+      const preparation = streamedSource ? await this.unitsService.getUnit(assetId, 'source_preparation') : null;
+      const metadata = await mark('probe_metadata', 8, async () => {
+        if(preparation?.status==='completed' && streamedVersion && preparation.metadata?.sourceVersion===streamedVersion){
+          await streamedSource!.validate();
+          const stored=(await this.db.query(`SELECT duration,width,height,fps,codec,has_audio FROM media_assets WHERE id=$1 AND user_id=$2`,[assetId,userId])).rows[0];
+          if(stored && ['duration','width','height','fps'].every(key=>Number.isFinite(Number(stored[key]))&&Number(stored[key])>0)
+            && typeof stored.codec==='string' && stored.codec && typeof stored.has_audio==='boolean')
+            return {duration:Number(stored.duration),width:Number(stored.width),height:Number(stored.height),fps:Number(stored.fps),codec:stored.codec,hasAudio:stored.has_audio,bitrate:0};
+        }
+        return this.recoverStreamedScenes(() => this.ffmpegPipeline.probeMetadata(effectiveSourcePath), downloadRecoverySource, Boolean(streamedSource));
+      });
 
       await this.db.query(
         `UPDATE media_assets
@@ -1379,7 +1387,6 @@ export class IndexingProcessor extends WorkerHost {
       const policy = this.preparationPolicy();
       const fingerprint = createHash('sha256').update(JSON.stringify([provider, remoteId, connectorAccountId,
         streamedVersion, fileSize, metadata.duration, policy])).digest('hex');
-      const preparation = streamedSource ? await this.unitsService.getUnit(assetId, 'source_preparation') : null;
       if (preparation && preparation.metadata?.fingerprint !== fingerprint) {
         throw new Error('Source or preparation settings changed; reindex is required before reusing checkpoints');
       }
@@ -1480,7 +1487,11 @@ export class IndexingProcessor extends WorkerHost {
       await this.db.query(`UPDATE media_assets SET proxy_status = $1 WHERE id = $2`, [proxyStatus, assetId]);
 
       await mark('ffmpeg_outputs', 28, async () => {
-        await this.ffmpegPipeline.generateThumbnail(
+        const preparedFrame = [...(scenes[0]?.keyframes || [])].sort((a,b)=>
+          Math.abs(a.timestamp-(scenes[0]?.representativeTimestamp||0))-Math.abs(b.timestamp-(scenes[0]?.representativeTimestamp||0)))
+          .map(frame=>resolveStorageLocator(frame.path,this.storageRoot)).find(file=>file && fs.existsSync(file) && fs.statSync(file).size>0);
+        if(preparedFrame) await fs.promises.copyFile(preparedFrame,thumbnailPath);
+        else await this.ffmpegPipeline.generateThumbnail(
           effectiveSourcePath,
           thumbnailPath,
           scenes[0]?.representativeTimestamp || 1,

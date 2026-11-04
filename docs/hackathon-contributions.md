@@ -1807,3 +1807,27 @@ version checks remain strict. A fake-clock test completed an actual temporary
 stream/file after 31 seconds; 21 relevant tests and compilation passed. The
 PostgreSQL failure-status cast correction is included in the same worker build.
 Actual Drive transfer completion remains a live check, not established by this test.
+
+### Offline fonts, video deadlines and measured retry admission (November 4)
+
+The existing five UI font families are now bundled with original SIL licences
+and loaded through next/font/local. This is event-period reliability packaging,
+not newly designed typography or font assets. All six font files returned HTTP
+200 from the running web app; web TypeScript passed. No Google Fonts build fetch
+is required by app layouts.
+
+Full-video Meta requests now have a separate bounded 180-second default deadline
+(META_VIDEO_REQUEST_TIMEOUT_MS, maximum 240000), while text/frame requests retain
+their configured deadline. Timeout errors say REQUEST_TIMEOUT rather than DOM
+error code 23. A video-only retry reserves only its measured remaining windows
+and configured retry allowance, retaining old charges and unknown outcomes. It
+no longer re-reserves completed frame/transcript work and needlessly blocks another
+file. The $50 owner ceiling remains unchanged.
+
+Admission-failure retries preserve completed source preparation. With an unchanged
+versioned source, the worker reuses valid stored probe metadata and durable scenes;
+source fingerprints/settings remain checked. Thumbnails use the nearest prepared
+frame when available instead of reopening the cloud video merely for that image.
+86 focused regression tests and compilation passed; live completion remains to be
+checked separately after deployment. PART_2 has 5 prepared scenes/105 frames and
+had stopped at plan admission; the training-field file needs video analysis only.

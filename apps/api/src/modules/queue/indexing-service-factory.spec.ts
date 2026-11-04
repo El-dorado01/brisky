@@ -166,6 +166,30 @@ describe('IndexingService with MediaFactory (Phase F7 Seam 1)', () => {
 });
 
 describe('IndexingService F2 failed-unit retry', () => {
+  it('retains completed source preparation when retrying an admission failure',async()=>{
+    const row={id:'asset',original_filename:'video.mp4',file_size:10,source_type:'google_drive',connector_account_id:'account',external_file_id:'remote'};
+    const db:any={query:jest.fn(async(sql:string)=>({rows:sql.includes('FROM media_assets')?[row]:[]}))};
+    const config:any={get:(_key:string,def:any)=>def};
+    const units:any={getFailedUnits:jest.fn().mockResolvedValue([]),getUnit:jest.fn().mockResolvedValue({status:'completed'}),resetAssetUnits:jest.fn()};
+    const service=new IndexingService({} as any,db,config,undefined,{} as any,units);
+    const enqueue=jest.spyOn(service,'enqueueAsset').mockResolvedValue('retry');
+    await service.retryAsset('asset','owner');
+    expect(units.resetAssetUnits).not.toHaveBeenCalled();
+    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({job_type:'plan_asset',processing_config:{forceReindex:false}}));
+  });
+  it('budgets only the remaining video calls instead of completed frame/transcript work',async()=>{
+    const renew=jest.spyOn(AiUsageLedger.prototype,'restorePlanForRetry').mockReturnValue(true);
+    try {
+      const row={id:'asset',original_filename:'video.mp4',file_size:12000000,duration:53,source_type:'google_drive',connector_account_id:'account',external_file_id:'remote'};
+      const db:any={query:jest.fn(async(sql:string)=>({rows:sql.includes('FROM media_assets')?[row]:[]}))};
+      const config:any={get:(key:string,def:any)=>({INDEX_BUDGET_PLAN_ENABLED:'true',AI_PROVIDER:'meta'}[key]??def)};
+      const units:any={getFailedUnits:jest.fn().mockResolvedValue([{unit_id:'gemini_video',unit_type:'gemini_video'}]),resetFailedUnits:jest.fn()};
+      const service=new IndexingService({} as any,db,config,undefined,{} as any,units);
+      jest.spyOn(service,'enqueueAsset').mockResolvedValue('retry');
+      await service.retryAsset('asset','owner');
+      expect(renew).toHaveBeenCalledWith('owner/asset',2);
+    } finally {renew.mockRestore();}
+  });
   it.each([false,true])('re-enqueues only failed units and leaves completed work in place (controlled=%s)', async controlled => {
     const renew=jest.spyOn(AiUsageLedger.prototype,'restorePlanForRetry').mockReturnValue(true);
     try {

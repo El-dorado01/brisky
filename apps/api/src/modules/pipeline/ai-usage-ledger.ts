@@ -101,7 +101,7 @@ export class AiUsageLedger {
     });
   }
 
-  restorePlanForRetry(key: string): boolean {
+  restorePlanForRetry(key: string, attempts?: number): boolean {
     const previous = this.locked(entries => {
       const plans = entries.filter(e => e.event === 'plan_reserved' && e.attempt.requestId === key);
       return plans.length ? plans[plans.length - 1].attempt : null;
@@ -111,7 +111,7 @@ export class AiUsageLedger {
     // Preserve every old charge/unknown hold. A retry needs a fresh admission
     // from the same cumulative ceiling, never a reset of the old journal.
     this.releasePlan(key);
-    this.reservePlan(plan.provider, plan.model, Math.round(plan.reservedUsd / plan.price.reservationUsd), key, plan.allowedModels);
+    this.reservePlan(plan.provider, plan.model, attempts ?? Math.round(plan.reservedUsd / plan.price.reservationUsd), key, plan.allowedModels);
     return true;
   }
 

@@ -132,6 +132,8 @@ describe('dormant Meta adapter (offline transport fixtures only)', () => {
     expect(result.observations[0]).toMatchObject({provider:'meta',modelVersion:'fixture-snapshot',onScreenText:['EXIT']});
   });
   it('analyzes native video without relabelling sparse frames as full video', async () => {
+    const timeout=jest.spyOn(AbortSignal,'timeout');
+    try {
     fetcher.mockResolvedValueOnce(response({video_summary:'A car passes',key_themes:['travel'],segments:[{
       start_time:0,end_time:10,title:'Car',description:'A car passes',visual_objects:['car'],actions:['driving'],dialogue:''}]}));
     const result=await make().analyzeVideo(fixture('video.mp4'));
@@ -140,6 +142,8 @@ describe('dormant Meta adapter (offline transport fixtures only)', () => {
     const content=JSON.parse(fetcher.mock.calls[0][1].body).messages[1].content;
     expect(content[1].type).toBe('video_url');
     expect(content[1].video_url.url).toMatch(/^data:video\/mp4;base64,/);
+    expect(timeout).toHaveBeenCalledWith(180000);
+    } finally {timeout.mockRestore();}
   });
   it('converts native clip time to source time exactly once', async () => {
     fetcher.mockResolvedValueOnce(response({...verification,matchedTimestamp:2.125}));

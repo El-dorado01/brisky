@@ -1,19 +1,9 @@
-import { DM_Sans, Love_Ya_Like_A_Sister } from "next/font/google";
+import { dmSans, loveYa } from "../fonts";
 import { VoiceConversation } from '@/components/search/VoiceConversation';
 import { Sidebar } from "@/components/dashboard/Sidebar";
 import { SpacesProvider } from "@/lib/spaces-context";
 import { AuthThemeEnforcer } from "@/components/auth/AuthThemeEnforcer";
 
-const dmSans = DM_Sans({
-  subsets: ["latin"],
-  variable: "--font-dm-sans",
-});
-
-const loveYa = Love_Ya_Like_A_Sister({
-  subsets: ["latin"],
-  weight: "400",
-  variable: "--font-logo",
-});
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (

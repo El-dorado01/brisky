@@ -64,7 +64,9 @@ export class MetaTransport {
         throw new Error('Baseten text exceeds the configured byte bound');
       }
       if (Buffer.byteLength(payload) > maxBytes) throw new Error('Meta request exceeds the configured byte bound');
-      const timeout = AbortSignal.timeout(this.boundedSetting('META_REQUEST_TIMEOUT_MS',30000,240000));
+      const timeout = AbortSignal.timeout(stage==='video_analysis'
+        ? this.boundedSetting('META_VIDEO_REQUEST_TIMEOUT_MS',180000,240000)
+        : this.boundedSetting('META_REQUEST_TIMEOUT_MS',30000,240000));
       const parent = searchSignal();
       const signal = parent ? AbortSignal.any([parent,timeout]) : timeout;
       const attempt = this.ledger.reserve(this.backend,model,stage,requestId);
@@ -102,7 +104,7 @@ export class MetaTransport {
         if (error instanceof AiBudgetError) throw error;
         if (error instanceof MetaResponseError && error.retryable && index+1<models.length) { await searchDelay(300); continue; }
         if (error instanceof MetaResponseError) throw error;
-        const code=String((error as any)?.cause?.code || (error as any)?.code || 'connection_or_timeout');
+        const code=timeout.aborted?'REQUEST_TIMEOUT':String((error as any)?.cause?.code || (error as any)?.code || 'connection_or_timeout');
         const safeCode=/^[A-Z_0-9]+$/.test(code)?code:'connection_or_timeout';
         if (index+1<models.length) { await searchDelay(300); continue; }
         throw new MetaResponseError('temporary',`Meta request failed (${safeCode}); no response evidence available`,true);
