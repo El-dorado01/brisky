@@ -45,3 +45,7 @@ and previews use local Meta MMS; Gemini acknowledgement files are not requested.
 See [Meta voice setup](../../docs/meta-mms-voice.md), [voice scope](../../docs/saas-voice.md)
 and `node scripts/generate-voice-acknowledgements.cjs` from the root for an offline
 missing-asset report; generation requires explicit bounded options.
+
+For a fresh database, start the API first and wait for schema initialization, then
+run `pnpm auth:migrate` from this directory before the first email login. The
+engine/workspace migration does not create the separate email-code tables.

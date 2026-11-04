@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import { createSpaces } from '../server/spaces-core';
@@ -18,7 +19,7 @@ async function main(){
   try{
     await pool.query(`CREATE SCHEMA ${schema}`);
     await pool.query(`CREATE TABLE ${schema}.users(id uuid PRIMARY KEY); CREATE TABLE ${schema}.media_assets(id varchar(64) PRIMARY KEY,user_id uuid REFERENCES ${schema}.users(id),duration double precision,original_filename text,source_type text)`);
-    const sql=rewrite(fs.readFileSync('../apps/api/src/modules/database/saas-schema.sql','utf8'));
+    const sql=rewrite(fs.readFileSync(path.resolve(__dirname,'../../api/src/modules/database/saas-schema.sql'),'utf8'));
     await pool.query(sql);await pool.query(sql);
     await pool.query(`INSERT INTO ${schema}.users(id) VALUES($1),($2)`,[owner,other]);
     await pool.query(`INSERT INTO ${schema}.media_assets(id,user_id,duration,original_filename,source_type) VALUES('owned',$1,100,'fixture.mp4','upload'),('foreign',$2,100,'private.mp4','upload')`,[owner,other]);
