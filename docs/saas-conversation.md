@@ -177,3 +177,20 @@ Response actions appear below each assistant response: Copy, browser read-aloud/
 and Open cited moments when present. Copy/speech failure states are visible. These
 do not regenerate historical replies or persist feedback votes; failed-reply retry
 remains the existing separate control.
+
+## Remembered details and search scope (November 4)
+
+A relative clause such as ?a lady that throws something at a hippo? must not
+restrict collection search to an old selected clip. Explicit source references
+and conversational pronouns still support within-video follow-ups. Collection,
+archive, across and all-clips requests remove that implicit source filter.
+
+For imperfect recollection, retrieved evidence retains its exact-query rejection
+or uncertainty. The answer may offer one distinctive supported alternative and
+name the missing detail; it must not claim an exact/verified match, infer private
+identity or silently relax explicit exclusions. Throwing and catching use video
+evidence. This is shared engine behavior, independent of selected AI provider.
+
+Validation: 48 targeted tests; live Meta hippo query returned a qualified
+watermelon/hippo citation instead of the unrelated prior source. This does not
+establish correctness for arbitrary reasoning tasks or exhaustive search recall.

@@ -25,8 +25,10 @@ export function validateConversation(raw:unknown):ConversationRequest {
 export function followupSource(input:ConversationRequest):string|undefined {
   const latest=input.history.at(-1)!.content;
   const ids=[...new Set(input.selection.map(s=>s.assetId))];
-  if(requestsNewLibraryMoment(latest)||input.history.length<3||ids.length!==1||/\b(other|another|elsewhere|library|archive|all videos)\b/i.test(latest))return undefined;
-  return /\b(the two|those two|they|them|this|that|same|it|video|clip)\b/i.test(latest)?ids[0]:undefined;
+  if(requestsNewLibraryMoment(latest)||input.history.length<3||ids.length!==1||/\b(other|another|elsewhere|library|archive|collection|across|all (?:my )?(?:videos|clips|recordings))\b/i.test(latest))return undefined;
+  // A relative clause ("a lady that throws...") does not refer to the old clip.
+  // Require an actual anaphor or an explicitly referenced source, not bare "that".
+  return /\b(the two|those two|they|them|it|(?:this|that|same) (?:video|clip|recording|scene)|(?:before|after|around|following) (?:this|that))\b/i.test(latest)?ids[0]:undefined;
 }
 /** A new described/quoted moment is not implicitly restricted to a previous result. */
 export function requestsNewLibraryMoment(text:string):boolean {
@@ -81,7 +83,10 @@ export class ConversationService {
         const search=await this.media.searchDetailed(plan.searchQuery,followupSource(input),12,userId,'verify',signal);
         // Search results may contain synthetic segment IDs. Re-read actual owned index rows
         // within their source ranges rather than persisting fabricated segment references.
-        const ranges=search.results.filter(r=>r.verificationStatus!=='not_matched').slice(0,12).map(r=>({assetId:r.assetId,startS:r.startTime,endS:r.endTime}));
+        // Keep assessments attached, including negative ones. A rejected exact
+        // description can still contain a useful, explicitly qualified near match.
+        // The grounded answer selects citations; these are not automatic matches.
+        const ranges=search.results.slice(0,12).map(r=>({assetId:r.assetId,startS:r.startTime,endS:r.endTime}));
         const retrieved=contextualSpaceEvidence(await this.evidence(userId,ranges),search.results);
         const combined=[...retrieved,...evidence];
         evidence=combined.filter((e,i)=>combined.findIndex(other=>other.assetId===e.assetId&&other.startS===e.startS&&other.endS===e.endS)===i).slice(0,20).map((e,i)=>({...e,id:`e${i+1}`}));

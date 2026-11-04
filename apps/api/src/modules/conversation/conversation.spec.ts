@@ -84,6 +84,35 @@ describe('Engine conversational orchestration',()=>{
     const f=fixture();await f.service.reply('owner',{history:[...history,{role:'assistant',content:'Found it'},{role:'user',content:'Find them in other videos'}],selection:[{assetId:'asset',startS:0,endS:20}]});
     expect(f.media.searchDetailed.mock.calls[0][1]).toBeUndefined();
   });
+  it.each([
+    'a lady that throws something at a hippo, can you find that moment for me?',
+    'Find a man that drops his phone',
+    'Find the video of a hippo catching fruit',
+    'Can you find them elsewhere in my collection?',
+  ])('does not mistake a new description for a selected-source reference: %s',async query=>{
+    const input={history:[{role:'user' as const,content:'Find outdoor training'},
+      {role:'assistant' as const,content:'Found the training field.'},{role:'user' as const,content:query}],
+      selection:[{assetId:'asset',startS:0,endS:20}]};
+    expect(followupSource(input)).toBeUndefined();
+    const f=fixture();await f.service.reply('owner',input);
+    expect(f.media.searchDetailed.mock.calls[0][1]).toBeUndefined();
+  });
+  it.each(['Find it in this clip','Find where those two hug','What happens after that?'])(
+    'preserves genuine references to the selected source: %s',query=>{
+      expect(followupSource({history:[...history,{role:'assistant',content:'Found this clip.'},{role:'user',content:query}],
+        selection:[{assetId:'asset',startS:0,endS:20}]})).toBe('asset');
+    });
+  it('retains an exact-match rejection for a qualified alternative without changing its assessment',async()=>{
+    const f=fixture();
+    f.media.searchDetailed.mockResolvedValue({results:[{assetId:'asset',startTime:10,endTime:20,
+      verificationStatus:'not_matched',verificationExplanation:'Hippo catches thrown fruit; thrower is not visible.'}],searchStatus:'complete'} as any);
+    await f.service.reply('owner',{history,selection:[]});
+    const answer=f.ai.spaceConversation.mock.calls[1][0] as SpaceAiInput;
+    expect(answer.evidence[0].status).toBe('indexed');
+    expect(answer.evidence[0].queryChecks?.[0]).toMatchObject({status:'not_matched',explanation:'Hippo catches thrown fruit; thrower is not visible.'});
+    expect(spaceConversationPrompt(answer)).toContain('explicitly naming the missing or different detail');
+    expect(spaceConversationPrompt(answer)).toContain('Respect explicit exclusions');
+  });
   it('narrates the full indexed timeline with original duration instead of just the cited excerpt',async()=>{
     const f=fixture();f.db.query.mockReset().mockResolvedValueOnce({rowCount:1,rows:[{id:'asset',duration:53,original_filename:'source.mp4'}]}).mockResolvedValueOnce({rows:[row]}).mockResolvedValueOnce({rows:[{...row,start_time:0,end_time:20},{...row,id:'seg2',start_time:20,end_time:53,range_frames:[{time:26,description:'The two briefly hug'}]}]});
     f.ai.spaceConversation.mockReset().mockResolvedValue(supported);

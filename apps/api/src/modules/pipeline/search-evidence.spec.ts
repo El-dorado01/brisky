@@ -43,6 +43,9 @@ describe('bounded search evidence', () => {
     evidence!.cleanup();
     expect(fs.existsSync(directory)).toBe(false);
   });
+  it.each(['throws fruit at a hippo','a watermelon was thrown','she tossed something','a hippo catches fruit','the animal caught it','feeding a hippo'])('uses moving video for %s',query=>{
+    expect(evidenceMode(query,false)).toBe('sequence');
+  });
   it('extracts the actual source interval for temporal verification', async () => {
     const evidence = await service.prepare(source, 'preview', 100, 110, 'sequence');
     expect(ffmpeg.extractClip).toHaveBeenCalledWith(source, evidence!.clipPath, 100, 110);

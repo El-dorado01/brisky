@@ -9,7 +9,7 @@ import { assertSearchActive } from '../../common/search-deadline';
 import { SeekableMediaSource } from './seekable-media-source';
 
 export function evidenceMode(query: string, detail: boolean): 'frames' | 'detail' | 'sequence' {
-  if (/\b(before|after|then|until|while|sequence|danc(?:e[sd]?|ing)|sways?|swaying|twirls?|twirling|hugs?|hugging|embraces?|embracing|kisses?|kissing|handshakes?|shakes? hands|hits?|hitting|strikes?|striking|taps?|tapping|kicks?|kicking|stretches?|stretching|puts?|putting|takes?|taking|into|out of|picks? up|picking up|without|except|not)\b/i.test(query)) return 'sequence';
+  if (/\b(before|after|then|until|while|sequence|throws?|throwing|threw|thrown|toss(?:es|ed|ing)?|catch(?:es|ing)?|caught|feeds?|feeding|fed|danc(?:e[sd]?|ing)|sways?|swaying|twirls?|twirling|hugs?|hugging|embraces?|embracing|kisses?|kissing|handshakes?|shakes? hands|hits?|hitting|strikes?|striking|taps?|tapping|kicks?|kicking|stretches?|stretching|puts?|putting|takes?|taking|into|out of|picks? up|picking up|without|except|not)\b/i.test(query)) return 'sequence';
   return detail ? 'detail' : 'frames';
 }
 
