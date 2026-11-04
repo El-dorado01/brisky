@@ -5,6 +5,7 @@ import { GoogleAiProvider } from './providers/google-ai.provider';
 import { AiIntelligenceProvider } from './ai-provider';
 import { MetaAiProvider } from './providers/meta-ai.provider';
 import { BasetenAiProvider } from './providers/baseten-ai.provider';
+import {assertMetaOnlyProfile,metaOnly,META_EMBEDDING_MODEL} from '../../common/meta-only-profile';
 
 /** Application-facing intelligence boundary. Provider SDK details stay in adapters. */
 @Injectable()
@@ -12,10 +13,11 @@ export class AiIntelligenceService {
   private readonly provider: AiIntelligenceProvider;
 
   constructor(config: ConfigService, ffmpeg: FfmpegPipelineService) {
+    assertMetaOnlyProfile(config);
     const name = config.get<string>('AI_PROVIDER', 'google');
     switch (name) {
       case 'google': this.provider = new GoogleAiProvider(config, ffmpeg); break;
-      case 'meta': this.provider = new MetaAiProvider(config, ffmpeg, new GoogleAiProvider(config, ffmpeg)); break;
+      case 'meta': this.provider = new MetaAiProvider(config, ffmpeg, metaOnly(config)?{getEmbeddingModel:()=>META_EMBEDDING_MODEL,generateEmbedding:async()=>{throw new Error('Use the isolated local Meta embedding service; no Google fallback is allowed');}}:new GoogleAiProvider(config, ffmpeg)); break;
       case 'baseten': this.provider = new BasetenAiProvider(config,ffmpeg,new GoogleAiProvider(config,ffmpeg));break;
       default: throw new Error(`Unsupported AI_PROVIDER '${name}': install an adapter before switching providers`);
     }

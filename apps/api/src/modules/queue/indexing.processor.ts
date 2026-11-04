@@ -2,6 +2,8 @@ import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job, DelayedError } from 'bullmq';
 import { ConfigService } from '@nestjs/config';
+import {metaEmbeddings,META_EMBEDDING_MODEL} from '../../common/meta-only-profile';
+import {metaEmbeddingText,metaEmbeddingHash} from '../pipeline/meta-embedding-text';
 import { recordFactoryStep,updateFactoryProgress } from './factory-telemetry';
 import { randomBytes, createHash } from 'crypto';
 import * as fs from 'fs';
@@ -1389,7 +1391,7 @@ export class IndexingProcessor extends WorkerHost {
         const localOwner = String(this.configService.get('LOCAL_EMBEDDING_USER_IDS', '')).split(/[,\s]+/).includes(userId);
         const provider=this.configService.get<string>('AI_PROVIDER');
         if (!['baseten','meta','google'].includes(provider || '') ||
-            (this.configService.get('EMBEDDING_PROVIDER') !== 'local' && !localOwner) ||
+            (!['local', 'meta-local'].includes(this.configService.get('EMBEDDING_PROVIDER', '')) && !localOwner) ||
             (metadata.hasAudio && !this.useAiTranscription() && !this.whisperService.isAvailable())) {
           throw new AiBudgetError('Controlled indexing requires a supported AI provider, local embeddings and the configured speech runtime');
         }
@@ -1859,11 +1861,14 @@ export class IndexingProcessor extends WorkerHost {
           `UPDATE media_segments
            SET embedding = CASE WHEN $2 = 3072 THEN $1::vector ELSE embedding END,
                embedding_384 = CASE WHEN $2 = 384 THEN $1::vector ELSE embedding_384 END,
+               embedding_meta_1024=CASE WHEN $2=1024 THEN $1::vector ELSE embedding_meta_1024 END,
+               meta_embedding_model=CASE WHEN $2=1024 THEN $10 ELSE meta_embedding_model END,
+               meta_embedding_input_hash=CASE WHEN $2=1024 THEN $11 ELSE meta_embedding_input_hash END,
                embedding_dim = $2,
                transcript_text = COALESCE(NULLIF($3, ''), transcript_text),
                description=$5,visual_objects=$6,actions=$7,sources=$8
            WHERE id = $4 AND user_id=$9`,
-          [embeddingStr, dim, transcript, segId,description,objects,actions,sources,envelope.user_id],
+          [embeddingStr, dim, transcript, segId,description,objects,actions,sources,envelope.user_id,META_EMBEDDING_MODEL,metaEmbeddingHash(embeddingText)],
         );
       }
       await this.unitsService.markUnitCompleted(assetId, unitId, {
@@ -2062,19 +2067,20 @@ export class IndexingProcessor extends WorkerHost {
         embeddingValues.length > 0 ? `[${embeddingValues.join(',')}]` : null;
       const is384 = dim === 384;
       const is3072 = dim === 3072;
+      const isMeta=dim===1024&&metaEmbeddings(this.configService);
 
       await this.db.query(
         `INSERT INTO media_segments (
            id, asset_id, user_id, start_time, end_time, title, description,
            visual_objects, actions, transcript_text, on_screen_text,
            keyframe_path, sources, provider, model, embedding, embedding_384, embedding_dim, analysis_version,
-           keyframe_paths
+           keyframe_paths,embedding_meta_1024,meta_embedding_model,meta_embedding_input_hash
          ) VALUES (
            $1, $2, $3, $4, $5, $6, $7,
            $8, $9, $10, $11,
            $12, $13, $14, $15,
            $16::vector, $17::vector, $18, $19,
-           $20::jsonb
+           $20::jsonb,$21::vector,$22,$23
          )
          ON CONFLICT (id) DO UPDATE SET
            start_time = EXCLUDED.start_time,
@@ -2091,6 +2097,9 @@ export class IndexingProcessor extends WorkerHost {
            model = EXCLUDED.model,
            embedding = COALESCE(EXCLUDED.embedding, media_segments.embedding),
            embedding_384 = COALESCE(EXCLUDED.embedding_384, media_segments.embedding_384),
+           embedding_meta_1024=COALESCE(EXCLUDED.embedding_meta_1024,media_segments.embedding_meta_1024),
+           meta_embedding_model=COALESCE(EXCLUDED.meta_embedding_model,media_segments.meta_embedding_model),
+           meta_embedding_input_hash=COALESCE(EXCLUDED.meta_embedding_input_hash,media_segments.meta_embedding_input_hash),
            embedding_dim = EXCLUDED.embedding_dim,
            analysis_version = EXCLUDED.analysis_version,
            keyframe_paths = EXCLUDED.keyframe_paths`,
@@ -2121,6 +2130,9 @@ export class IndexingProcessor extends WorkerHost {
               data: kf.data,
             })),
           ),
+          isMeta?embeddingStr:null,
+          isMeta?META_EMBEDDING_MODEL:null,
+          isMeta?metaEmbeddingHash(metaEmbeddingText({title:seg.title,description:seg.description,visual_objects:seg.visualObjects,actions:seg.actions,transcript_text:seg.transcriptText,on_screen_text:seg.onScreenText})):null,
         ],
       );
       keptSegmentIds.push(seg.id);
@@ -2225,7 +2237,8 @@ export class IndexingProcessor extends WorkerHost {
     const segs = await this.db.query(
       `SELECT start_time, end_time, title, description, visual_objects, actions,
               transcript_text, on_screen_text, keyframe_path, keyframe_paths, sources, provider, model,
-              embedding::text AS embedding, embedding_384::text AS embedding_384, embedding_dim
+              embedding::text AS embedding, embedding_384::text AS embedding_384, embedding_dim,
+              embedding_meta_1024::text AS embedding_meta_1024, meta_embedding_model, meta_embedding_input_hash
        FROM media_segments
        WHERE asset_id = $1`,
       [donorId],
@@ -2238,12 +2251,13 @@ export class IndexingProcessor extends WorkerHost {
         `INSERT INTO media_segments (
            id, asset_id, user_id, start_time, end_time, title, description,
            visual_objects, actions, transcript_text, on_screen_text,
-           keyframe_path, keyframe_paths, sources, provider, model, embedding, embedding_384, embedding_dim, analysis_version
+           keyframe_path, keyframe_paths, sources, provider, model, embedding, embedding_384, embedding_dim, analysis_version,
+           embedding_meta_1024, meta_embedding_model, meta_embedding_input_hash
          ) VALUES (
            $1, $2, $3, $4, $5, $6, $7,
            $8, $9, $10, $11,
            $12, $13::jsonb, $14, $15, $16,
-           $17::vector, $18::vector, $19, $20
+           $17::vector, $18::vector, $19, $20, $21::vector, $22, $23
          )`,
         [
           newSegId,
@@ -2266,6 +2280,9 @@ export class IndexingProcessor extends WorkerHost {
           s.embedding_384,
           s.embedding_dim || 3072,
           ANALYSIS_VERSION,
+          s.embedding_meta_1024,
+          s.meta_embedding_model,
+          s.meta_embedding_input_hash,
         ],
       );
     }

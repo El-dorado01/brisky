@@ -1,5 +1,6 @@
 import {BadRequestException,Injectable,NotFoundException,ServiceUnavailableException,HttpException} from '@nestjs/common';
 import {ConfigService} from '@nestjs/config';
+import {metaOnly} from '../../common/meta-only-profile';
 import {DatabaseService} from '../database/database.service';
 import {AiUsageLedger} from '../pipeline/ai-usage-ledger';
 import {randomUUID,createHash} from 'crypto';
@@ -42,8 +43,8 @@ export class VoiceService{
   private readonly rate=new Map<string,{until:number;count:number}>();
   private readonly pending=new Map<string,Promise<Buffer>>();
   constructor(private readonly config:ConfigService,private readonly db:DatabaseService){this.ledger=new AiUsageLedger(config);}
-  private key(){const key=(this.config.get<string>('GEMINI_VOICE_API_KEY','')||this.config.get<string>('AI_API_KEY','')||this.config.get<string>('AI_API_KEYS','').split(',')[0]).trim();if(this.config.get('VOICE_ENABLED','false')!=='true'||!key)throw new ServiceUnavailableException('Voice mode needs its Gemini speech configuration.');return key;}
-  private async limited<T>(owner:string,run:()=>Promise<T>){const now=Date.now();for(const [key,r] of this.rate)if(r.until<=now)this.rate.delete(key);const rate=this.rate.get(owner)||{until:now+60000,count:0};if(rate.count>=12||this.active.has(owner)||this.active.size>=2||this.rate.size>=5000&&!this.rate.has(owner))throw new HttpException('Voice is busy. Please wait and retry.',429);rate.count++;this.rate.set(owner,rate);this.active.add(owner);try{return await run();}finally{this.active.delete(owner);}}
+  private key(){if(metaOnly(this.config))throw new ServiceUnavailableException('Google speech is disabled in Meta-only runtime.');const key=(this.config.get<string>('GEMINI_VOICE_API_KEY','')||this.config.get<string>('AI_API_KEY','')||this.config.get<string>('AI_API_KEYS','').split(',')[0]).trim();if(this.config.get('VOICE_ENABLED','false')!=='true'||!key)throw new ServiceUnavailableException('Voice mode needs its Gemini speech configuration.');return key;}
+  private async limited<T>(owner:string,run:()=>Promise<T>){if(metaOnly(this.config))throw new ServiceUnavailableException('Google speech is disabled in Meta-only runtime.');const now=Date.now();for(const [key,r] of this.rate)if(r.until<=now)this.rate.delete(key);const rate=this.rate.get(owner)||{until:now+60000,count:0};if(rate.count>=12||this.active.has(owner)||this.active.size>=2||this.rate.size>=5000&&!this.rate.has(owner))throw new HttpException('Voice is busy. Please wait and retry.',429);rate.count++;this.rate.set(owner,rate);this.active.add(owner);try{return await run();}finally{this.active.delete(owner);}}
   private async call(model:string,stage:string,payload:unknown,interactions=false,signal?:AbortSignal){
     const key=this.key(),attempt=this.ledger.reserve('google-speech',model,stage,randomUUID()),started=Date.now();let settled=false;
     try{const response=await fetch(interactions?'https://generativelanguage.googleapis.com/v1beta/interactions':`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,{method:'POST',redirect:'error',headers:{'Content-Type':'application/json','x-goog-api-key':key},body:JSON.stringify(payload),signal:signal?AbortSignal.any([signal,AbortSignal.timeout(90000)]):AbortSignal.timeout(90000)});

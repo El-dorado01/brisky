@@ -3,6 +3,7 @@ import { Injectable, Logger, NotFoundException, Optional, BadRequestException, U
 import { validateClip } from '../../common/request-validation';
 import { ConfigService } from '@nestjs/config';
 import { embeddingProviderForUser } from '../pipeline/embedding-provider';
+import {META_EMBEDDING_MODEL,metaOnly} from '../../common/meta-only-profile';
 import { createHash, randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -147,7 +148,7 @@ export class MediaService implements OnModuleDestroy {
   private async getCachedOrGenerateEmbedding(text: string, userId?:string): Promise<number[]> {
     const normalized = this.normalizeForCache(text);
     const preferredProvider = embeddingProviderForUser(this.configService,userId);
-    const space=preferredProvider==='local'?this.configService.get('LOCAL_EMBEDDING_MODEL','sentence-transformers/all-MiniLM-L6-v2'):this.aiService.getEmbeddingModel?.()||this.configService.get('AI_EMBEDDING_MODEL','gemini-embedding-001');
+    const space=preferredProvider==='meta-local'?META_EMBEDDING_MODEL:preferredProvider==='local'?this.configService.get('LOCAL_EMBEDDING_MODEL','sentence-transformers/all-MiniLM-L6-v2'):this.aiService.getEmbeddingModel?.()||this.configService.get('AI_EMBEDDING_MODEL','gemini-embedding-001');
     const cacheKey = createHash('sha256').update(JSON.stringify([preferredProvider,space,normalized])).digest('hex');
 
     // Check cache first
@@ -160,7 +161,7 @@ export class MediaService implements OnModuleDestroy {
     // Generate new embedding
     let values: number[] = [];
 
-    if (preferredProvider === 'local') {
+    if (preferredProvider === 'local'||preferredProvider==='meta-local') {
       if (!this.localEmbeddingService.isAvailable()) throw new Error('Local embedding engine unavailable');
       // A remote vector belongs to a different embedding space. Preserve lexical fallback instead.
       const res = await this.localEmbeddingService.generateEmbedding(normalized);
@@ -1885,9 +1886,11 @@ export class MediaService implements OnModuleDestroy {
     const hasEmbedding = queryEmbedding.length > 0;
     const queryDim = queryEmbedding.length;
     const is384 = queryDim === 384;
-    const embeddingCol = is384 ? 's.embedding_384' : 's.embedding';
-    const minSemCandidate = is384 ? 0.38 : 0.45;
-    const minSemDirect = is384 ? 0.48 : 0.58;
+    const isMeta=queryDim===1024&&embeddingProviderForUser(this.configService,userId)==='meta-local';
+    const embeddingCol = isMeta?`CASE WHEN s.meta_embedding_model='${META_EMBEDDING_MODEL}' AND s.meta_embedding_input_hash=md5(media_meta_embedding_text(s.title,s.description,s.visual_objects,s.actions,s.transcript_text,s.on_screen_text)) THEN s.embedding_meta_1024 END`:is384 ? 's.embedding_384' : 's.embedding';
+    // LASER2 gates are initial retrieval heuristics, not calibrated identity/action confidence.
+    const minSemCandidate = isMeta ? 0.50 : is384 ? 0.38 : 0.45;
+    const minSemDirect = isMeta ? 0.70 : is384 ? 0.48 : 0.58;
     const embeddingStr = hasEmbedding ? `[${queryEmbedding.join(',')}]` : null;
 
     const params: unknown[] = [];

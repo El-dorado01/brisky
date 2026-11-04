@@ -62,3 +62,5 @@ inference need not remove manual tagging.
 The owner-approved development budget remains $30 cumulative. These rules do
 not authorize publishing, deleting media, resetting billing records or altering
 the development library without a concrete scoped task.
+
+November 4 packaging update: separate public event-component repository prepared at https://github.com/El-dorado01/brisky-meta-hackathon (commit 585d23c). Owner confirmed the exact kickoff cutoff and delegated licence choice; new project code is MIT, third-party code/models retain their own terms. Its default standalone synthetic-fixture runner makes only Meta model calls and needs no private engine. This does not resolve non-Meta embedding/face paths in the original full development product; those remain open before a full integrated Meta-only demo. See that repository's README, PROVENANCE.md and DEPENDENCIES.md for actual included scope and validation.

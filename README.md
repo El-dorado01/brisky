@@ -25,6 +25,10 @@ and persist results in PostgreSQL. Workers reuse engine modules from `apps/api`.
 
 ## Setup
 
+For the event, use the [strict Meta-only engine profile](docs/meta-only-runtime.md).
+It preserves development providers but disables their execution and uses isolated
+Meta LASER2 embeddings. The standalone event demo is not the full Brisky app.
+
 Use Node.js 20 or newer, Corepack/pnpm, and Docker for PostgreSQL/pgvector and Redis.
 Media processing additionally needs FFmpeg/FFprobe. Local speech/embeddings need Python
 and the dependencies under `services/whisper-transcriber`.

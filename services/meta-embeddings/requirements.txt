@@ -1,0 +1,3 @@
+# Install pinned CPU Torch through setup:mms first; no extra model is loaded from it.
+sentencepiece==0.2.1
+sacremoses==0.1.1

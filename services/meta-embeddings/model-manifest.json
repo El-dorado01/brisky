@@ -1,0 +1,9 @@
+{
+  "model": "meta-laser2-4f82476d54ff",
+  "origin": "https://dl.fbaipublicfiles.com/nllb/laser/",
+  "provenance": "Official Meta NLLB LASER2 files, SHA256 measured from downloads on 2026-11-04 and pinned for subsequent setup. These hashes are local pins, not an independently published upstream SHA256 assertion.",
+  "files": {
+    "laser2.pt": {"bytes": 179440027,"sha256": "4f82476d54ff92ea13ca74858a741b9ef17d52f0905615ce45ea9621ea7f7cc2"},
+    "laser2.spm": {"bytes": 1008139,"sha256": "1f7ef5da4408b94a096ff72d31d90f8ba438b4ab772764eb50c3db5e201fb384"}
+  }
+}

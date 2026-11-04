@@ -267,7 +267,7 @@ export class IntelligenceMergerService {
 
   async generateEmbeddingForText(embeddingText: string,userId?:string): Promise<{ values: number[]; usage: ModelUsage }> {
     const preferredProvider = embeddingProviderForUser(this.configService,userId);
-    if (preferredProvider === 'local') {
+    if (preferredProvider === 'local'||preferredProvider==='meta-local') {
       if (!this.localEmbeddingService.isAvailable()) throw new Error('Local embedding engine unavailable');
       return await this.localEmbeddingService.generateEmbedding(embeddingText);
     }

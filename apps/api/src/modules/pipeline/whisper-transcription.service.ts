@@ -6,6 +6,7 @@ import * as path from 'path';
 import { promisify } from 'util';
 import { ModelUsage, TranscriptCue } from './pipeline.types';
 import { resolveFromRepo } from '../../common/repo-paths';
+import {metaOnly} from '../../common/meta-only-profile';
 
 const execFileAsync = promisify(execFile);
 
@@ -31,6 +32,7 @@ export class WhisperTranscriptionService implements OnModuleDestroy {
 
   /** One job owns one model process; requests are deliberately serialized. */
   createSession(): WhisperSession {
+    if(metaOnly(this.configService))throw new Error('Whisper is disabled in Meta-only runtime');
     const binary = this.getPythonBinary();
     if (!binary) throw new Error('Local Whisper runtime is unavailable');
     const model = this.configService.get<string>('WHISPER_MODEL', 'base');
@@ -127,6 +129,7 @@ export class WhisperTranscriptionService implements OnModuleDestroy {
   }
 
   isAvailable(): boolean {
+    if(metaOnly(this.configService))return false;
     const scriptPath = this.getScriptPath();
     if (!fs.existsSync(scriptPath)) {
       return false;
@@ -136,6 +139,7 @@ export class WhisperTranscriptionService implements OnModuleDestroy {
   }
 
   async transcribeAudio(audioPath: string): Promise<WhisperTranscriptionResult> {
+    if(metaOnly(this.configService))throw new Error('Whisper is disabled in Meta-only runtime');
     const pythonBin = this.getPythonBinary();
     const scriptPath = this.getScriptPath();
 

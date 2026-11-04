@@ -1,6 +1,7 @@
 import {StudioInput,studioSystem,parseStudioDocument} from '../studio-document';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import {metaOnly} from '../../../common/meta-only-profile';
 import { GoogleGenAI } from '@google/genai';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -80,6 +81,7 @@ export class GoogleAiProvider implements AiIntelligenceProvider {
     private readonly configService: ConfigService,
     private readonly ffmpegPipeline: FfmpegPipelineService,
   ) {
+    if(metaOnly(configService))throw new Error('Google model adapter is disabled in Meta-only runtime');
     this.usageLedger = new AiUsageLedger(configService);
     const maxConcurrency = Number(
       this.setting('AI_MAX_CONCURRENCY', 'GEMINI_MAX_CONCURRENCY', 2),

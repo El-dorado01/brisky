@@ -19,7 +19,8 @@
     "infra:up": "docker compose up -d",
     "infra:down": "docker compose down",
     "setup:faces": "node scripts/setup-face-recognition.cjs",
-    "setup:mms": "node scripts/setup-mms.cjs"
+    "setup:mms": "node scripts/setup-mms.cjs",
+    "setup:meta-embeddings": "node scripts/setup-meta-embeddings.cjs"
   },
   "keywords": [],
   "author": "",

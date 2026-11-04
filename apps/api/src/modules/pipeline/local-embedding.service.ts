@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import { ModelUsage } from './pipeline.types';
 import { resolveFromRepo } from '../../common/repo-paths';
 import { assertSearchActive, searchSignal, SearchDeadlineError } from '../../common/search-deadline';
+import {metaEmbeddings,META_EMBEDDING_MODEL} from '../../common/meta-only-profile';
 
 export interface EmbeddingResult {
   values: number[];
@@ -42,6 +43,7 @@ export class LocalEmbeddingService implements OnModuleDestroy {
   constructor(private readonly configService: ConfigService) {}
 
   getPythonBinary(): string | null {
+    if(metaEmbeddings(this.configService)){const binary=resolveFromRepo(this.configService.get('META_EMBEDDING_PYTHON_PATH',process.platform==='win32'?'.venv-mms/Scripts/python.exe':'.venv-mms/bin/python'));return fs.existsSync(binary)?binary:null;}
     const explicitPath = this.configService.get<string>('WHISPER_PYTHON_PATH');
     if (explicitPath && fs.existsSync(explicitPath)) {
       return explicitPath;
@@ -61,6 +63,7 @@ export class LocalEmbeddingService implements OnModuleDestroy {
   }
 
   getScriptPath(): string {
+    if(metaEmbeddings(this.configService))return resolveFromRepo('services/meta-embeddings/serve.py');
     return resolveFromRepo('services/whisper-transcriber/embed.py');
   }
 
@@ -94,7 +97,7 @@ export class LocalEmbeddingService implements OnModuleDestroy {
   private armIdleTimer(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     if (this.pending.size) return;
-    const configured = Number(this.configService.get('LOCAL_EMBEDDING_IDLE_MS', 60000));
+    const configured = Number(this.configService.get('LOCAL_EMBEDDING_IDLE_MS', metaEmbeddings(this.configService)?300000:60000));
     const timeout = Number.isFinite(configured) && configured > 0 ? configured : 60000;
     this.idleTimer = setTimeout(() => this.stopWorker(new Error('Embedding worker idle')), timeout);
     this.idleTimer.unref();
@@ -108,12 +111,14 @@ export class LocalEmbeddingService implements OnModuleDestroy {
     if (!pythonBin || !fs.existsSync(scriptPath)) {
       throw new Error(`Local embedding engine not available at: ${scriptPath}`);
     }
-    if (this.configService.get('LOCAL_EMBEDDING_MODEL', 'all-MiniLM-L6-v2') !== 'all-MiniLM-L6-v2') {
+    if (!metaEmbeddings(this.configService)&&this.configService.get('LOCAL_EMBEDDING_MODEL', 'all-MiniLM-L6-v2') !== 'all-MiniLM-L6-v2') {
       throw new Error('Unsupported local embedding model; keep query and corpus embedding spaces compatible');
     }
     const child = spawn(pythonBin, [scriptPath, '--serve'], { windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env,
         PYTHONIOENCODING:'utf-8',PYTHONUTF8:'1',
+        META_EMBEDDING_MODEL_DIR:resolveFromRepo(this.configService.get('META_EMBEDDING_MODEL_DIR','storage/meta-embeddings')),
+        META_EMBEDDING_THREADS:String(this.configService.get('META_EMBEDDING_THREADS',4)),
         LOCAL_EMBEDDING_ALLOW_DOWNLOAD: String(this.configService.get('LOCAL_EMBEDDING_ALLOW_DOWNLOAD', 'false')) } });
     this.worker = child;
     let buffer = '';
@@ -143,9 +148,10 @@ export class LocalEmbeddingService implements OnModuleDestroy {
           if (response.error) request.reject(new Error('Local embedding request failed'));
           else {
             const vectors = response.vectors;
-            if (response.model !== 'all-MiniLM-L6-v2' || response.dimensions !== 384 ||
+            const expectedModel=metaEmbeddings(this.configService)?META_EMBEDDING_MODEL:'all-MiniLM-L6-v2',expectedDimensions=metaEmbeddings(this.configService)?1024:384;
+            if (response.model !== expectedModel || response.dimensions !== expectedDimensions ||
               !Array.isArray(vectors) || vectors.length !== request.count ||
-              !vectors.every((v: unknown) => Array.isArray(v) && v.length === 384 &&
+              !vectors.every((v: unknown) => Array.isArray(v) && v.length === expectedDimensions &&
                 v.every((n: unknown) => typeof n === 'number' && Number.isFinite(n)))) {
               request.reject(new Error('Invalid local embedding vectors'));
             } else request.resolve({ ...response, vectors: request.single ? vectors[0] : vectors });
@@ -206,8 +212,8 @@ export class LocalEmbeddingService implements OnModuleDestroy {
         values: vector || [],
         usage: {
           stage: 'embedding',
-          provider: 'local-onnx',
-          model: res.model || 'all-MiniLM-L6-v2',
+          provider: metaEmbeddings(this.configService)?'meta-local':'local-onnx',
+          model: res.model || (metaEmbeddings(this.configService)?META_EMBEDDING_MODEL:'all-MiniLM-L6-v2'),
           inputTokens: Math.ceil(text.length / 4),
           outputTokens: 0,
           estimatedUsd: 0.0,
@@ -227,8 +233,8 @@ export class LocalEmbeddingService implements OnModuleDestroy {
         vectors: [],
         usage: {
           stage: 'embedding',
-          provider: 'local-onnx',
-          model: 'all-MiniLM-L6-v2',
+          provider: metaEmbeddings(this.configService)?'meta-local':'local-onnx',
+          model: metaEmbeddings(this.configService)?META_EMBEDDING_MODEL:'all-MiniLM-L6-v2',
           inputTokens: 0,
           outputTokens: 0,
           estimatedUsd: 0.0,
@@ -248,8 +254,8 @@ export class LocalEmbeddingService implements OnModuleDestroy {
         vectors,
         usage: {
           stage: 'embedding',
-          provider: 'local-onnx',
-          model: res.model || 'all-MiniLM-L6-v2',
+          provider: metaEmbeddings(this.configService)?'meta-local':'local-onnx',
+          model: res.model || (metaEmbeddings(this.configService)?META_EMBEDDING_MODEL:'all-MiniLM-L6-v2'),
           inputTokens: Math.ceil(totalChars / 4),
           outputTokens: 0,
           estimatedUsd: 0.0,

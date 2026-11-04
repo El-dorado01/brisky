@@ -381,5 +381,15 @@ CREATE INDEX IF NOT EXISTS idx_factory_runs_active ON factory_stage_runs(user_id
 ALTER TABLE factory_stage_runs ADD COLUMN IF NOT EXISTS completed_items INT;
 ALTER TABLE factory_stage_runs ADD COLUMN IF NOT EXISTS total_items INT;
 
+-- Separate Meta LASER2 space. Never overwrite or compare MiniLM/Gemini vectors.
+ALTER TABLE media_segments ADD COLUMN IF NOT EXISTS embedding_meta_1024 vector(1024);
+ALTER TABLE media_segments ADD COLUMN IF NOT EXISTS meta_embedding_model TEXT;
+ALTER TABLE media_segments ADD COLUMN IF NOT EXISTS meta_embedding_input_hash TEXT;
+CREATE OR REPLACE FUNCTION media_meta_embedding_text(title TEXT,description TEXT,objects TEXT[],actions TEXT[],transcript TEXT,on_screen TEXT[])
+RETURNS TEXT LANGUAGE SQL IMMUTABLE PARALLEL SAFE AS $$
+ SELECT concat_ws('. ',NULLIF(title,''),NULLIF(description,''),NULLIF(array_to_string(objects,', '),''),NULLIF(array_to_string(actions,', '),''),NULLIF(transcript,''),NULLIF(array_to_string(on_screen,' '),''));
+$$;
+CREATE INDEX IF NOT EXISTS idx_segments_meta_laser2 ON media_segments USING hnsw(embedding_meta_1024 vector_cosine_ops) WHERE embedding_meta_1024 IS NOT NULL;
+
 
 
