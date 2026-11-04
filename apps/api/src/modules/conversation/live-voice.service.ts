@@ -1,4 +1,6 @@
-import {BadRequestException,Injectable,Logger,OnApplicationBootstrap,OnModuleDestroy,ServiceUnavailableException} from '@nestjs/common';
+import {BadRequestException,Injectable,Logger,OnApplicationBootstrap,OnModuleDestroy,ServiceUnavailableException,Optional} from '@nestjs/common';
+import {nonMetaTts} from '../../common/meta-only-profile';
+import {VoiceService} from './voice.service';
 import {ConfigService} from '@nestjs/config';
 import {HttpAdapterHost} from '@nestjs/core';
 import {randomBytes,randomUUID} from 'crypto';
@@ -25,8 +27,8 @@ export class LiveVoiceService implements OnApplicationBootstrap,OnModuleDestroy{
   private connections=new Set<WebSocket>();
   private server=new WebSocketServer({noServer:true,maxPayload:18000,perMessageDeflate:false});
   private ledger:AiUsageLedger;
-  constructor(private config:ConfigService,private adapter:HttpAdapterHost,private mms:MmsSpeechService){this.ledger=new AiUsageLedger(config);}
-  mode(){const value=this.config.get('VOICE_CONVERSATION_MODE','turn-based');return {mode:value==='live'?'live':value==='meta-mms'?'meta-mms':'turn-based',ttsProvider:value==='meta-mms'?'mms':'gemini'};}
+  constructor(private config:ConfigService,private adapter:HttpAdapterHost,private mms:MmsSpeechService,@Optional() private voice?:VoiceService){this.ledger=new AiUsageLedger(config);}
+  mode(){const value=this.config.get('VOICE_CONVERSATION_MODE','turn-based');return {mode:value==='live'?'live':value==='meta-mms'?'meta-mms':'turn-based',ttsProvider:value==='meta-mms'&&!nonMetaTts(this.config)?'mms':'gemini'};}
   ticket(owner:string,raw:unknown){
     if(!['live','meta-mms'].includes(this.mode().mode)||this.config.get('VOICE_ENABLED','false')!=='true')throw new ServiceUnavailableException('Live voice is disabled.');
     const r=raw as {voice?:unknown};if(!r||typeof r!=='object'||Array.isArray(r)||Object.keys(r).some(k=>k!=='voice')||!VOICES.includes(String(r.voice)))throw new BadRequestException('Choose a supported voice');
@@ -37,7 +39,7 @@ export class LiveVoiceService implements OnApplicationBootstrap,OnModuleDestroy{
     const token=randomBytes(32).toString('base64url');this.tickets.set(token,{owner,voice:String(r.voice),expires:Date.now()+30000});url.searchParams.set('ticket',token);return {url:url.href,startupTimeoutMs:this.mode().mode==='meta-mms'?150000:45000};
   }
   onApplicationBootstrap(){
-    if(this.mode().mode==='meta-mms'&&this.config.get('VOICE_ENABLED','false')==='true')void this.mms.ready().catch(()=>console.warn('Local MMS warm-up failed; run setup:mms --check on the engine host.'));
+    if(this.mode().ttsProvider==='mms'&&this.config.get('VOICE_ENABLED','false')==='true')void this.mms.ready().catch(()=>console.warn('Local MMS warm-up failed; run setup:mms --check on the engine host.'));
     this.adapter.httpAdapter.getHttpServer().on('upgrade',(request:any,socket:any,head:Buffer)=>{
       const url=new URL(request.url||'','http://localhost');if(url.pathname!==PATH)return;
       const token=url.searchParams.get('ticket')||'',ticket=this.tickets.get(token);
@@ -49,7 +51,7 @@ export class LiveVoiceService implements OnApplicationBootstrap,OnModuleDestroy{
   }
   onModuleDestroy(){for(const client of this.connections)client.terminate();this.server.close();}
   private async connect(client:WebSocket,owner:string,voice:string){
-    if(this.mode().mode==='meta-mms')return this.connectMeta(client,owner);
+    if(this.mode().mode==='meta-mms')return this.connectMeta(client,owner,voice);
     this.connections.add(client);
     let session:Session|undefined,closed=false,ready=false,failed=false,ending=false,bytesIn=0,bytesOut=0,messages=0,windowStart=Date.now(),inputTokens=0,outputTokens=0;
     const started=Date.now(),tools=new Set<string>();let timer:ReturnType<typeof setTimeout>|undefined,attempt:ReturnType<AiUsageLedger['reserve']>|undefined;
@@ -92,10 +94,11 @@ export class LiveVoiceService implements OnApplicationBootstrap,OnModuleDestroy{
       }catch{finish('Voice received invalid or excessive data. Please reconnect.');}});
     }catch{finish('Live voice could not start. Check its configuration, quota and test allowance.');}
   }
-  private async connectMeta(client:WebSocket,owner:string){
+  private async connectMeta(client:WebSocket,owner:string,voice='Kore'){
     this.connections.add(client);let closed=false,bytes=0,count=0,windowStart=Date.now();
     const send=(packet:unknown)=>{if(client.readyState!==WebSocket.OPEN)return;if(client.bufferedAmount>1024*1024){session.stop('The voice connection cannot keep up.');return;}client.send(JSON.stringify(packet));};
-    const session=new MetaLiveVoice(this.config,this.mms,send,error=>{if(closed)return;closed=true;this.active.delete(owner);this.connections.delete(client);if(error)send({type:'error',message:error});if(client.readyState===WebSocket.OPEN)client.close(error?1011:1000);});
+    const speech=nonMetaTts(this.config)?{ready:async()=>{if(!this.voice)throw Error('TTS service is unavailable');},synthesize:(text:string,signal?:AbortSignal)=>this.voice!.relaySpeech(owner,text,voice,signal)}:this.mms;
+    const session=new MetaLiveVoice(this.config,speech,send,error=>{if(closed)return;closed=true;this.active.delete(owner);this.connections.delete(client);if(error)send({type:'error',message:error});if(client.readyState===WebSocket.OPEN)client.close(error?1011:1000);});
     client.on('close',()=>session.stop());client.on('error',()=>session.stop('Voice connection stopped.'));
     client.on('message',(data,isBinary)=>{try{if(isBinary||closed)throw Error('Invalid frame');if(Date.now()-windowStart>1000){windowStart=Date.now();count=0;}if(++count>40)throw Error('Frame rate exceeded');const r=JSON.parse(data.toString());
       if(r?.type==='audio'&&Object.keys(r).length===2){const audio=Buffer.from(liveAudio(r.data),'base64');bytes+=audio.length;if(bytes>10*1024*1024)throw Error('Input limit');session.audio(audio);}

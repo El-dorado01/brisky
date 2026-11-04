@@ -13,6 +13,14 @@ describe('Meta-only runtime admission', () => {
   it('accepts the explicit Meta profile', () => {
     expect(() => assertMetaOnlyProfile(new ConfigService(profile))).not.toThrow();
   });
+  it('allows only an explicit TTS exception while retaining every core Meta guard',()=>{
+    const exception={...profile,ALLOW_NON_META_TTS:'true',VOICE_TTS_PROVIDER:'gemini'};
+    expect(()=>assertMetaOnlyProfile(new ConfigService(exception))).not.toThrow();
+    expect(()=>assertMetaOnlyProfile(new ConfigService({...exception,AI_PROVIDER:'google'}))).toThrow();
+    expect(()=>assertMetaOnlyProfile(new ConfigService({...exception,VOICE_CONVERSATION_MODE:'live'}))).toThrow();
+    expect(()=>assertMetaOnlyProfile(new ConfigService({...exception,VOICE_TTS_MODEL:'gemini-text-model'}))).toThrow();
+    expect(()=>assertMetaOnlyProfile(new ConfigService({...exception,ALLOW_NON_META_TTS:'false'}))).toThrow();
+  });
   it.each([
     ['AI_PROVIDER', 'gemini'], ['EMBEDDING_PROVIDER', 'local'],
     ['TRANSCRIPTION_PROVIDER', 'whisper'], ['VOICE_CONVERSATION_MODE', 'gemini-live'],

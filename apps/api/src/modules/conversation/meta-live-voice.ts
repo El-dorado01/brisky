@@ -46,7 +46,7 @@ export class MetaLiveVoice{
   private started=Date.now();
   private readyResolve:()=>void=()=>{};
   private readyReject:(error:Error)=>void=()=>{};
-  constructor(private config:ConfigService,private mms:MmsSpeechService,private emit:Emit,private ended:(error?:string)=>void){this.ledger=new AiUsageLedger(config);}
+  constructor(private config:ConfigService,private mms:Pick<MmsSpeechService,'ready'|'synthesize'>,private emit:Emit,private ended:(error?:string)=>void){this.ledger=new AiUsageLedger(config);}
   async start(){
     await this.mms.ready();if(this.closed)return;
     const key=this.config.get<string>('META_API_KEY','').trim();if(!key)throw Error('Configure META_API_KEY for live voice');

@@ -7,6 +7,17 @@ import * as os from 'os';
 
 function wav(){const bytes=Buffer.alloc(32044);bytes.write('RIFF');bytes.writeUInt32LE(bytes.length-8,4);bytes.write('WAVE',8);bytes.write('fmt ',12);bytes.writeUInt32LE(16,16);bytes.writeUInt16LE(1,20);bytes.writeUInt16LE(1,22);bytes.writeUInt32LE(16000,24);bytes.writeUInt32LE(32000,28);bytes.writeUInt16LE(2,32);bytes.writeUInt16LE(16,34);bytes.write('data',36);bytes.writeUInt32LE(32000,40);return bytes;}
 describe('voice boundaries and owner-scoped cached speech',()=>{
+  it('permits Gemini speech output only under the explicit exception and still blocks Gemini ASR',async()=>{
+    const config=new ConfigService({META_ONLY_RUNTIME:'true',ALLOW_NON_META_TTS:'true',VOICE_TTS_PROVIDER:'gemini',VOICE_ENABLED:'true',GEMINI_VOICE_API_KEY:'generated-fixture'});
+    const service=new VoiceService(config,{} as any),bytes=wav();bytes.writeUInt32LE(24000,24);bytes.writeUInt32LE(48000,28);
+    const render=jest.spyOn(service as any,'render').mockResolvedValue(bytes);
+    expect(await service.relaySpeech('owner','Hello there.','Kore')).toEqual(bytes.subarray(44));
+    expect(render.mock.calls[0].slice(0,5)).toEqual(['owner','meta-relay','Hello there.','natural','Kore']);
+    await expect(service.transcribe('owner',{audio:wav().toString('base64'),mimeType:'audio/wav'})).rejects.toThrow('disabled');
+    await expect((service as any).call('gemini-3.1-flash-lite','voice_transcription',{})).rejects.toThrow('TTS exception');
+    config.set('ALLOW_NON_META_TTS','false');
+    await expect(service.relaySpeech('owner','Hello.','Kore')).rejects.toThrow('disabled');
+  });
   it('raises the body limit only on the audio input route',()=>{for(const url of ['/api/v1/saas-engine/voice/speak','/api/v1/auth/login','/api/v1/saas-engine/reply']){const route={url,method:'POST',bodyLimit:65536};voiceBodyLimit(route);expect(route.bodyLimit).toBe(65536);}const route={url:'/api/v1/saas-engine/voice/transcribe',method:'POST',bodyLimit:65536};voiceBodyLimit(route);expect(route.bodyLimit).toBe(VOICE_BODY_BYTES);});
   it('accepts canonical recorded audio and rejects injected fields, invalid headers and overlarge data',()=>{
     expect(voiceAudio({audio:wav().toString('base64'),mimeType:'audio/wav'}).bytes).toEqual(wav());

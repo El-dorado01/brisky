@@ -2,6 +2,11 @@
 
 Updated 2026-11-04. Read this before planning or implementing hackathon work.
 
+Latest owner-supplied clarification (November 4): non-Meta text-to-speech only
+is permitted when declared in the README. This narrowly supersedes the blanket
+TTS restriction below; it does not permit Gemini Live, non-Meta ASR, reasoning,
+embeddings or face models. See the final clarification section.
+
 ## Organizer wording supplied November 4 — controlling submission constraints
 
 The owner supplied these organizer statements directly. They supersede earlier
@@ -286,3 +291,14 @@ and approved full audio/transcript repair for the specific 53-second Drive video
 Other source-size/account/media approvals remain scoped as before.
 
 2026-11-04 owner preservation direction: back up the complete current development codebase to the existing GitHub repository before creating a separate hackathon-only repository. Preserve Gemini, MiniLM, YuNet/SFace and their development integrations for post-event restoration; do not permanently remove them from the development product. Owner plans to create the new submission repository. Prepare Meta-only changes as a separate profile/component/export, with truthful provenance and private-dependency declarations.
+
+## November 4 owner-supplied organizer clarification  TTS exception
+
+The owner subsequently supplied this organizer response: The one exception is
+text-to-speech, which can be any TTS service if the README says which part is TTS.
+This supersedes the earlier blanket prohibition only for speech synthesis. Keep
+transcription, reasoning, vision, embeddings and every other runtime model Meta.
+Gemini Live is not covered: it also performs recognition/reasoning. Declare the
+actual demo TTS and a reproducible setup in the public README; do not suggest a
+recording shows an implementation that judges cannot run. This clarification is
+owner-supplied, not independently authenticated organizer correspondence.

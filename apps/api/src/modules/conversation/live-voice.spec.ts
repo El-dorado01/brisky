@@ -12,6 +12,14 @@ function fixture(){
   return {config,server,service,ledger,client:new Client()};
 }
 describe('Live voice connection boundaries',()=>{
+  it('restores Gemini speech options without changing Meta conversation mode',()=>{
+    const {service,config}=fixture();config.set('VOICE_CONVERSATION_MODE','meta-mms');
+    expect(service.mode()).toEqual({mode:'meta-mms',ttsProvider:'mms'});
+    config.set('ALLOW_NON_META_TTS','true');config.set('VOICE_TTS_PROVIDER','gemini');
+    expect(service.mode()).toEqual({mode:'meta-mms',ttsProvider:'gemini'});
+    expect(service.ticket('owner',{voice:'Aoede'}).url).toContain('/voice/live?ticket=');
+    service.onModuleDestroy();
+  });
   beforeEach(()=>{jest.clearAllMocks();mockConnect.mockResolvedValue(mockSession);});
   it('accepts only bounded canonical even-byte PCM',()=>{expect(liveAudio(Buffer.alloc(3200).toString('base64'))).toBeTruthy();for(const input of ['',null,'not base64',Buffer.alloc(3).toString('base64'),'A'.repeat(12004)])expect(()=>liveAudio(input)).toThrow();});
   it('does not expose provider credentials and disables the ticket outside Live mode',()=>{const {service,config}=fixture();const ticket=service.ticket('owner',{voice:'Kore'});expect(ticket.url).toMatch(/^ws:\/\/localhost:3001\/api\/v1\/saas-engine\/voice\/live\?ticket=[\w-]{43}$/);expect(ticket.url).not.toContain('fixture');expect(()=>service.ticket('owner',{voice:'Kore'})).toThrow();expect(()=>service.ticket('other',{voice:'Kore',owner:'owner'})).toThrow();config.set('VOICE_CONVERSATION_MODE','turn-based');expect(()=>service.ticket('other',{voice:'Kore'})).toThrow();});

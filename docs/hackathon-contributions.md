@@ -1655,3 +1655,17 @@ lossy re-encoding, no overlap, no per-window retry checkpoint and actual validat
 limits. Generated decoder check passed without personal footage or API calls.
 No live large-file accuracy/Drive end-to-end claim, no worker/polling startup,
 no budget increase and no Files API upload implementation are implied.
+
+### Owner-supplied TTS exception and recording profile
+
+Owner supplied organizer clarification permitting any text-to-speech provider when
+identified in the README. Added an explicit ALLOW_NON_META_TTS=true plus
+VOICE_TTS_PROVIDER=gemini exception: Meta ASR/dialogue/search remain in meta-mms
+mode; only synthesized response text goes to Gemini speech. Default strict MMS
+profile remains available. Google ASR and Gemini Live remain blocked under the
+core Meta guard. Meta relay receives 24 kHz PCM from the existing owner-cached,
+budgeted Gemini TTS service. Saved-reply reading and settings previews select
+the same TTS provider. Local recording configuration selects Kore and retains
+Meta vision/embeddings/transcription, the $30 allowance and existing journal.
+Updated demo narration and judge reproduction settings. No paid calls or existing
+personal media sent as part of offline implementation checks.

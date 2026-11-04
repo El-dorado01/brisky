@@ -15,7 +15,7 @@ export class VoiceController{
   @Post('live-ticket') @HttpCode(200)
   liveTicket(@Req() req:any,@Body() raw:unknown){return this.live.ticket(req.user.id,raw);}
   @Post('transcribe') @HttpCode(200)
-  transcribe(@Req() req:any,@Res({passthrough:true}) response:FastifyReply,@Body() raw:unknown){if(this.live.mode().ttsProvider==='mms')throw new ServiceUnavailableException('This profile uses streaming Meta transcription. Reload and start Voice Mode.');return withSearchDisconnect(req.raw,response.raw,signal=>this.voice.transcribe(req.user.id,raw,signal));}
+  transcribe(@Req() req:any,@Res({passthrough:true}) response:FastifyReply,@Body() raw:unknown){if(this.live.mode().mode==='meta-mms')throw new ServiceUnavailableException('This profile uses streaming Meta transcription. Reload and start Voice Mode.');return withSearchDisconnect(req.raw,response.raw,signal=>this.voice.transcribe(req.user.id,raw,signal));}
   @Post('speak') @HttpCode(200)
   async speak(@Req() req:any,@Res() response:FastifyReply,@Body() raw:unknown){const bytes=await withSearchDisconnect(req.raw,response.raw,signal=>this.live.mode().ttsProvider==='mms'?this.mms.render(req.user.id,raw,signal):this.voice.speak(req.user.id,raw,signal));return response.header('Content-Type','audio/wav').header('Cache-Control','private, no-store').header('X-Content-Type-Options','nosniff').send(bytes);}
   @Post('stream') @HttpCode(200)
