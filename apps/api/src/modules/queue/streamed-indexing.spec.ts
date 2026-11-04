@@ -112,6 +112,22 @@ describe('streamed indexing and preparation checkpoint reuse', () => {
     expect(processor.db.query).toHaveBeenCalledWith(expect.stringContaining("stage='blocked'"),expect.arrayContaining(['owner']));
     expect(ffmpeg.probeMetadata).not.toHaveBeenCalled();
   });
+  it('admits sources larger than the former test cap while retaining account scope', async () => {
+    controlledBudget('1'); settings.INDEX_ALLOWED_CONNECTOR_ACCOUNT_IDS='account';
+    envelope.source.fileSize=128*1024*1024;
+    const scoped=jest.spyOn(processor,'processScoped').mockResolvedValue(undefined);
+    await processor.process({...job(),data:envelope});
+    expect(scoped).toHaveBeenCalledTimes(1);
+  });
+  it('still rejects sources above the configured resource ceiling and unknown source sizes', async () => {
+    controlledBudget('1'); settings.INDEX_ALLOWED_CONNECTOR_ACCOUNT_IDS='account';
+    processor.fullDownloadMaxBytes=64*1024*1024;
+    envelope.source.fileSize=128*1024*1024;
+    await expect(processor.process({...job(),data:envelope})).rejects.toThrow('WORKER_FULL_DOWNLOAD_MAX_MB');
+    envelope.source.fileSize=0;
+    await expect(processor.process({...job(),data:envelope})).rejects.toThrow('positive source size');
+    expect(ffmpeg.probeMetadata).not.toHaveBeenCalled();
+  });
   it('resumes completed scene windows and preserves boundary evidence without repeating decoding', async () => {
     settings.WINDOWED_SCENE_PREPARATION = 'true';
     ffmpeg.probeMetadata.mockResolvedValue({ duration: 124, hasAudio: true, codec: 'h264', width: 640, height: 360 });

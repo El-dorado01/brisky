@@ -211,10 +211,15 @@ export class IndexingProcessor extends WorkerHost {
     const envelope = normalizeJobEnvelope(job.data);
     const key = `${envelope.user_id}/${envelope.asset_id}`;
     const allowed = String(this.configService.get('INDEX_ALLOWED_CONNECTOR_ACCOUNT_IDS', '')).split(/[,\s]+/);
+    if (!Number.isFinite(this.fullDownloadMaxBytes) || this.fullDownloadMaxBytes <= 0) {
+      throw new AiBudgetError('Configure a positive WORKER_FULL_DOWNLOAD_MAX_MB');
+    }
     const rejection = !envelope.source.connectorAccountId || !allowed.includes(envelope.source.connectorAccountId)
       ? 'Source is outside controlled indexing scope'
-      : !Number.isFinite(envelope.source.fileSize) || Number(envelope.source.fileSize) <= 0 || Number(envelope.source.fileSize) > 32 * 1024 * 1024
-        ? 'Controlled indexing requires a known source size of at most 32 MiB' : '';
+      : !Number.isFinite(envelope.source.fileSize) || Number(envelope.source.fileSize) <= 0
+        ? 'Controlled indexing requires a known positive source size'
+        : Number(envelope.source.fileSize) > this.fullDownloadMaxBytes
+          ? 'Source exceeds WORKER_FULL_DOWNLOAD_MAX_MB' : '';
     if (rejection) {
       await this.db.query("UPDATE indexing_jobs SET status='failed',stage='blocked',error=$1,finished_at=NOW() WHERE bull_job_id=$2 AND user_id=$3",[rejection,job.id,envelope.user_id]);
       await this.db.query("UPDATE media_assets SET status=CASE WHEN status='indexed' THEN status ELSE 'failed' END,error=$1,updated_at=NOW() WHERE id=$2 AND user_id=$3",[rejection,envelope.asset_id,envelope.user_id]);

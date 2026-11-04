@@ -1611,3 +1611,17 @@ invalid pricing and mismatched account scope. This does not validate credentials
 against external providers or establish a fresh-machine installation. Legacy local
 SMTP server/port entries are unused by the pinned web server, which configures
 Brevo's SMTP endpoint internally. No model calls are needed for these checks.
+
+### Source-size test restriction removed; demo recording guide
+
+Owner requested removal of the fixed 32 MiB source-file admission restriction.
+Controlled indexing now checks known positive size against the configurable
+WORKER_FULL_DOWNLOAD_MAX_MB resource ceiling instead. Judge/local source download
+and range-transfer settings use the existing general 16384 MiB ceiling; model
+request-body/media limits remain separate and unchanged. Account scoping and
+cumulative $30 local budget remain intact. This is not proof of arbitrary large
+or long-media end-to-end support. Added regressions admitting a 128 MiB source
+through the guard and rejecting configured oversize/unknown sources without
+processing media. Added docs/demo-recording-script.md in the owner's requested
+order, with honest manual-tagging, provenance, latency and evidence boundaries.
+No worker, automatic polling or paid inference is started for these changes.
