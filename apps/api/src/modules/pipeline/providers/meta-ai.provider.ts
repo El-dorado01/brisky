@@ -96,7 +96,10 @@ export class MetaAiProvider implements AiIntelligenceProvider {
     const mime = extensions[path.extname(file).toLowerCase()];
     if (!mime) throw new Error('Unsupported Meta media encoding; convert explicitly before inference');
     const stat = fs.statSync(file);
-    if (!stat.isFile() || stat.size<=0 || stat.size>this.transport.boundedSetting('META_MAX_MEDIA_BYTES',32*1024*1024,128*1024*1024)) {
+    // Direct Meta inline files are limited to 50,000,000 raw bytes by the provider.
+    // Baseten uses a separate serialized-body ceiling, including base64 expansion.
+    const inlineLimit = this.backend==='baseten' ? 70*1024*1024 : 50_000_000;
+    if (!stat.isFile() || stat.size<=0 || stat.size>this.transport.boundedSetting('META_MAX_MEDIA_BYTES',inlineLimit,inlineLimit)) {
       throw new Error('Meta media exceeds the configured file bound or is empty');
     }
     const data = fs.readFileSync(file);

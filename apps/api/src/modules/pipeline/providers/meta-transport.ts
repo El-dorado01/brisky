@@ -55,8 +55,8 @@ export class MetaTransport {
       // Keep conversation input bounds independent from media upload capacity.
       // These are serialized-body bytes, including base64 and the JSON envelope.
       const maxBytes = this.backend==='baseten' && hasMedia
-        ? this.boundedSetting('META_MAX_MEDIA_REQUEST_BYTES',8*1024*1024,100*1024*1024)
-        : this.boundedSetting('META_MAX_REQUEST_BYTES',this.backend==='baseten'?131072:48*1024*1024,this.backend==='baseten'?131072:192*1024*1024);
+        ? this.boundedSetting('META_MAX_MEDIA_REQUEST_BYTES',100*1024*1024,100*1024*1024)
+        : this.boundedSetting('META_MAX_REQUEST_BYTES',this.backend==='baseten'?131072:70_000_000,this.backend==='baseten'?131072:70_000_000);
       if(this.backend==='baseten' && Buffer.byteLength(parts.filter(part=>part.type==='text').map(part=>(part as {text:string}).text).join('\n'))>131072) {
         throw new Error('Baseten text exceeds the configured byte bound');
       }

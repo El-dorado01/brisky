@@ -133,8 +133,8 @@ dormant settings only; the adapter does not read neutral Google keys as Meta key
 | `META_AUDIO_MODEL` / `META_AUDIO_FALLBACK_MODELS` | Explicit audio models, independently validated for audio support |
 | `META_MAX_OUTPUT_TOKENS` | 4096 by default; positive integer up to 32768, includes completion/reasoning budget |
 | `META_REQUEST_TIMEOUT_MS` | 30000 by default; maximum 240000 |
-| `META_MAX_MEDIA_BYTES` | 32 MiB default per inline file; hard configuration ceiling 128 MiB |
-| `META_MAX_REQUEST_BYTES` | 48 MiB default serialized request; hard configuration ceiling 192 MiB |
+| `META_MAX_MEDIA_BYTES` | 50,000,000 bytes default/maximum per inline file (Meta documented limit) |
+| `META_MAX_REQUEST_BYTES` | 70,000,000 bytes default/maximum serialized request (local envelope allowance for base64 + JSON) |
 | `META_TRANSCRIPT_CHUNK_SECONDS` | 90 by default, positive integer up to 300 |
 
 The adapter keeps the current shared `AI_BUDGET_USD`, ledger path and pricing contract.

@@ -1625,3 +1625,19 @@ through the guard and rejecting configured oversize/unknown sources without
 processing media. Added docs/demo-recording-script.md in the owner's requested
 order, with honest manual-tagging, provenance, latency and evidence boundaries.
 No worker, automatic polling or paid inference is started for these changes.
+
+### Model request allowances aligned with inline provider limits
+
+Owner requested raising model request limits as well as source-file limits.
+Meta inline files now default to and stop at the documented 50,000,000 raw bytes,
+with a 70,000,000-byte local serialized-envelope allowance for base64 plus JSON.
+Baseten media requests default to its documented 100 MiB serialized-body ceiling,
+with a 70 MiB raw-file allowance. Explicit lower user settings remain supported;
+text-only Baseten input bounds are unchanged. Root local/example env and judge
+template updated without changing credentials, account scope, the $30 budget,
+or starting paid inference. Meta Files API uploads (documented up to 1 GiB) are
+not implemented by this inline adapter. GB-scale inputs still require bounded
+processing or a separately implemented upload path; larger defaults are not a
+large-media accuracy or end-to-end support claim. References checked November 4:
+https://dev.meta.ai/docs/file-handling and
+https://docs.baseten.co/inference/model-apis/vision .

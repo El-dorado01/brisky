@@ -189,6 +189,16 @@ describe('dormant Meta adapter (offline transport fixtures only)', () => {
     expect((await make({META_MAX_REQUEST_BYTES:10}).verifyCandidate(frames,'query')).matched).toBe(false);
     expect(fetcher).not.toHaveBeenCalled(); expect(journal()).toEqual([]);
   });
+  it('admits inline files above the former 32 MiB default but stops at the documented Meta file limit', () => {
+    const image=fixture('large-frame.jpg');
+    const fd=fs.openSync(image,'r+');
+    try { fs.ftruncateSync(fd,34*1024*1024); } finally { fs.closeSync(fd); }
+    expect((make() as any).bytes(image,{'.jpg':'image/jpeg'}).data.length).toBe(4*Math.ceil(34*1024*1024/3));
+    const larger=fs.openSync(image,'r+');
+    try { fs.ftruncateSync(larger,50_000_001); } finally { fs.closeSync(larger); }
+    expect(()=>(make() as any).bytes(image,{'.jpg':'image/jpeg'})).toThrow('file bound');
+    expect(fetcher).not.toHaveBeenCalled();expect(journal()).toEqual([]);
+  });
   it('blocks budget exhaustion before verification', async () => {
     const result=await make({AI_BUDGET_USD:0}).verifyCandidate([{timestamp:1,path:fixture('frame.jpg')}],'query');
     expect(result).toMatchObject({status:'error',issue:'budget',matched:false});
