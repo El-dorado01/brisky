@@ -237,15 +237,10 @@ export class IndexingProcessor extends WorkerHost {
       await this.db.query("UPDATE media_assets SET status=CASE WHEN status='indexed' THEN status ELSE 'failed' END,error=$1,updated_at=NOW() WHERE id=$2 AND user_id=$3",[rejection,envelope.asset_id,envelope.user_id]);
       throw new AiBudgetError(rejection);
     }
-    return withAiBudgetPlan(key, async () => {
-      try { await this.processScoped(job); }
-      catch (error) {
-        if (!(error instanceof DelayedError) && (job.attemptsMade || 0) + 1 >= (job.opts?.attempts || 1)) {
-          new AiUsageLedger(this.configService).releasePlan(key);
-        }
-        throw error;
-      }
-    });
+    // The reservation belongs to the file, not an individual unit. A failed
+    // sibling must not revoke admission for other queued/in-flight units.
+    // Finalization or explicit cancellation releases the remaining allowance.
+    return withAiBudgetPlan(key, () => this.processScoped(job));
   }
 
   private async processScoped(job: Job<IndexingJobData | FactoryJobEnvelope>): Promise<void> {

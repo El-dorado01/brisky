@@ -1,7 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { AiBudgetError, AiUsageLedger } from '../ai-usage-ledger';
-import { assertSearchActive, searchSignal, SearchDeadlineError } from '../../../common/search-deadline';
+import { assertSearchActive, searchSignal, SearchDeadlineError, searchDelay } from '../../../common/search-deadline';
 import { ModelUsage } from '../pipeline.types';
 import { invalidMeta, MetaResponseError } from './meta-contract';
 
@@ -37,6 +37,9 @@ export class MetaTransport {
   private async execute<T>(stage: string, models: string[], prepare: () => MetaPart[], schema: unknown,
     parse: (value: unknown, model: string) => T,systemInstruction?:string): Promise<{value:T;usage:ModelUsage}> {
     const requestId = randomUUID();
+    // A single-model setup still gets one bounded transient retry. Every
+    // attempt keeps its own reservation, including unknown network outcomes.
+    if (models.length === 1) models = [models[0], models[0]];
     for (let index=0; index<models.length; index++) {
       assertSearchActive();
       const model = models[index];
@@ -97,9 +100,12 @@ export class MetaTransport {
         if (!settled) this.ledger.settle(attempt,'error',Date.now()-started,input,output);
         if (parent?.aborted) throw new SearchDeadlineError();
         if (error instanceof AiBudgetError) throw error;
-        if (error instanceof MetaResponseError && error.retryable && index+1<models.length) continue;
+        if (error instanceof MetaResponseError && error.retryable && index+1<models.length) { await searchDelay(300); continue; }
         if (error instanceof MetaResponseError) throw error;
-        throw new MetaResponseError('temporary','Meta request failed; no response evidence available');
+        const code=String((error as any)?.cause?.code || (error as any)?.code || 'connection_or_timeout');
+        const safeCode=/^[A-Z_0-9]+$/.test(code)?code:'connection_or_timeout';
+        if (index+1<models.length) { await searchDelay(300); continue; }
+        throw new MetaResponseError('temporary',`Meta request failed (${safeCode}); no response evidence available`,true);
       }
     }
     throw new MetaResponseError('temporary','No configured Meta model completed the request');

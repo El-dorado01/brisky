@@ -22,6 +22,27 @@ describe('AI budget ledger', () => {
   afterEach(() => { jest.useRealTimers(); fs.rmSync(root, { recursive: true, force: true }); });
   const read = (f: string) => fs.readFileSync(f, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
 
+  it('renews a released file plan for retry while retaining unknown attempt holds', () => {
+    config.set('AI_BUDGET_USD', 0.3);
+    const ledger=new AiUsageLedger(config);
+    ledger.reservePlan('google','test-model',2,'asset');
+    withAiBudgetPlan('asset',()=>ledger.reserve('google','test-model','frame','unknown'));
+    ledger.releasePlan('asset');
+    const prefix=fs.readFileSync(file,'utf8');
+    expect(new AiUsageLedger(config).restorePlanForRetry('asset')).toBe(true);
+    expect(fs.readFileSync(file,'utf8').startsWith(prefix)).toBe(true);
+    withAiBudgetPlan('asset',()=>ledger.assertAvailable('google','test-model'));
+    expect(()=>ledger.reserve('google','test-model','other','blocked')).toThrow(AiBudgetError);
+  });
+  it('refuses an unaffordable retry and does not invent a plan for unknown files',()=>{
+    const ledger=new AiUsageLedger(config);
+    expect(ledger.restorePlanForRetry('unknown')).toBe(false);
+    ledger.reservePlan('google','test-model',2,'asset');
+    withAiBudgetPlan('asset',()=>ledger.reserve('google','test-model','frame','unknown'));
+    ledger.releasePlan('asset');
+    expect(()=>ledger.restorePlanForRetry('asset')).toThrow('complete file plan');
+  });
+
   it('shares reservations across service instances and restarts', () => {
     new AiUsageLedger(config).reserve('google', 'test-model', 'search', 'one');
     new AiUsageLedger(config).reserve('google', 'test-model', 'search', 'two');

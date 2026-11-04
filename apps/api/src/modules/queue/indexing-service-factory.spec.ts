@@ -1,5 +1,6 @@
 import { IndexingService } from './indexing.service';
 import { MediaFactory } from './media-factory.interface';
+import { AiUsageLedger } from '../pipeline/ai-usage-ledger';
 
 describe('IndexingService with MediaFactory (Phase F7 Seam 1)', () => {
   let service: IndexingService;
@@ -165,7 +166,9 @@ describe('IndexingService with MediaFactory (Phase F7 Seam 1)', () => {
 });
 
 describe('IndexingService F2 failed-unit retry', () => {
-  it('re-enqueues only failed units and leaves completed work in place', async () => {
+  it.each([false,true])('re-enqueues only failed units and leaves completed work in place (controlled=%s)', async controlled => {
+    const renew=jest.spyOn(AiUsageLedger.prototype,'restorePlanForRetry').mockReturnValue(true);
+    try {
     const mockQueue: any = { getWorkers: jest.fn().mockResolvedValue([]) };
     const mockDb: any = {
       query: jest.fn().mockImplementation(async (sql: string) => {
@@ -189,7 +192,7 @@ describe('IndexingService F2 failed-unit retry', () => {
       }),
     };
     const mockConfig: any = {
-      get: jest.fn((key: string, def?: any) => (key === 'GEMINI_MODEL' ? 'gemini-2.5-flash' : def)),
+      get: jest.fn((key: string, def?: any) => key==='INDEX_BUDGET_PLAN_ENABLED'?(controlled?'true':'false'):(key === 'GEMINI_MODEL' ? 'gemini-2.5-flash' : def)),
     };
     const mockFactory: any = {
       provider: 'bullmq',
@@ -230,5 +233,7 @@ describe('IndexingService F2 failed-unit retry', () => {
     expect(mockFactory.dispatch).not.toHaveBeenCalledWith(
       expect.objectContaining({ job_type: 'plan_asset' }),
     );
+    if(controlled)expect(renew).toHaveBeenCalledWith('user_1/asset_retry');
+    } finally { renew.mockRestore(); }
   });
 });

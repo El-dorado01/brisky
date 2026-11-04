@@ -16,6 +16,17 @@ describe('GoogleDriveConnector: Rate Limit Resilience & Retry (Phase 4)', () => 
     expect(res).toBe('ok');
     expect(op).toHaveBeenCalledTimes(1);
   });
+  it.each(['ECONNRESET','ETIMEDOUT','EAI_AGAIN','EPIPE'])('retries transient %s connections',async code=>{
+    const op=jest.fn().mockRejectedValueOnce(Object.assign(new Error('connection failed'),{code})).mockResolvedValue('ok');
+    await expect(connector.withRetry(op,2,1)).resolves.toBe('ok');
+    expect(op).toHaveBeenCalledTimes(2);
+  });
+  it('does not retry cancelled operations',async()=>{
+    const controller=new AbortController();
+    const op=jest.fn(async()=>{controller.abort();throw Error('aborted');});
+    await expect(connector.withRetry(op,3,1,controller.signal)).rejects.toThrow();
+    expect(op).toHaveBeenCalledTimes(1);
+  });
 
   it('retries with backoff on HTTP 429 and succeeds on subsequent attempt', async () => {
     const rateLimitError = new Error('Rate limit exceeded');

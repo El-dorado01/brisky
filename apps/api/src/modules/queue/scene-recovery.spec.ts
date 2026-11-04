@@ -1,6 +1,19 @@
 import { IndexingProcessor } from './indexing.processor';
+import { AiUsageLedger } from '../pipeline/ai-usage-ledger';
 
 describe('streamed scene recovery', () => {
+  it('does not release a shared file plan when one terminal sibling fails',async()=>{
+    const release=jest.spyOn(AiUsageLedger.prototype,'releasePlan');
+    try {
+      const settings:any={INDEX_BUDGET_PLAN_ENABLED:'true',INDEX_ALLOWED_CONNECTOR_ACCOUNT_IDS:'account'};
+      const worker:any={configService:{get:(key:string,defaultValue:any)=>settings[key]??defaultValue},fullDownloadMaxBytes:100,
+        processScoped:jest.fn().mockRejectedValue(new Error('Meta disconnected'))};
+      const job:any={attemptsMade:2,opts:{attempts:3},data:{job_type:'analyze_frames',asset_id:'asset',user_id:'owner',
+        source:{provider:'google_drive',connectorAccountId:'account',fileSize:10},priority:'normal'}};
+      await expect(IndexingProcessor.prototype.process.call(worker,job)).rejects.toThrow('Meta disconnected');
+      expect(release).not.toHaveBeenCalled();
+    } finally { release.mockRestore(); }
+  });
   const recover = (extract: any, download: any, streamed = true) =>
     (IndexingProcessor.prototype as any).recoverStreamedScenes.call(
       { logger: { warn: jest.fn() } }, extract, download, streamed);

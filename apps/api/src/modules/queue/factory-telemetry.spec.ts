@@ -34,4 +34,10 @@ describe('Factory recorded stages',()=>{
     const purge=summarizeFactoryRuns(rows).find(s=>s.id==='purge')!;
     expect(purge.doneToday).toBe(1);expect(purge.activity.map(a=>a.assetId)).toEqual(['b']);
   });
+  it('exposes retry attempt and current file stage without erasing earlier scene completions',()=>{
+    const stages=summarizeFactoryRuns([{asset_id:'a',stage:'fetch',step:'reading_from_connector',attempt:3,status:'failed',asset_stage:'failed'},
+      {asset_id:'a',stage:'scenes',step:'scene_detection',attempt:2,status:'completed',asset_stage:'failed'}]);
+    expect(stages.find(s=>s.id==='fetch')!.activity[0]).toMatchObject({status:'failed',attempt:3,currentStage:'failed'});
+    expect(stages.find(s=>s.id==='scenes')!.doneToday).toBe(1);
+  });
 });

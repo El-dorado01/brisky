@@ -23,6 +23,7 @@ import { resolveFromRepo } from '../../common/repo-paths';
 import { DatabaseService } from '../database/database.service';
 import { FactorySchedulerService } from './factory-scheduler.service';
 import { ProcessingUnitsService } from '../pipeline/processing-units.service';
+import { AiUsageLedger } from '../pipeline/ai-usage-ledger';
 import {
   FactoryJobEnvelope,
   IndexingJobData,
@@ -615,6 +616,14 @@ export class IndexingService implements OnApplicationBootstrap, OnModuleDestroy 
       }
     }
 
+    let retryPlanReady = true;
+    if (this.configService.get('INDEX_BUDGET_PLAN_ENABLED', 'false') === 'true') {
+      const live = await this.db.query(`SELECT 1 FROM indexing_jobs WHERE asset_id=$1 AND user_id=$2
+        AND (status='active' OR (status='waiting' AND job_type NOT IN ('embed','finalize_asset'))) LIMIT 1`, [assetId,userId]);
+      if (live.rows.length) throw new ConflictException('This file still has queued or active work. Wait for it to finish before retrying.');
+      retryPlanReady = new AiUsageLedger(this.configService).restorePlanForRetry(`${userId}/${assetId}`);
+    }
+
     await this.db.query(
       `UPDATE media_assets
        SET status = 'queued', stage = 'queued', progress = 0, error = NULL, updated_at = NOW()
@@ -638,6 +647,12 @@ export class IndexingService implements OnApplicationBootstrap, OnModuleDestroy 
 
     if (failedUnits.length > 0 && this.unitsService) {
       await this.unitsService.resetFailedUnits(assetId);
+      if (!retryPlanReady) {
+        // Legacy/interrupted work without a recorded plan must pass measured
+        // admission again. Completed units/checkpoints are deliberately retained.
+        await this.enqueueAsset({job_type:'plan_asset',asset_id:assetId,user_id:userId,source,priority:'normal',processing_config:{forceReindex:false}});
+        return true;
+      }
       for (const unit of failedUnits) {
         if (unit.unit_id === 'audio_windows' && failedUnits.some((entry) => entry.unit_id === 'audio_transcribe')) continue;
         await this.enqueueAsset({

@@ -60,21 +60,25 @@ export class GoogleDriveConnector implements MediaConnector<OAuth2Client> {
     operation: () => Promise<T>,
     maxRetries = 3,
     initialDelayMs = 1000,
+    signal?: AbortSignal,
   ): Promise<T> {
     let attempt = 0;
     let delay = initialDelayMs;
 
     while (true) {
+      signal?.throwIfAborted();
       try {
         return await operation();
       } catch (err: any) {
         attempt += 1;
-        const status = err?.status || err?.code || err?.response?.status;
+        signal?.throwIfAborted();
+        const status = err?.response?.status || err?.status || err?.code || err?.cause?.code;
         const isRateLimit = status === 429 || String(err?.message || '').toLowerCase().includes('rate limit');
         const isTransient =
           status === 503 ||
-          status === 500 ||
-          status === 'ECONNRESET' ||
+          (typeof status === 'number' && status >= 500 && status <= 599) ||
+          ['ECONNRESET','ECONNABORTED','ETIMEDOUT','EAI_AGAIN','EPIPE','UND_ERR_CONNECT_TIMEOUT','UND_ERR_SOCKET'].includes(status) ||
+          /socket hang up|disconnected before secure tls/i.test(String(err?.message || '')) ||
           String(err?.message || '').toLowerCase().includes('aborted');
 
         if (attempt >= maxRetries || (!isRateLimit && !isTransient)) {
@@ -85,7 +89,7 @@ export class GoogleDriveConnector implements MediaConnector<OAuth2Client> {
         this.logger.warn(
           `[GoogleDriveConnector] API call failed with status ${status} (attempt ${attempt}/${maxRetries}). Retrying in ${delay + jitter}ms...`,
         );
-        await new Promise((resolve) => setTimeout(resolve, delay + jitter));
+        await import('node:timers/promises').then(({setTimeout}) => setTimeout(delay + jitter, undefined, {signal}));
         delay *= 2;
       }
     }
@@ -275,9 +279,10 @@ export class GoogleDriveConnector implements MediaConnector<OAuth2Client> {
     fs.mkdirSync(path.dirname(destPath), { recursive: true });
 
     await this.withRetry(async () => {
+      const signal = AbortSignal.timeout(180000);
       const res = await drive.files.get(
         { fileId: remoteId, alt: 'media' },
-        { responseType: 'stream' },
+        { responseType: 'stream', signal, timeout: 30000 },
       );
 
       let downloadedBytes = 0;
@@ -302,7 +307,7 @@ export class GoogleDriveConnector implements MediaConnector<OAuth2Client> {
 
       const writeStream = fs.createWriteStream(destPath);
       try {
-        await pipeline(res.data as NodeJS.ReadableStream, progressTracker, writeStream);
+        await pipeline(res.data as NodeJS.ReadableStream, progressTracker, writeStream, {signal});
       } catch (streamErr) {
         if (fs.existsSync(destPath)) {
           try {
@@ -353,8 +358,8 @@ export class GoogleDriveConnector implements MediaConnector<OAuth2Client> {
     const drive = google.drive({ version: 'v3', auth: authClient });
     const identity = async (abortSignal?: AbortSignal) => {
       abortSignal?.throwIfAborted();
-      const res = await drive.files.get({ fileId: remoteId, fields: 'size,version,capabilities(canDownload)' },
-        { retry: false, ...(abortSignal ? { signal: abortSignal } : {}) });
+      const res = await this.withRetry(() => drive.files.get({ fileId: remoteId, fields: 'size,version,capabilities(canDownload)' },
+        { retry: false, timeout: 30000, ...(abortSignal ? { signal: abortSignal } : {}) }), 3, 500, abortSignal);
       abortSignal?.throwIfAborted();
       const size = Number(res.data.size);
       const version = String(res.data.version || '');

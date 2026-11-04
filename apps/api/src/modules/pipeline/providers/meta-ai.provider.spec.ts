@@ -81,6 +81,14 @@ describe('dormant Meta adapter (offline transport fixtures only)', () => {
     expect(entries[0].attempt.requestId).toBe(entries[2].attempt.requestId);
     expect(entries[1]).toMatchObject({status:'error',estimatedUsd:null});
   });
+  it('retries a network interruption once on the configured model and meters both attempts',async()=>{
+    fetcher.mockRejectedValueOnce(Object.assign(new TypeError('fetch failed'),{cause:{code:'ECONNRESET'}})).mockResolvedValueOnce(response(goodQuery));
+    expect(await make().understandQuery('red car')).toMatchObject({cleanSearchPhrase:'red car'});
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    const entries=journal();
+    expect(entries.filter(e=>e.event==='reserved')).toHaveLength(2);
+    expect(entries.find(e=>e.status==='error')).toMatchObject({estimatedUsd:null});
+  });
   it('does not retry authorization errors or malformed model output', async () => {
     fetcher.mockResolvedValueOnce(new Response('',{status:401}));
     await make({META_FALLBACK_MODELS:'fixture-fallback'}).understandQuery('raw');
