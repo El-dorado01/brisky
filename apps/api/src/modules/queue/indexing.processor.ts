@@ -1113,6 +1113,8 @@ export class IndexingProcessor extends WorkerHost {
     const scratch = path.join(this.scratchDir, String(jobId));
 
     let streamedSource: SeekableMediaSource | undefined;
+    let validateRecoveryVersion: (() => Promise<void>) | undefined;
+    let recoveredLocalSource = false;
     let streamedVersion: string | undefined;
     const indexStartedAt = Date.now();
     const timings: StageTiming[] = [];
@@ -1256,6 +1258,7 @@ export class IndexingProcessor extends WorkerHost {
           const session = await connector.openReadSession!(auth, remoteId!);
           if (fileSize > 0 && session.size !== fileSize) throw new Error('Cloud source size changed since indexing');
           streamedVersion = session.version;
+          validateRecoveryVersion = () => session.validate(AbortSignal.timeout(30000));
           streamedSource = await openSeekableMediaSource(session, this.indexReaderOptions());
           effectiveSourcePath = streamedSource.url;
           await setStage('reading_from_connector', 5, true);
@@ -1333,7 +1336,8 @@ export class IndexingProcessor extends WorkerHost {
 
       const downloadRecoverySource = async () => {
           if (await this.checkCancelled(job.id || '', assetId, scratch)) throw new Error('Scene preparation cancelled');
-          await streamedSource!.validate();
+          await validateRecoveryVersion!();
+          await streamedSource!.close();
           if (!Number.isSafeInteger(fileSize) || fileSize <= 0) throw new Error('Scene recovery requires a known positive source size');
           this.checkScratchCapacity(scratch, fileSize, 'full_download');
           if (!connectorAccountId) throw new Error('Missing connector account for scene recovery');
@@ -1342,9 +1346,10 @@ export class IndexingProcessor extends WorkerHost {
           const auth = await this.connectorsService.getAuthContext(connectorAccountId, userId);
           await connector.downloadAsset(auth, remoteId!, localSource);
           if (!fs.existsSync(localSource) || fs.statSync(localSource).size !== fileSize) throw new Error('Scene recovery download size mismatch');
-          await streamedSource!.validate();
+          await validateRecoveryVersion!();
           if (await this.checkCancelled(job.id || '', assetId, scratch)) throw new Error('Scene preparation cancelled');
           effectiveSourcePath = localSource;
+          recoveredLocalSource = true;
       };
 
       // Stage 1: Probe Metadata
@@ -1406,7 +1411,7 @@ export class IndexingProcessor extends WorkerHost {
         }, Boolean(streamedSource) && effectiveSourcePath === streamedSource!.url && !windowedScenes);
       });
       if (streamedSource) {
-        await streamedSource.validate();
+        await (recoveredLocalSource ? validateRecoveryVersion!() : streamedSource.validate());
         if (scenes.some((scene) => !scene.keyframes?.length)) throw new Error('Streamed scene preparation is missing scene evidence');
       }
 
@@ -1533,7 +1538,7 @@ export class IndexingProcessor extends WorkerHost {
       if (await this.checkCancelled(job.id || '', assetId, scratch)) return;
 
       if (streamedSource) {
-        await streamedSource.validate();
+        await (recoveredLocalSource ? validateRecoveryVersion!() : streamedSource.validate());
         await this.db.query(`UPDATE indexing_jobs SET bytes_read = $1, access_mode = 'range_read' WHERE bull_job_id = $2`,
           [streamedSource.bytesRead, job.id]);
       }

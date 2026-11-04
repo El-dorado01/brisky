@@ -1746,3 +1746,8 @@ fallback to fabricated scene evidence. Windowed scene preparation is unchanged.
 Eight offline regression checks and the API/worker TypeScript build passed.
 The two owner-reported Drive files were requeued for live validation; completion
 and model output accuracy are not established by the offline checks.
+Live retry additionally exposed an expired-bridge validation failure. Recovery
+now validates the original Drive version independently before/after download,
+closes the failed bridge, and uses that independent check after local extraction.
+It does not ignore source changes. Eight regression checks and compilation passed
+again; live Drive completion remains pending.
