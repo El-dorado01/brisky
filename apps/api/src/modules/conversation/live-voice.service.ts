@@ -97,7 +97,7 @@ export class LiveVoiceService implements OnApplicationBootstrap,OnModuleDestroy{
   private async connectMeta(client:WebSocket,owner:string,voice='Kore'){
     this.connections.add(client);let closed=false,bytes=0,count=0,windowStart=Date.now();
     const send=(packet:unknown)=>{if(client.readyState!==WebSocket.OPEN)return;if(client.bufferedAmount>1024*1024){session.stop('The voice connection cannot keep up.');return;}client.send(JSON.stringify(packet));};
-    const speech=nonMetaTts(this.config)?{ready:async()=>{if(!this.voice)throw Error('TTS service is unavailable');},synthesize:(text:string,signal?:AbortSignal)=>this.voice!.relaySpeech(owner,text,voice,signal)}:this.mms;
+    const speech=nonMetaTts(this.config)?{ready:async()=>{if(!this.voice)throw Error('TTS service is unavailable');},synthesize:(text:string,signal?:AbortSignal)=>this.voice!.relaySpeech(owner,text,voice,signal),stream:(text:string,audio:(pcm:Buffer)=>Promise<void>,signal?:AbortSignal)=>this.voice!.relaySpeechStream(owner,text,voice,audio,signal)}:this.mms;
     const session=new MetaLiveVoice(this.config,speech,send,error=>{if(closed)return;closed=true;this.active.delete(owner);this.connections.delete(client);if(error)send({type:'error',message:error});if(client.readyState===WebSocket.OPEN)client.close(error?1011:1000);});
     client.on('close',()=>session.stop());client.on('error',()=>session.stop('Voice connection stopped.'));
     client.on('message',(data,isBinary)=>{try{if(isBinary||closed)throw Error('Invalid frame');if(Date.now()-windowStart>1000){windowStart=Date.now();count=0;}if(++count>40)throw Error('Frame rate exceeded');const r=JSON.parse(data.toString());

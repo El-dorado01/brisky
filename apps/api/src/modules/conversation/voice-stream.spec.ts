@@ -8,6 +8,20 @@ const complete={event_type:'interaction.completed',interaction:{status:'complete
 const event=(value:unknown)=>'data: '+JSON.stringify(value)+'\r\n\r\n';
 function body(values:unknown[]){const bytes=Buffer.from(values.map(event).join(''));return new ReadableStream<Uint8Array>({start(c){for(let i=0;i<bytes.length;i+=31)c.enqueue(bytes.subarray(i,i+31));c.close();}});}
 describe('streamed speech boundaries',()=>{
+ it('streams relay text to audio before Gemini completes, retaining selected voice and no DB lookup',async()=>{
+  const f=fixture();let finish!:()=>void,first!:()=>void;
+  const heard=new Promise<void>(r=>first=r),packets:Buffer[]=[];
+  const config=(f.service as any).config;config.set('META_ONLY_RUNTIME','true');config.set('ALLOW_NON_META_TTS','true');config.set('VOICE_TTS_PROVIDER','gemini');
+  global.fetch=jest.fn().mockResolvedValue(new Response(new ReadableStream<Uint8Array>({start(c){c.enqueue(Buffer.from(event(audio)));finish=()=>{c.enqueue(Buffer.from(event(complete)));c.close();};}})));
+  let done=false;
+  try{
+    const pending=f.service.relaySpeechStream('owner','Hello there.','Aoede',async bytes=>{packets.push(bytes);first();}).then(()=>{done=true;});
+    await heard;expect(done).toBe(false);expect(packets[0]).toEqual(pcm);
+    const request=JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+    expect(request.stream).toBe(true);expect(request.generation_config.speech_config[0].voice).toBe('Aoede');
+    finish();await pending;expect(fs.readdirSync(f.dir)).toHaveLength(1);
+  }finally{f.clean();}
+ });
  const originalFetch=global.fetch;afterEach(()=>{global.fetch=originalFetch;jest.restoreAllMocks();});
  it('decodes split SSE before completion and recovers usage',async()=>{
   let finish!:()=>void,first!:()=>void;const heard=new Promise<void>(r=>first=r),stream=new ReadableStream<Uint8Array>({start(c){c.enqueue(Buffer.from(event(audio)));finish=()=>{c.enqueue(Buffer.from(event(complete)));c.close();};}});let completed=false;

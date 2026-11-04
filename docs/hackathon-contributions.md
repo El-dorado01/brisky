@@ -1676,3 +1676,23 @@ voice config returned meta-mms plus ttsProvider=gemini. One generated-only Kore
 settings preview returned a valid 334436-byte WAV through the live speech service;
 temporary acceptance session removed. Real microphone conversation and listening
 across all six voices remain owner acceptance, not established by this preview.
+
+### Incremental Gemini TTS in the Meta call relay
+
+The permitted Gemini TTS call relay now uses the existing incremental SSE speech
+transport instead of waiting for a full sentence WAV. All speech paths (normal
+replies, search announcements, status and farewells) share the streaming helper;
+MMS retains sentence synthesis when selected. PCM fragments are forwarded before
+provider completion, preserve split 16-bit samples, and stop on turn interruption
+or a stale epoch. Existing budget settlement, complete-only caching, selected
+voices and quota fallback-before-first-audio semantics are retained. Meta still
+handles transcription/dialogue/search; this is not Gemini Live.
+
+Validation: 52 offline checks across seven suites passed and API compilation
+passed. Tests explicitly hold provider completion open while asserting audio has
+already reached the relay, and reject late chunks on interruption. One generated-only
+Kore sentence using the live speech service produced first audio at 1558 ms,
+completed at 10043 ms, 82 chunks / 288000 PCM bytes. This is one TTS measurement,
+not end-to-end conversational latency or a production benchmark. API restarted
+healthy with workers and automatic polling off. Existing cumulative $30 allowance
+and journal retained; no personal media or microphone audio sent to Gemini.

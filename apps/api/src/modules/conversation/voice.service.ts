@@ -69,6 +69,14 @@ export class VoiceService{
     const wav=await this.render(owner,'meta-relay',text,'natural',chosenVoice(voice,'Kore'),signal);
     const audio=wavPcm(wav);if(audio.sampleRate!==24000)throw new ServiceUnavailableException('Voice needs 24 kHz speech');return audio.pcm;
   }
+  async relaySpeechStream(owner:string,text:string,voice:string,audio:(pcm:Buffer)=>Promise<void>,signal?:AbortSignal){
+    this.key();if(!nonMetaTts(this.config)||!text.trim()||text.length>360)throw new BadRequestException('Invalid relay speech');
+    await this.streamItem(owner,{identity:'meta-relay',text,delivery:'natural',voice:chosenVoice(voice,'Kore')},async packet=>{
+      signal?.throwIfAborted();
+      if(packet.type==='format'&&packet.sampleRate!==24000)throw new ServiceUnavailableException('Voice needs 24 kHz speech');
+      if(packet.type==='audio')await audio(Buffer.from(packet.data,'base64'));
+    },signal);
+  }
   private async savedSpeech(owner:string,raw:unknown){
     if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new BadRequestException('Choose a saved reply');const r=raw as Record<string,unknown>;if(Object.keys(r).some(k=>!['messageId','style','voice'].includes(k))||typeof r.messageId!=='string'||!uuid.test(r.messageId)||!['natural','storyteller'].includes(String(r.style)))throw new BadRequestException('Choose a saved reply and speech style');
     const result=await this.db.query("SELECT content FROM saas.messages WHERE id=$1 AND user_id=$2 AND role='assistant'",[r.messageId,owner]);if(!result.rows[0])throw new NotFoundException('This reply is unavailable');const text=String(result.rows[0].content);if(!text.trim()||text.length>6000)throw new BadRequestException('This reply is too long for one spoken turn. Ask Brisky for a shorter reply.');this.key();
@@ -77,7 +85,10 @@ export class VoiceService{
   }
   async speak(owner:string,raw:unknown,signal?:AbortSignal){const item=await this.savedSpeech(owner,raw);return this.render(owner,item.identity,item.text,item.delivery,item.voice,signal);}
   async stream(owner:string,raw:unknown,emit:VoiceEmit,signal?:AbortSignal){
-    const item=await this.savedSpeech(owner,raw),started=Date.now(),cache=resolveFromRepo(this.config.get('VOICE_CACHE_DIR','storage/voice-cache'));
+    return this.streamItem(owner,await this.savedSpeech(owner,raw),emit,signal);
+  }
+  private async streamItem(owner:string,item:{identity:string;text:string;delivery:string;voice:string},emit:VoiceEmit,signal?:AbortSignal){
+    const started=Date.now(),cache=resolveFromRepo(this.config.get('VOICE_CACHE_DIR','storage/voice-cache'));
     const preferred=this.config.get<string>('VOICE_TTS_MODEL','gemini-3.8-flash-tts'),fallback=this.config.get<string>('VOICE_TTS_FALLBACK_MODEL','');
     const models=[...new Set([preferred,...(fallback&&/^[a-z0-9.-]+-tts$/.test(fallback)?[fallback]:[])])];
     if(metaOnly(this.config)&&models.some(model=>!['gemini-3.8-flash-tts','gemini-3.8-flash-lite-tts'].includes(model)))throw new ServiceUnavailableException('Only declared TTS models are allowed.');

@@ -175,3 +175,18 @@ Wonder voice trial (2026-11-04): active local META_VOICE_MODEL is muse-wonder-1.
 Farewell follow-up (2026-11-04): a recognized end-session intent now emits normal ending even if local farewell speech fails, rather than demanding reconnection; new user speech still interrupts closure. Search-result announcements wait during farewell. The owner's reported failure could not be reproduced with the exact text; sanitized errors now distinguish known synthesis/provider failures without recording audio or transcripts. Local synthesis of both farewell sentences passed. Dancing queries require actual video verification, and saved replies now receive explicit video/frames query-check metadata.
 
 Live dancing search recheck passed in 36.594 seconds: actual moving video was verified, response confirmed dancing, and citation narrowed to 1.5-9.5 seconds with searchStatus=complete. No library reindex or saved-message rewrite. This is a single-query check; the original microphone farewell failure remains unreproduced, with graceful closure now regression-tested.
+
+## Gemini TTS relay streaming (November 4)
+
+Under the disclosed TTS-only exception, the Meta conversation relay can forward
+Gemini PCM as SSE audio deltas arrive. It still waits for complete response-text
+sentences from Meta, but no longer waits for the entire sentence's generated audio.
+Normal replies, search announcements, status replies and farewells use this path.
+MMS remains the non-streaming local sentence fallback when explicitly selected.
+No provider switch happens automatically after partial audio has played.
+
+52 offline voice/relay checks passed, plus API compilation. A generated-only live
+Kore sentence delivered first audio at 1558 ms and completed at 10043 ms (82 PCM
+chunks). That is one TTS-path observation, not total microphone-to-response latency.
+Interruptions abort the request and discard stale audio; incomplete streams are
+not cached as successful replies. There is no guarantee of a particular latency.
