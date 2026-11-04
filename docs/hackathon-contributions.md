@@ -1774,3 +1774,10 @@ Event-period reliability extensions to the pre-existing indexing engine:
 Unauthenticated HTTPS connectivity checks reached both providers without inference.
 Only the two reported Drive files were retried under the unchanged local $50/32 MiB
 bounds; live indexing completion and provider reliability remain separate checks.
+A follow-up closes the retry/finalizer race: retryable units remain waiting rather
+than terminally failed, so the finalizer cannot release a plan between attempts.
+Admitted unit jobs also update the file's current stage/status (rather than leave
+it labelled queued during an active retry). 28 focused scheduler, retry, telemetry
+and service checks passed, in addition to the earlier 95-check regression run;
+compilation passed. Live Meta frame calls are now succeeding for the reported
+training-field file; full file completion is still a separate live check.

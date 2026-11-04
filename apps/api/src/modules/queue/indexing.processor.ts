@@ -347,6 +347,10 @@ export class IndexingProcessor extends WorkerHost {
     try {
       const checkpointId=envelope.processing_config?.unitId;
       const reused=checkpointId && (await this.unitsService.getUnit?.(assetId,checkpointId))?.status==='completed';
+      if (isIndexUnitJob(envelope.job_type) && !reused) {
+        await this.db.query(`UPDATE media_assets SET status='processing',stage=$3,error=NULL,updated_at=NOW()
+          WHERE id=$1 AND user_id=$2 AND status<>'cancelled'`,[assetId,envelope.user_id,envelope.job_type]);
+      }
       await recordFactoryStep(this.db,job,envelope,(reused?'reused_':'')+envelope.job_type,async()=>{
       if (envelope.job_type === 'generate_proxy') {
         await this.executeGenerateProxy(job, envelope);
@@ -1650,9 +1654,12 @@ export class IndexingProcessor extends WorkerHost {
   ): Promise<void> {
     const message = err instanceof Error ? err.message : String(err);
     await this.unitsService.markUnitFailed(envelope.asset_id, unitId, message);
+    const retrying=(job.attemptsMade||0)+1<(job.opts?.attempts||1);
+    if(retrying) await this.db.query(`UPDATE media_processing_units SET status='waiting',updated_at=NOW()
+      WHERE asset_id=$1 AND unit_id=$2 AND status='failed'`,[envelope.asset_id,unitId]);
     await this.db.query(
-      `UPDATE indexing_jobs SET status = 'failed', stage = 'failed', error = $1, finished_at = NOW() WHERE bull_job_id = $2`,
-      [message, job.id],
+      `UPDATE indexing_jobs SET status = $3, stage = $4, error = $1, finished_at = CASE WHEN $3='failed' THEN NOW() ELSE NULL END WHERE bull_job_id = $2`,
+      [message, job.id,retrying?'waiting':'failed',retrying?'retrying':'failed'],
     );
   }
 

@@ -2,6 +2,13 @@ import { IndexingProcessor } from './indexing.processor';
 import { AiUsageLedger } from '../pipeline/ai-usage-ledger';
 
 describe('streamed scene recovery', () => {
+  it('keeps a retryable unit pending so finalization cannot release its budget early',async()=>{
+    const worker:any={unitsService:{markUnitFailed:jest.fn().mockResolvedValue(undefined)},db:{query:jest.fn().mockResolvedValue({rows:[]})}};
+    await (IndexingProcessor.prototype as any).failUnitJob.call(worker,{id:'job',attemptsMade:0,opts:{attempts:3}},
+      {asset_id:'asset'},'scene_1',new Error('connection reset'));
+    expect(worker.db.query.mock.calls[0][0]).toContain("status='waiting'");
+    expect(worker.db.query.mock.calls[1][1]).toEqual(['connection reset','job','waiting','retrying']);
+  });
   it('does not release a shared file plan when one terminal sibling fails',async()=>{
     const release=jest.spyOn(AiUsageLedger.prototype,'releasePlan');
     try {
