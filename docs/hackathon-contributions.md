@@ -1734,3 +1734,15 @@ cumulative testing ceiling is increased from $30 to $50 without resetting the
 journal; local 32 MiB source bounds and public setup defaults are unchanged.
 This is an owner-attested team statement, not independent registration evidence
 or a promise of organizer eligibility.
+
+### Streamed source preparation recovery (November 4)
+
+Extends the pre-existing indexing worker: a failed streamed FFprobe timeout,
+scene scan, or required-frame extraction now triggers one bounded temporary
+connector download and retries preparation locally. Source version validation,
+exact downloaded size, cooperative cancellation and existing scratch/source caps
+remain enforced. Local decoding failures still fail honestly; this is not a
+fallback to fabricated scene evidence. Windowed scene preparation is unchanged.
+Eight offline regression checks and the API/worker TypeScript build passed.
+The two owner-reported Drive files were requeued for live validation; completion
+and model output accuracy are not established by the offline checks.

@@ -188,6 +188,17 @@ export class IndexingProcessor extends WorkerHost {
     return total;
   }
 
+  private async recoverStreamedScenes<T>(extract: () => Promise<T>, download: () => Promise<void>, streamed: boolean): Promise<T> {
+    try { return await extract(); }
+    catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!streamed || !/Streamed scene detection did not complete successfully|Required keyframe missing|ffprobe metadata probe timed out/.test(message)) throw error;
+      this.logger.warn(`Streamed media preparation failed; downloading a temporary source and retrying locally: ${message}`);
+      await download();
+      return extract();
+    }
+  }
+
   private checkScratchCapacity(
     scratchDir: string,
     incomingBytes = 0,
@@ -1320,9 +1331,25 @@ export class IndexingProcessor extends WorkerHost {
         ).catch(() => undefined);
       }
 
+      const downloadRecoverySource = async () => {
+          if (await this.checkCancelled(job.id || '', assetId, scratch)) throw new Error('Scene preparation cancelled');
+          await streamedSource!.validate();
+          if (!Number.isSafeInteger(fileSize) || fileSize <= 0) throw new Error('Scene recovery requires a known positive source size');
+          this.checkScratchCapacity(scratch, fileSize, 'full_download');
+          if (!connectorAccountId) throw new Error('Missing connector account for scene recovery');
+          const localSource = path.join(scratch, `scene-recovery${path.extname(originalFilename) || '.mp4'}`);
+          const connector = this.connectorRegistry.get(provider === 'drive' ? 'google_drive' : provider);
+          const auth = await this.connectorsService.getAuthContext(connectorAccountId, userId);
+          await connector.downloadAsset(auth, remoteId!, localSource);
+          if (!fs.existsSync(localSource) || fs.statSync(localSource).size !== fileSize) throw new Error('Scene recovery download size mismatch');
+          await streamedSource!.validate();
+          if (await this.checkCancelled(job.id || '', assetId, scratch)) throw new Error('Scene preparation cancelled');
+          effectiveSourcePath = localSource;
+      };
+
       // Stage 1: Probe Metadata
       const metadata = await mark('probe_metadata', 8, () =>
-        this.ffmpegPipeline.probeMetadata(effectiveSourcePath),
+        this.recoverStreamedScenes(() => this.ffmpegPipeline.probeMetadata(effectiveSourcePath), downloadRecoverySource, Boolean(streamedSource)),
       );
 
       await this.db.query(
@@ -1360,8 +1387,8 @@ export class IndexingProcessor extends WorkerHost {
         fs.statSync(resolveStorageLocator(frame.path, this.storageRoot)!).size > 0));
       const windowedScenes = this.configService.get('WINDOWED_SCENE_PREPARATION', 'false') === 'true';
       if (windowedScenes && !streamedSource) throw new Error('Windowed scene preparation requires a versioned streamed source');
-      const scenes: SceneBoundary[] = usableScenes ? cachedScenes! : await mark('scene_detection', 14, () =>
-        windowedScenes ? this.prepareSceneWindows(assetId, userId, fingerprint, effectiveSourcePath, metadata.duration, framesDir,
+      const scenes: SceneBoundary[] = usableScenes ? cachedScenes! : await mark('scene_detection', 14, async () => {
+        const extract = () => windowedScenes ? this.prepareSceneWindows(assetId, userId, fingerprint, effectiveSourcePath, metadata.duration, framesDir,
           () => streamedSource!.validate(), async () => {
             if (await this.checkCancelled(job.id || '', assetId, scratch)) throw new Error('Scene preparation cancelled');
           }) : this.ffmpegPipeline.detectScenesAndExtractFrames(
@@ -1373,8 +1400,11 @@ export class IndexingProcessor extends WorkerHost {
             await setStage('extracting_keyframes', pct).catch(() => undefined);
             await updateFactoryProgress(this.db,String(job.id||''),userId,'scenes',current,total).catch(()=>undefined);
           },
-        ),
-      );
+        );
+        return this.recoverStreamedScenes(extract, async () => {
+          await downloadRecoverySource();
+        }, Boolean(streamedSource) && effectiveSourcePath === streamedSource!.url && !windowedScenes);
+      });
       if (streamedSource) {
         await streamedSource.validate();
         if (scenes.some((scene) => !scene.keyframes?.length)) throw new Error('Streamed scene preparation is missing scene evidence');
