@@ -279,11 +279,17 @@ export class GoogleDriveConnector implements MediaConnector<OAuth2Client> {
     fs.mkdirSync(path.dirname(destPath), { recursive: true });
 
     await this.withRetry(async () => {
-      const signal = AbortSignal.timeout(180000);
-      const res = await drive.files.get(
+      const downloadTimeout = Number(this.configService.get('GOOGLE_DRIVE_DOWNLOAD_TIMEOUT_MS',900000));
+      if(!Number.isSafeInteger(downloadTimeout)||downloadTimeout<60000||downloadTimeout>3600000)throw new Error('Invalid GOOGLE_DRIVE_DOWNLOAD_TIMEOUT_MS');
+      const controller = new AbortController();
+      const signal = AbortSignal.any([controller.signal,AbortSignal.timeout(downloadTimeout)]);
+      const connecting = setTimeout(()=>controller.abort(),30000);
+      let res;
+      try { res = await drive.files.get(
         { fileId: remoteId, alt: 'media' },
-        { responseType: 'stream', signal, timeout: 30000 },
-      );
+        { responseType: 'stream', signal, timeout: downloadTimeout },
+      ); } finally { clearTimeout(connecting); }
+      let idle = setTimeout(()=>controller.abort(),60000);
 
       let downloadedBytes = 0;
       let lastProgress = 0;
@@ -293,6 +299,8 @@ export class GoogleDriveConnector implements MediaConnector<OAuth2Client> {
 
       const progressTracker = new Transform({
         transform(chunk, encoding, callback) {
+          clearTimeout(idle);
+          idle=setTimeout(()=>controller.abort(),60000);
           downloadedBytes += chunk.length;
           if (totalBytes > 0 && onProgress) {
             const pct = Math.min(100, Math.round((downloadedBytes / totalBytes) * 100));
@@ -317,6 +325,8 @@ export class GoogleDriveConnector implements MediaConnector<OAuth2Client> {
           }
         }
         throw streamErr;
+      } finally {
+        clearTimeout(idle);
       }
 
       this.logger.log(

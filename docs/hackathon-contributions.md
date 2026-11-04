@@ -1794,3 +1794,16 @@ This corrects error reporting; it does not make an aborted source download a
 successful video analysis. The reported file remains truthfully partially indexed:
 transcript, two frame analyses and both embeddings completed; full-video analysis
 failed. Index/purge completion does not imply every understanding unit succeeded.
+
+### Slow Drive body timeout correction (November 4)
+
+PART_2 live retries exposed that Gaxios' 30-second timeout still applied to the
+entire streamed body, defeating the separate longer deadline. Full downloads now
+use a configurable 15-minute total bound (GOOGLE_DRIVE_DOWNLOAD_TIMEOUT_MS,
+60 seconds to 1 hour allowed), a separate 30-second connection timer cleared when
+headers arrive, and a 60-second idle-body timer reset by incoming chunks. Thus a
+slow but progressing transfer is not cut off after 30 seconds. Source size and
+version checks remain strict. A fake-clock test completed an actual temporary
+stream/file after 31 seconds; 21 relevant tests and compilation passed. The
+PostgreSQL failure-status cast correction is included in the same worker build.
+Actual Drive transfer completion remains a live check, not established by this test.
