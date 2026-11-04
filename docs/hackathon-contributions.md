@@ -1781,3 +1781,16 @@ it labelled queued during an active retry). 28 focused scheduler, retry, telemet
 and service checks passed, in addition to the earlier 95-check regression run;
 compilation passed. Live Meta frame calls are now succeeding for the reported
 training-field file; full file completion is still a separate live check.
+
+### Failure-status SQL typing correction (November 4)
+
+Live validation caught a parameter inference conflict introduced in the retry
+status update: the same status parameter was inferred as varchar by assignment
+and text by CASE comparison. Cast the CASE reference explicitly to varchar.
+Ten focused worker tests and compilation passed. The actual source query was
+also executed in PostgreSQL for waiting/failed statuses against a nonexistent
+job ID inside a rollback-only transaction: both passed with zero rows changed.
+This corrects error reporting; it does not make an aborted source download a
+successful video analysis. The reported file remains truthfully partially indexed:
+transcript, two frame analyses and both embeddings completed; full-video analysis
+failed. Index/purge completion does not imply every understanding unit succeeded.

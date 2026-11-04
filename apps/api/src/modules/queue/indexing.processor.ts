@@ -1658,7 +1658,7 @@ export class IndexingProcessor extends WorkerHost {
     if(retrying) await this.db.query(`UPDATE media_processing_units SET status='waiting',updated_at=NOW()
       WHERE asset_id=$1 AND unit_id=$2 AND status='failed'`,[envelope.asset_id,unitId]);
     await this.db.query(
-      `UPDATE indexing_jobs SET status = $3, stage = $4, error = $1, finished_at = CASE WHEN $3='failed' THEN NOW() ELSE NULL END WHERE bull_job_id = $2`,
+      `UPDATE indexing_jobs SET status = $3, stage = $4, error = $1, finished_at = CASE WHEN $3::varchar='failed' THEN NOW() ELSE NULL END WHERE bull_job_id = $2`,
       [message, job.id,retrying?'waiting':'failed',retrying?'retrying':'failed'],
     );
   }
