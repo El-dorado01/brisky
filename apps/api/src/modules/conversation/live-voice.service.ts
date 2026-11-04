@@ -39,6 +39,9 @@ export class LiveVoiceService implements OnApplicationBootstrap,OnModuleDestroy{
     const token=randomBytes(32).toString('base64url');this.tickets.set(token,{owner,voice:String(r.voice),expires:Date.now()+30000});url.searchParams.set('ticket',token);return {url:url.href,startupTimeoutMs:this.mode().mode==='meta-mms'?150000:45000};
   }
   onApplicationBootstrap(){
+    // Standalone workers create an application context with no HTTP adapter.
+    // Voice sockets and speech warm-up belong to the API process only.
+    if(this.config.get('IS_WORKER','false')==='true'||!this.adapter.httpAdapter)return;
     if(this.mode().ttsProvider==='mms'&&this.config.get('VOICE_ENABLED','false')==='true')void this.mms.ready().catch(()=>console.warn('Local MMS warm-up failed; run setup:mms --check on the engine host.'));
     this.adapter.httpAdapter.getHttpServer().on('upgrade',(request:any,socket:any,head:Buffer)=>{
       const url=new URL(request.url||'','http://localhost');if(url.pathname!==PATH)return;

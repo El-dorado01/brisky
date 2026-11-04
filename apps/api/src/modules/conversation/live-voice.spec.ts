@@ -12,6 +12,16 @@ function fixture(){
   return {config,server,service,ledger,client:new Client()};
 }
 describe('Live voice connection boundaries',()=>{
+  it('does not attach voice sockets from a standalone worker context',()=>{
+    const previous=process.env.IS_WORKER,{service,config,server}=fixture();
+    try{config.set('IS_WORKER','true');expect(()=>service.onApplicationBootstrap()).not.toThrow();
+      expect(server.listenerCount('upgrade')).toBe(0);
+    }finally{service.onModuleDestroy();if(previous===undefined)delete process.env.IS_WORKER;else process.env.IS_WORKER=previous;}
+  });
+  it('does not require an HTTP adapter in an application context',()=>{
+    const service=new LiveVoiceService(new ConfigService(),{} as any,{} as any);
+    expect(()=>service.onApplicationBootstrap()).not.toThrow();service.onModuleDestroy();
+  });
   it('restores Gemini speech options without changing Meta conversation mode',()=>{
     const {service,config}=fixture();config.set('VOICE_CONVERSATION_MODE','meta-mms');
     expect(service.mode()).toEqual({mode:'meta-mms',ttsProvider:'mms'});
