@@ -1831,3 +1831,16 @@ frame when available instead of reopening the cloud video merely for that image.
 86 focused regression tests and compilation passed; live completion remains to be
 checked separately after deployment. PART_2 has 5 prepared scenes/105 frames and
 had stopped at plan admission; the training-field file needs video analysis only.
+
+### Credential-free judge walkthrough (November 5, before submission deadline)
+
+Event repository only: apps/demo/offline.cjs and scripts/start-offline.cjs add an
+explicit npm run demo:offline mode requiring no login, API keys, Brevo, Google
+OAuth, Docker, original engine or model download. Scripted fixture search,
+citations, shortlisting and Studio templates are clearly labelled mock output;
+voice and real cloud/media processing are not simulated. Original live mode
+continues to reject missing credentials rather than silently faking AI output.
+README and full setup distinguish both routes and the simplified UI from the
+recorded application. Ten event tests passed, including a credential-free HTTP
+workflow and origin protections; runtime audit passed. This is new event-period
+packaging, not a claim that the original engine was built during the event.

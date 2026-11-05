@@ -311,3 +311,16 @@ The owner also confirmed sole human hackathon participation: the contributor to
 the earlier original engine did not participate in or assist with this hackathon.
 Retain that contributor's historical attribution and distinguish it from the
 hackathon team roster; do not erase history or claim sole authorship of old code.
+
+2026-11-04 owner update: the cumulative local testing ceiling is now **$100**,
+superseding $50. Preserve the complete append-only spending journal, earlier
+charges, unknown outcomes and active reservations. This is not a fresh $100
+allowance. The owner authorized this while using the local Gemini Live development
+profile; published judge configuration and provider declarations remain unchanged.
+
+2026-11-05 pre-deadline organizer clarification supplied by owner: judges must be
+able to run a public-repo path without registering outside accounts or supplying
+credentials. Brevo and Drive OAuth may remain optional integrations but cannot be
+the only access path. The event repo now includes an explicit no-login offline
+walkthrough with labelled synthetic observations and scripted chat/Studio output;
+it does not claim to reproduce real inference, video playback or the recorded UI.
