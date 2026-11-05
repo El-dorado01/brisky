@@ -1844,3 +1844,5 @@ README and full setup distinguish both routes and the simplified UI from the
 recorded application. Ten event tests passed, including a credential-free HTTP
 workflow and origin protections; runtime audit passed. This is new event-period
 packaging, not a claim that the original engine was built during the event.
+
+2026-11-05: Replaced the pre-existing marketing homepage with a minimal Brisky welcome screen linking to /login, at the owner's request. This event-period navigation change preserves SaaS authentication. The separate labelled credential-free judge walkthrough remains available in the submission repository.
